@@ -13,7 +13,7 @@ Hekato-Go 是一个支持 Kiro 与 CodeBuddy 账号的多上游 OpenAI / Anthrop
 > Hekato-Go 起源于 [Quorinex/Kiro-Go](https://github.com/Quorinex/Kiro-Go) 的增强 Fork。
 > 感谢 Quorinex/Kiro-Go 维护者创建的原始项目。
 > 本 Fork 由 [billyriantono/Hekato-Go](https://github.com/billyriantono/Hekato-Go) 独立维护，并增加了 Kiro 与 CodeBuddy 等多 Provider 支持。
-> 也感谢 [Quorinex/Kiro-Go PR #131](https://github.com/Quorinex/Kiro-Go/pull/131) 中的工作与讨论，为本 Fork 的 Enterprise SSO / Azure AD 支持提供了参考。
+> 本 Fork 的 Enterprise SSO / Azure AD 支持基于 [Quorinex/Kiro-Go PR #131](https://github.com/Quorinex/Kiro-Go/pull/131) 中的代码与思路。感谢该 PR 作者及讨论参与者开放这些工作。
 
 如果这个项目帮到了你，欢迎点个 Star 支持一下。
 

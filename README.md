@@ -13,7 +13,7 @@ Hekato-Go is a multi-provider OpenAI / Anthropic compatible API gateway for Kiro
 > Hekato-Go started as an enhanced fork of [Quorinex/Kiro-Go](https://github.com/Quorinex/Kiro-Go).
 > Thanks to the Quorinex/Kiro-Go maintainers for the original project.
 > This fork is maintained independently at [billyriantono/Hekato-Go](https://github.com/billyriantono/Hekato-Go) and adds multi-provider support for Kiro and CodeBuddy.
-> Additional thanks to the work and discussion in [Quorinex/Kiro-Go PR #131](https://github.com/Quorinex/Kiro-Go/pull/131), which helped inform the Enterprise SSO / Azure AD support in this fork.
+> The Enterprise SSO / Azure AD support in this fork is based on code and ideas from [Quorinex/Kiro-Go PR #131](https://github.com/Quorinex/Kiro-Go/pull/131). Thanks to the PR author and discussion participants for making that work available.
 
 If this project helps you, a Star would mean a lot.
 
