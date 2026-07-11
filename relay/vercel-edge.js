@@ -1,18 +1,18 @@
-// Kiro-Go egress relay — Vercel Edge Function.
+// Hekato-Go egress relay — Vercel Edge Function.
 //
 // Deploy:
 //   1. Create a new project (or add to an existing one). Put this file at
 //      api/relay.js in the repo.
 //   2. Deploy. The relay URL is https://<project>.vercel.app/api/relay
-//   3. In Kiro-Go admin → Egress Relay: paste that URL (the secret is already set).
+//   3. In Hekato-Go admin → Egress Relay: paste that URL (the secret is already set).
 //
-// The secret below (RELAY_KEY) is baked in by the Kiro-Go admin panel, so you do
+// The secret below (RELAY_KEY) is baked in by the Hekato-Go admin panel, so you do
 // NOT need to add any environment variable — just deploy. (You may still override
 // it with a RELAY_KEY environment variable if you prefer.)
 //
 // Forwards each request to the real target in X-Relay-Target after checking the
 // shared secret (X-Relay-Key) and an upstream host allow-list, then streams the
-// upstream response back so Kiro's SSE streaming keeps working.
+// upstream response back so Kiro / CodeBuddy SSE streaming keeps working.
 
 export const config = { runtime: "edge" };
 
@@ -24,6 +24,9 @@ const ALLOW_SUFFIXES = [
   ".microsoftonline.com",
   ".microsoftonline.us",
   ".microsoftonline.cn",
+  ".codebuddy.ai",
+  ".codebuddy.cn",
+  ".tencent.com",
 ];
 
 function hostAllowed(host) {
@@ -38,7 +41,7 @@ export default async function handler(request) {
   if (expected && expected !== "__RELAY_KEY__" && key !== expected) {
     return new Response("unauthorized", { status: 401 });
   }
-  // Health probe from the Kiro-Go admin "Test relay" button.
+  // Health probe from the Hekato-Go admin "Test relay" button.
   if (request.headers.get("X-Relay-Ping")) {
     return new Response("relay-ok", { status: 200 });
   }

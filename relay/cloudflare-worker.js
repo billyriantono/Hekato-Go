@@ -1,27 +1,30 @@
-// Kiro-Go egress relay — Cloudflare Worker.
+// Hekato-Go egress relay — Cloudflare Worker.
 //
 // Deploy:
 //   1. Cloudflare dashboard → Workers & Pages → Create → Worker. Paste this file.
 //   2. Deploy. Copy the worker URL (https://<name>.<subdomain>.workers.dev).
-//   3. In Kiro-Go admin → Egress Relay: paste the URL (the secret is already set).
+//   3. In Hekato-Go admin → Egress Relay: paste the URL (the secret is already set).
 //
-// The secret below (RELAY_KEY) is baked in by the Kiro-Go admin panel, so you do
+// The secret below (RELAY_KEY) is baked in by the Hekato-Go admin panel, so you do
 // NOT need to configure any environment variable — just deploy. (You may still
 // override it with a Worker Secret named RELAY_KEY if you prefer.)
 //
 // The relay forwards each request to the real target carried in X-Relay-Target,
 // after checking the shared secret (X-Relay-Key) and an upstream host allow-list
 // so it cannot be abused as an open proxy. The upstream response is streamed
-// straight back, so Kiro's SSE streaming keeps working.
+// straight back, so Kiro / CodeBuddy SSE streaming keeps working.
 
 const RELAY_KEY = "__RELAY_KEY__";
 
 const ALLOW_SUFFIXES = [
   ".amazonaws.com", // codewhisperer / q / oidc
   ".kiro.dev", // app.kiro.dev, *.auth.desktop.kiro.dev
-  ".microsoftonline.com",
+  ".microsoftonline.com", // Enterprise SSO / Azure AD
   ".microsoftonline.us",
   ".microsoftonline.cn",
+  ".codebuddy.ai", // CodeBuddy Global (www.codebuddy.ai)
+  ".codebuddy.cn", // CodeBuddy China domain header / future endpoints
+  ".tencent.com", // CodeBuddy China API (copilot.tencent.com)
 ];
 
 function hostAllowed(host) {
@@ -37,7 +40,7 @@ export default {
     if (expected && expected !== "__RELAY_KEY__" && key !== expected) {
       return new Response("unauthorized", { status: 401 });
     }
-    // Health probe from the Kiro-Go admin "Test relay" button: validate the
+    // Health probe from the Hekato-Go admin "Test relay" button: validate the
     // secret (above) then confirm without forwarding.
     if (request.headers.get("X-Relay-Ping")) {
       return new Response("relay-ok", { status: 200 });
