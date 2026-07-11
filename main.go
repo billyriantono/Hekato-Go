@@ -1,0 +1,90 @@
+// Package main provides the entry point for AI Provider Proxy.
+//
+// AI Provider Proxy is a reverse proxy service that translates Kiro API requests
+// into OpenAI and Anthropic (Claude) compatible formats. Key features include:
+//   - Multi-account pool with round-robin load balancing
+//   - Automatic OAuth token refresh
+//   - Streaming response support for real-time AI interactions
+//   - Admin panel for account and configuration management
+//
+// The service exposes the following endpoints:
+//   - /v1/messages - Claude API compatible endpoint
+//   - /v1/chat/completions - OpenAI API compatible endpoint
+//   - /admin - Web-based administration panel
+package main
+
+import (
+	"fmt"
+	"kiro-go/config"
+	"kiro-go/logger"
+	"kiro-go/pool"
+	"kiro-go/proxy"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
+	"time"
+)
+
+func main() {
+	// 配置文件路径，支持环境变量覆盖
+	configPath := "data/config.json"
+	if envPath := os.Getenv("CONFIG_PATH"); envPath != "" {
+		configPath = envPath
+	}
+
+	// 确保数据目录存在
+	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+		log.Fatalf("Failed to create data directory: %v", err)
+	}
+
+	// 加载配置
+	if err := config.Init(configPath); err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	// Initialize log level: LOG_LEVEL env var takes priority over config, defaulting to "info".
+	logger.Init(config.GetLogLevel())
+
+	// ADMIN_PASSWORD env var sets/overrides the admin password. This is the
+	// headless setup path — it pre-configures the instance so the first-run setup
+	// screen is skipped (useful for automated/Docker deploys). When unset, a fresh
+	// install starts unconfigured and the admin UI forces the setup screen instead
+	// of shipping a known default password.
+	if envPassword := os.Getenv("ADMIN_PASSWORD"); envPassword != "" {
+		config.SetPassword(envPassword)
+	}
+
+	if !config.IsConfigured() {
+		logger.Warnf("No admin password set — open http://%s:%d/admin to complete initial setup (or set ADMIN_PASSWORD).",
+			config.GetHost(), config.GetPort())
+	}
+
+	// 初始化账号池
+	pool.GetPool()
+
+	// 创建 HTTP 处理器（包含后台刷新任务）
+	handler := proxy.NewHandler()
+
+	// 启动服务器
+	addr := fmt.Sprintf("%s:%d", config.GetHost(), config.GetPort())
+	logger.Infof("Hekato-Go starting on http://%s (log level: %s)", addr, logger.LevelName(logger.GetLevel()))
+	logger.Infof("Admin panel: http://%s/admin", addr)
+	logger.Infof("Claude API: http://%s/v1/messages", addr)
+	logger.Infof("OpenAI API: http://%s/v1/chat/completions", addr)
+
+	// WriteTimeout intentionally 0: SSE streams can run for minutes while the
+	// upstream model produces tokens. ReadHeaderTimeout + ReadTimeout still
+	// guard against slowloris-style header/body stalls.
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 30 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	if err := srv.ListenAndServe(); err != nil {
+		logger.Fatalf("Server failed: %v", err)
+	}
+}
