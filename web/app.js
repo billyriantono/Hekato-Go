@@ -2184,9 +2184,13 @@
     kiro: 'fa-solid fa-wand-magic-sparkles'
   };
   function methodCard(type, title, desc) {
+    var logos = { kiro: 'kiro.svg', 'codebuddy-methods': 'codebuddy.svg', codebuddy: 'codebuddy.svg' };
     var icon = METHOD_ICONS[type] || 'fa-solid fa-circle-plus';
+    var iconHtml = logos[type]
+      ? '<img src="/admin/icons/' + logos[type] + '" alt="" aria-hidden="true" />'
+      : '<i class="' + icon + '" aria-hidden="true"></i>';
     return '<button type="button" class="method-card" data-method="' + escapeAttr(type) + '">' +
-      '<span class="method-icon"><i class="' + icon + '" aria-hidden="true"></i></span>' +
+      '<span class="method-icon">' + iconHtml + '</span>' +
       '<span class="method-body">' +
       '<span class="method-title">' + escapeHtml(title) + '</span>' +
       '<span class="method-desc">' + escapeHtml(desc) + '</span>' +

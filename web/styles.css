@@ -2279,6 +2279,15 @@ img.brand-icon {
   color: var(--primary);
   font-size: 1rem;
 }
+.method-icon img {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.provider-list .method-icon {
+  padding: 0;
+  overflow: hidden;
+}
 .method-body {
   display: flex;
   flex-direction: column;
