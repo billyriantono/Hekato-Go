@@ -2217,11 +2217,25 @@ img.brand-icon {
 }
 
 /* Add-account method picker */
+.picker-intro {
+  margin: 0 0 1rem;
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
 .method-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.625rem;
   margin-bottom: 1rem;
+}
+.provider-list .method-card {
+  min-height: 6rem;
+}
+.provider-list .method-icon {
+  width: 2.75rem;
+  height: 2.75rem;
+  font-size: 1.125rem;
 }
 .method-card {
   display: flex;
@@ -2505,6 +2519,15 @@ img.brand-icon {
   align-items: center;
   gap: 0.5rem;
   flex-wrap: wrap;
+}
+.account-egress-section > input {
+  margin-bottom: 0.75rem;
+}
+.account-egress-section > .btn {
+  margin-top: 0.25rem;
+}
+.account-egress-section > .help-block {
+  margin-top: 0.75rem;
 }
 .detail-grid {
   display: grid;

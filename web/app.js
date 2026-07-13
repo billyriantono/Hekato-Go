@@ -1257,7 +1257,7 @@
       renderOverageBlock(a, idAttr) +
       '</div>' +
 
-      '<div class="detail-section"><h4>' + escapeHtml(t('detail.proxyURL')) + '</h4>' +
+      '<div class="detail-section account-egress-section"><h4>' + escapeHtml(t('detail.proxyURL')) + '</h4>' +
       '<div class="form-group"><select id="accountEgressType"><option value="inherit">' + escapeHtml(t('detail.egressInherit')) + '</option><option value="proxy">' + escapeHtml(t('detail.egressProxy')) + '</option><option value="relay">' + escapeHtml(t('detail.egressRelay')) + '</option></select></div>' +
       '<input type="text" id="proxyURLInput" value="' + escapeAttr(a.proxyURL || '') + '" placeholder="socks5://host:port" />' +
       '<input type="text" id="accountRelayURLInput" value="' + escapeAttr(a.relayURL || '') + '" placeholder="https://relay.example.com" />' +
@@ -2180,7 +2180,8 @@
     local: 'fa-solid fa-folder-open',
     credentials: 'fa-solid fa-code',
     codebuddy: 'fa-solid fa-robot',
-    cookie: 'fa-solid fa-cookie-bite'
+    cookie: 'fa-solid fa-cookie-bite',
+    kiro: 'fa-solid fa-wand-magic-sparkles'
   };
   function methodCard(type, title, desc) {
     var icon = METHOD_ICONS[type] || 'fa-solid fa-circle-plus';
@@ -2198,6 +2199,8 @@
     const title = $('modalTitle');
     const body = $('modalBody');
     if (type === 'add') modalAdd(title, body);
+    else if (type === 'kiro') modalKiroMethods(title, body);
+    else if (type === 'codebuddy-methods') modalCodeBuddyMethods(title, body);
     else if (type === 'builderid') modalBuilderId(title, body);
     else if (type === 'iam') modalIam(title, body);
     else if (type === 'enterprisesso') modalEnterpriseSso(title, body);
@@ -2224,8 +2227,19 @@
     kiroSsoSession = '';
   }
   function modalAdd(title, body) {
-    title.textContent = t('modal.addAccount');
+    title.textContent = t('modal.chooseProvider');
     body.innerHTML =
+      '<p class="picker-intro">' + escapeHtml(t('modal.chooseProviderHint')) + '</p>' +
+      '<div class="method-list provider-list">' +
+      methodCard('kiro', t('modal.kiroProvider'), t('modal.kiroProviderDesc')) +
+      methodCard('codebuddy-methods', t('modal.codebuddyProvider'), t('modal.codebuddyProviderDesc')) +
+      '</div>' +
+      '<div class="modal-footer"><button class="btn btn-secondary" data-close-add="1" type="button">' + escapeHtml(t('common.cancel')) + '</button></div>';
+  }
+  function modalKiroMethods(title, body) {
+    title.textContent = t('modal.chooseMethod', t('modal.kiroProvider'));
+    body.innerHTML =
+      '<p class="picker-intro">' + escapeHtml(t('modal.chooseMethodHint')) + '</p>' +
       '<div class="method-list">' +
       methodCard('builderid', t('modal.builderIdTitle'), t('modal.builderIdDesc')) +
       methodCard('iam', t('modal.iamTitle'), t('modal.iamDesc')) +
@@ -2233,10 +2247,19 @@
       methodCard('sso', t('modal.ssoTitle'), t('modal.ssoDesc')) +
       methodCard('local', t('modal.localTitle'), t('modal.localDesc')) +
       methodCard('credentials', t('modal.credentialsTitle'), t('modal.credentialsDesc')) +
-      methodCard('codebuddy', t('modal.codebuddyTitle'), t('modal.codebuddyDesc')) +
       methodCard('cookie', t('modal.cookieTitle'), t('modal.cookieDesc')) +
-      '</div>' +
-      '<div class="modal-footer"><button class="btn btn-secondary" data-close-add="1" type="button">' + escapeHtml(t('common.cancel')) + '</button></div>';
+      '</div>' + pickerBackFooter();
+  }
+  function modalCodeBuddyMethods(title, body) {
+    title.textContent = t('modal.chooseMethod', t('modal.codebuddyProvider'));
+    body.innerHTML =
+      '<p class="picker-intro">' + escapeHtml(t('modal.chooseMethodHint')) + '</p>' +
+      '<div class="method-list provider-list">' +
+      methodCard('codebuddy', t('modal.codebuddyTitle'), t('modal.codebuddyDesc')) +
+      '</div>' + pickerBackFooter();
+  }
+  function pickerBackFooter() {
+    return '<div class="modal-footer"><button class="btn btn-secondary" data-modal-goto="add" type="button">' + escapeHtml(t('common.back')) + '</button></div>';
   }
   function modalBuilderId(title, body) {
     title.textContent = t('modal.builderIdTitle');
