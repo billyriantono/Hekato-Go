@@ -3976,10 +3976,12 @@ func (h *Handler) apiGetAccountModelsCached(w http.ResponseWriter, r *http.Reque
 // ==================== 静态文件服务 ====================
 
 func (h *Handler) serveAdminPage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	http.ServeFile(w, r, "web/index.html")
 }
 
 func (h *Handler) serveStaticFile(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	path := strings.TrimPrefix(r.URL.Path, "/admin/")
 	http.ServeFile(w, r, "web/"+path)
 }
