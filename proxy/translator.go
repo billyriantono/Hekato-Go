@@ -287,7 +287,9 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 
 	// 构建最终内容
 	finalContent := ""
-	if currentContent != "" {
+	if len(currentToolResults) > 0 && !keepCurrentToolResults {
+		finalContent = joinHistoryText(currentContent, buildToolResultsContinuation(currentToolResults))
+	} else if currentContent != "" {
 		finalContent = currentContent
 	} else if len(currentImages) > 0 {
 		finalContent = normalizeUserContent("", true)
@@ -1232,7 +1234,9 @@ func OpenAIToKiro(req *OpenAIRequest, thinking bool) *KiroPayload {
 
 	// 构建最终内容
 	finalContent := currentContent
-	if finalContent == "" {
+	if len(currentToolResults) > 0 && !keepCurrentToolResults {
+		finalContent = joinHistoryText(currentContent, buildToolResultsContinuation(currentToolResults))
+	} else if finalContent == "" {
 		if len(currentImages) > 0 {
 			finalContent = normalizeUserContent("", true)
 		} else if len(currentToolResults) > 0 {

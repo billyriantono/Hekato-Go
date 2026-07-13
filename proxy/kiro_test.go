@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"io"
 	"kiro-go/config"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
 	"time"
@@ -190,6 +192,25 @@ func TestBuildKiroTransportFallsBackToEnvironmentProxy(t *testing.T) {
 		t.Fatalf("unexpected proxy error: %v", err)
 	}
 	assertProxyURL(t, got, "http://env-proxy.local:2323")
+}
+
+func TestAccountRelayOverridesGlobalOutbound(t *testing.T) {
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Relay-Target") != "https://q.us-east-1.amazonaws.com/test" || r.Header.Get("X-Relay-Key") != "account-secret" {
+			t.Fatalf("unexpected relay headers: %q/%q", r.Header.Get("X-Relay-Target"), r.Header.Get("X-Relay-Key"))
+		}
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer relay.Close()
+
+	resp, err := GetRestClientForAccount(&config.Account{RelayURL: relay.URL, RelaySecret: "account-secret"}).Get("https://q.us-east-1.amazonaws.com/test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if body, _ := io.ReadAll(resp.Body); string(body) != "ok" {
+		t.Fatalf("body = %q", body)
+	}
 }
 
 func TestInitKiroHttpClientKeepsShortRestTimeout(t *testing.T) {

@@ -2357,6 +2357,8 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 			"currentOverages":   a.CurrentOverages,
 			"overageCheckedAt":  a.OverageCheckedAt,
 			"proxyURL":          a.ProxyURL,
+			"relayURL":          a.RelayURL,
+			"hasRelaySecret":    a.RelaySecret != "",
 			"subscriptionType":  a.SubscriptionType,
 			"subscriptionTitle": a.SubscriptionTitle,
 			"daysRemaining":     a.DaysRemaining,
@@ -2461,7 +2463,30 @@ func (h *Handler) apiUpdateAccount(w http.ResponseWriter, r *http.Request, id st
 		existing.Weight = int(v)
 	}
 	if v, ok := updates["proxyURL"].(string); ok {
+		if v != "" && !strings.HasPrefix(v, "http://") && !strings.HasPrefix(v, "https://") && !strings.HasPrefix(v, "socks5://") && !strings.HasPrefix(v, "socks5h://") {
+			http.Error(w, `{"error":"invalid proxyURL"}`, http.StatusBadRequest)
+			return
+		}
 		existing.ProxyURL = v
+		if v != "" {
+			existing.RelayURL, existing.RelaySecret = "", ""
+		}
+	}
+	if v, ok := updates["relayURL"].(string); ok {
+		if v != "" && !strings.HasPrefix(v, "http://") && !strings.HasPrefix(v, "https://") {
+			http.Error(w, `{"error":"invalid relayURL"}`, http.StatusBadRequest)
+			return
+		}
+		existing.RelayURL = v
+		if v != "" {
+			existing.ProxyURL = ""
+		}
+		if v == "" {
+			existing.RelaySecret = ""
+		}
+	}
+	if v, ok := updates["relaySecret"].(string); ok && v != "" {
+		existing.RelaySecret = v
 	}
 
 	if err := config.UpdateAccount(id, *existing); err != nil {
@@ -3869,6 +3894,8 @@ func (h *Handler) apiGetAccountFull(w http.ResponseWriter, r *http.Request, id s
 		"currentOverages":   account.CurrentOverages,
 		"overageCheckedAt":  account.OverageCheckedAt,
 		"proxyURL":          account.ProxyURL,
+		"relayURL":          account.RelayURL,
+		"hasRelaySecret":    account.RelaySecret != "",
 		"enabled":           account.Enabled,
 		"banStatus":         account.BanStatus,
 		"banReason":         account.BanReason,

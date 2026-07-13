@@ -419,7 +419,7 @@ func doCodeBuddyChatRequest(account *config.Account, v codeBuddyVariant, token s
 		req.Header.Set("X-Model-ID", strings.TrimSpace(chatReq.Model))
 	}
 
-	resp, err := GetClientForProxy(ResolveAccountProxyURL(account)).Do(req)
+	resp, err := GetClientForAccount(account).Do(req)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -650,7 +650,7 @@ func fetchCodeBuddyCNCredits(account *config.Account) (limit, used, remain float
 	req.Header.Set("X-Domain", v.Domain)
 	req.Header.Set("User-Agent", "CLI/2.106.3 CodeBuddy/2.106.3")
 
-	resp, err := GetRestClientForProxy(ResolveAccountProxyURL(account)).Do(req)
+	resp, err := GetRestClientForAccount(account).Do(req)
 	if err != nil {
 		return 0, 0, 0, err
 	}

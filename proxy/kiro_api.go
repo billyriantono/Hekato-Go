@@ -169,7 +169,7 @@ func GetUsageLimits(account *config.Account) (*UsageLimitsResponse, error) {
 
 	setKiroHeaders(req, account)
 
-	resp, err := GetRestClientForProxy(ResolveAccountProxyURL(account)).Do(req)
+	resp, err := GetRestClientForAccount(account).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +200,7 @@ func GetUserInfo(account *config.Account) (*UserInfoResponse, error) {
 	setKiroHeaders(req, account)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := GetRestClientForProxy(ResolveAccountProxyURL(account)).Do(req)
+	resp, err := GetRestClientForAccount(account).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +239,7 @@ func ListAvailableModels(account *config.Account) ([]ModelInfo, error) {
 
 	setKiroHeaders(req, account)
 
-	resp, err := GetRestClientForProxy(ResolveAccountProxyURL(account)).Do(req)
+	resp, err := GetRestClientForAccount(account).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -492,7 +492,7 @@ func listAvailableProfilesInRegion(ctx context.Context, account *config.Account,
 	setKiroHeaders(req, account)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := GetRestClientForProxy(ResolveAccountProxyURL(account)).Do(req)
+	resp, err := GetRestClientForAccount(account).Do(req)
 	if err != nil {
 		return "", err
 	}

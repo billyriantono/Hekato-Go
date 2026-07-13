@@ -1257,10 +1257,13 @@
       renderOverageBlock(a, idAttr) +
       '</div>' +
 
-      '<div class="detail-section"><h4>' + escapeHtml(t('detail.proxyURL')) + '</h4><div class="machine-id-row">' +
+      '<div class="detail-section"><h4>' + escapeHtml(t('detail.proxyURL')) + '</h4>' +
+      '<div class="form-group"><select id="accountEgressType"><option value="inherit">' + escapeHtml(t('detail.egressInherit')) + '</option><option value="proxy">' + escapeHtml(t('detail.egressProxy')) + '</option><option value="relay">' + escapeHtml(t('detail.egressRelay')) + '</option></select></div>' +
       '<input type="text" id="proxyURLInput" value="' + escapeAttr(a.proxyURL || '') + '" placeholder="socks5://host:port" />' +
-      '<button class="btn btn-sm btn-primary" data-detail-action="saveProxyURL" data-id="' + idAttr + '" type="button">' + escapeHtml(t('detail.save')) + '</button>' +
-      '</div><p class="help-block">' + escapeHtml(t('detail.proxyHint')) + '</p></div>' +
+      '<input type="text" id="accountRelayURLInput" value="' + escapeAttr(a.relayURL || '') + '" placeholder="https://relay.example.com" />' +
+      '<input type="password" id="accountRelaySecretInput" placeholder="' + escapeAttr(a.hasRelaySecret ? t('relay.secretStored') : t('relay.secret')) + '" autocomplete="new-password" />' +
+      '<button class="btn btn-sm btn-primary mt-2" data-detail-action="saveProxyURL" data-id="' + idAttr + '" type="button">' + escapeHtml(t('detail.save')) + '</button>' +
+      '<p class="help-block">' + escapeHtml(t('detail.proxyHint')) + '</p></div>' +
 
       '<div class="detail-section"><h4>' + escapeHtml(t('detail.subscription')) + '</h4><div class="detail-grid">' +
       detailItem(t('detail.subscriptionType'), a.subscriptionTitle || (a.subscriptionType ? formatSubscriptionLabel(a.subscriptionType) : '-')) +
@@ -1289,6 +1292,15 @@
       '<div id="modelsList" class="model-list"></div>' +
       '</div>';
 
+    const egressType = $('accountEgressType');
+    egressType.value = a.relayURL ? 'relay' : a.proxyURL ? 'proxy' : 'inherit';
+    const toggleEgressFields = () => {
+      $('proxyURLInput').classList.toggle('hidden', egressType.value !== 'proxy');
+      $('accountRelayURLInput').classList.toggle('hidden', egressType.value !== 'relay');
+      $('accountRelaySecretInput').classList.toggle('hidden', egressType.value !== 'relay');
+    };
+    egressType.addEventListener('change', toggleEgressFields);
+    toggleEgressFields();
     openDialog('detailModal');
   }
   async function loadModels(id) {
@@ -1430,11 +1442,13 @@
     }
   }
   async function saveProxyURL(id) {
-    const url = $('proxyURLInput').value.trim();
-    if (url && !/^(socks5|socks5h|http|https):\/\//.test(url)) {
-      toast(t('detail.proxyFormatError'), 'warning'); return;
-    }
-    await putAccount(id, { proxyURL: url }, t('detail.proxySaved'));
+    const type = $('accountEgressType').value;
+    const proxyURL = type === 'proxy' ? $('proxyURLInput').value.trim() : '';
+    const relayURL = type === 'relay' ? $('accountRelayURLInput').value.trim() : '';
+    const relaySecret = type === 'relay' ? $('accountRelaySecretInput').value : '';
+    if (proxyURL && !/^(socks5|socks5h|http|https):\/\//.test(proxyURL)) { toast(t('detail.proxyFormatError'), 'warning'); return; }
+    if (relayURL && !/^https?:\/\//.test(relayURL)) { toast(t('detail.relayFormatError'), 'warning'); return; }
+    await putAccount(id, { proxyURL, relayURL, relaySecret }, t('detail.proxySaved'));
   }
   function closeDetailModal() { closeDialog('detailModal'); }
 

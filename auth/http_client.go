@@ -2,6 +2,7 @@
 package auth
 
 import (
+	"kiro-go/config"
 	"kiro-go/egress"
 	"net/http"
 	"net/url"
@@ -25,8 +26,7 @@ func init() {
 	InitHttpClient("")
 }
 
-// GetAuthClientForProxy returns an auth HTTP client for the given proxy URL.
-// If proxyURL is empty, returns the global auth HTTP client.
+// GetAuthClientForProxy returns an auth client with a fixed proxy (used by SSO flows).
 func GetAuthClientForProxy(proxyURL string) *http.Client {
 	if proxyURL == "" {
 		return httpClient()
@@ -34,11 +34,26 @@ func GetAuthClientForProxy(proxyURL string) *http.Client {
 	if cached, ok := authProxyClientCache.Load(proxyURL); ok {
 		return cached.(*http.Client)
 	}
-	client := &http.Client{
-		Timeout:   30 * time.Second,
-		Transport: egress.NewRelayTransport(buildAuthTransport(proxyURL)),
-	}
+	client := &http.Client{Timeout: 30 * time.Second, Transport: egress.NewRelayTransport(buildAuthTransport(proxyURL))}
 	authProxyClientCache.Store(proxyURL, client)
+	return client
+}
+
+// GetAuthClientForAccount applies the account relay/proxy override, or inherits global settings.
+func GetAuthClientForAccount(account *config.Account) *http.Client {
+	if account == nil || (account.ProxyURL == "" && account.RelayURL == "") {
+		return httpClient()
+	}
+	key := account.ProxyURL + "\x00" + account.RelayURL + "\x00" + account.RelaySecret
+	if cached, ok := authProxyClientCache.Load(key); ok {
+		return cached.(*http.Client)
+	}
+	transport := http.RoundTripper(buildAuthTransport(account.ProxyURL))
+	if account.RelayURL != "" {
+		transport = egress.NewRelayTransportWith(transport, account.RelayURL, account.RelaySecret)
+	}
+	client := &http.Client{Timeout: 30 * time.Second, Transport: transport}
+	authProxyClientCache.Store(key, client)
 	return client
 }
 

@@ -62,48 +62,35 @@ func init() {
 	InitKiroHttpClient("")
 }
 
-// GetClientForProxy returns an http.Client configured for the given proxy URL.
-// If proxyURL is empty, returns the global kiro HTTP client.
-func GetClientForProxy(proxyURL string) *http.Client {
-	if proxyURL == "" {
+func clientForAccount(account *config.Account, rest bool) *http.Client {
+	if account == nil || (account.ProxyURL == "" && account.RelayURL == "") {
+		if rest {
+			return kiroRestHttpStore.Load()
+		}
 		return kiroHttpStore.Load()
 	}
-	if cached, ok := proxyClientCache.Load(proxyURL); ok {
+	key := fmt.Sprintf("%t\x00%s\x00%s\x00%s", rest, account.ProxyURL, account.RelayURL, account.RelaySecret)
+	if cached, ok := proxyClientCache.Load(key); ok {
 		return cached.(*http.Client)
 	}
-	client := &http.Client{
-		Timeout:   5 * time.Minute,
-		Transport: egress.NewRelayTransport(buildKiroTransport(proxyURL)),
+	transport := http.RoundTripper(buildKiroTransport(account.ProxyURL))
+	if account.RelayURL != "" {
+		transport = egress.NewRelayTransportWith(transport, account.RelayURL, account.RelaySecret)
 	}
-	proxyClientCache.Store(proxyURL, client)
+	timeout := 5 * time.Minute
+	if rest {
+		timeout = 30 * time.Second
+	}
+	client := &http.Client{Timeout: timeout, Transport: transport}
+	proxyClientCache.Store(key, client)
 	return client
 }
 
-// GetRestClientForProxy returns a rest http.Client (30s timeout) for the given proxy URL.
-// If proxyURL is empty, returns the global kiro REST HTTP client.
-func GetRestClientForProxy(proxyURL string) *http.Client {
-	if proxyURL == "" {
-		return kiroRestHttpStore.Load()
-	}
-	cacheKey := "rest:" + proxyURL
-	if cached, ok := proxyClientCache.Load(cacheKey); ok {
-		return cached.(*http.Client)
-	}
-	client := &http.Client{
-		Timeout:   30 * time.Second,
-		Transport: egress.NewRelayTransport(buildKiroTransport(proxyURL)),
-	}
-	proxyClientCache.Store(cacheKey, client)
-	return client
+func GetClientForAccount(account *config.Account) *http.Client {
+	return clientForAccount(account, false)
 }
-
-// ResolveAccountProxyURL returns the effective proxy URL for an account.
-// Falls back to global config.GetProxyURL() if the account has no per-account proxy.
-func ResolveAccountProxyURL(account *config.Account) string {
-	if account != nil && account.ProxyURL != "" {
-		return account.ProxyURL
-	}
-	return config.GetProxyURL()
+func GetRestClientForAccount(account *config.Account) *http.Client {
+	return clientForAccount(account, true)
 }
 
 // buildKiroTransport constructs an HTTP Transport with optional outbound proxy support.
@@ -368,7 +355,7 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 		req.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
 		req.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
 
-		resp, err := GetClientForProxy(ResolveAccountProxyURL(account)).Do(req)
+		resp, err := GetClientForAccount(account).Do(req)
 		if err != nil {
 			lastErr = err
 			logger.Warnf("[KiroAPI] Endpoint %s failed: %v", ep.Name, err)

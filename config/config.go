@@ -62,8 +62,11 @@ type Account struct {
 	IssuerURL     string `json:"issuerUrl,omitempty"`     // External IdP OIDC issuer URL
 	Scopes        string `json:"scopes,omitempty"`        // Space-separated scopes granted by the external IdP
 
-	// Per-account outbound proxy (falls back to global ProxyURL if empty)
-	ProxyURL string `json:"proxyURL,omitempty"`
+	// Per-account outbound override. Relay takes precedence over ProxyURL; when both
+	// are empty the account inherits the global outbound setting.
+	ProxyURL    string `json:"proxyURL,omitempty"`
+	RelayURL    string `json:"relayURL,omitempty"`
+	RelaySecret string `json:"relaySecret,omitempty"`
 
 	// Priority weight for load balancing (higher = more requests)
 	Weight int `json:"weight,omitempty"` // 0 or 1 = normal, 2+ = higher priority

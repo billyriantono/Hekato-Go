@@ -44,8 +44,8 @@ func NewRelayTransport(inner http.RoundTripper) http.RoundTripper {
 	return &relayTransport{inner: inner}
 }
 
-// NewRelayTransportWith wraps inner with a FIXED relay URL/secret rather than the
-// live config. Used by the admin "test relay" flow to verify unsaved settings.
+// NewRelayTransportWith wraps inner with a fixed relay URL/secret. It is used by
+// relay tests and per-account outbound overrides.
 func NewRelayTransportWith(inner http.RoundTripper, relayURL, secret string) http.RoundTripper {
 	return &relayTransport{inner: inner, fixedURL: relayURL, fixedSecret: secret, fixed: true}
 }

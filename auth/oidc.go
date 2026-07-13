@@ -25,12 +25,7 @@ var socialTokenURL = func() string {
 // RefreshToken 刷新 access token
 // Returns: accessToken, refreshToken, expiresAt, profileArn, error
 func RefreshToken(account *config.Account) (string, string, int64, string, error) {
-	// Resolve per-account proxy: account.ProxyURL > global config
-	proxyURL := account.ProxyURL
-	if proxyURL == "" {
-		proxyURL = config.GetProxyURL()
-	}
-	client := GetAuthClientForProxy(proxyURL)
+	client := GetAuthClientForAccount(account)
 
 	// External IdP (enterprise SSO, e.g. Azure AD) tokens are refreshed against the
 	// IdP token endpoint (refresh_token grant, public client), NOT the AWS SSO OIDC

@@ -90,7 +90,7 @@ var accountColumns = []string{
 	"access_token", "refresh_token", "client_id", "client_secret",
 	"auth_method", "provider", "region", "start_url", "expires_at",
 	"machine_id", "profile_arn", "token_endpoint", "issuer_url", "scopes",
-	"proxy_url", "weight",
+	"proxy_url", "relay_url", "relay_secret", "weight",
 	"overage_status", "overage_capability", "overage_cap", "overage_rate", "current_overages", "overage_checked_at",
 	"enabled", "ban_status", "ban_reason", "ban_time",
 	"subscription_type", "subscription_title", "days_remaining",
@@ -105,7 +105,7 @@ func accountValues(a *Account) []any {
 		a.AccessToken, a.RefreshToken, a.ClientID, a.ClientSecret,
 		a.AuthMethod, a.Provider, a.Region, a.StartUrl, a.ExpiresAt,
 		a.MachineId, a.ProfileArn, a.TokenEndpoint, a.IssuerURL, a.Scopes,
-		a.ProxyURL, a.Weight,
+		a.ProxyURL, a.RelayURL, a.RelaySecret, a.Weight,
 		a.OverageStatus, a.OverageCapability, a.OverageCap, a.OverageRate, a.CurrentOverages, a.OverageCheckedAt,
 		boolToInt(a.Enabled), a.BanStatus, a.BanReason, a.BanTime,
 		a.SubscriptionType, a.SubscriptionTitle, a.DaysRemaining,
@@ -123,7 +123,7 @@ func scanAccount(rows *sql.Rows) (Account, error) {
 		&a.AccessToken, &a.RefreshToken, &a.ClientID, &a.ClientSecret,
 		&a.AuthMethod, &a.Provider, &a.Region, &a.StartUrl, &a.ExpiresAt,
 		&a.MachineId, &a.ProfileArn, &a.TokenEndpoint, &a.IssuerURL, &a.Scopes,
-		&a.ProxyURL, &a.Weight,
+		&a.ProxyURL, &a.RelayURL, &a.RelaySecret, &a.Weight,
 		&a.OverageStatus, &a.OverageCapability, &a.OverageCap, &a.OverageRate, &a.CurrentOverages, &a.OverageCheckedAt,
 		&enabled, &a.BanStatus, &a.BanReason, &a.BanTime,
 		&a.SubscriptionType, &a.SubscriptionTitle, &a.DaysRemaining,
@@ -178,7 +178,7 @@ func (s *sqlStore) migrate() error {
 			access_token TEXT, refresh_token TEXT, client_id TEXT, client_secret TEXT,
 			auth_method TEXT, provider TEXT, region TEXT, start_url TEXT, expires_at BIGINT,
 			machine_id TEXT, profile_arn TEXT, token_endpoint TEXT, issuer_url TEXT, scopes TEXT,
-			proxy_url TEXT, weight BIGINT,
+			proxy_url TEXT, relay_url TEXT, relay_secret TEXT, weight BIGINT,
 			overage_status TEXT, overage_capability TEXT, overage_cap DOUBLE PRECISION,
 			overage_rate DOUBLE PRECISION, current_overages DOUBLE PRECISION, overage_checked_at BIGINT,
 			enabled INTEGER, ban_status TEXT, ban_reason TEXT, ban_time BIGINT,
@@ -207,6 +207,13 @@ func (s *sqlStore) migrate() error {
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return fmt.Errorf("migrate: %w", err)
+		}
+	}
+	for _, col := range []string{"relay_url", "relay_secret"} {
+		if _, err := s.db.Exec(`SELECT ` + col + ` FROM accounts LIMIT 0`); err != nil {
+			if _, err := s.db.Exec(`ALTER TABLE accounts ADD COLUMN ` + col + ` TEXT`); err != nil {
+				return fmt.Errorf("migrate accounts.%s: %w", col, err)
+			}
 		}
 	}
 	return nil
