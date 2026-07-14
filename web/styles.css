@@ -2284,6 +2284,9 @@ img.brand-icon {
   height: 100%;
   display: block;
 }
+[data-theme="dark"] .provider-logo-xai {
+  filter: invert(1);
+}
 .provider-list .method-icon {
   padding: 0;
   overflow: hidden;
