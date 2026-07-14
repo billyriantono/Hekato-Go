@@ -928,6 +928,7 @@
     if (normalized === 'builderid') return 'BuilderID';
     if (normalized === 'github') return t('local.providerGithub');
     if (normalized === 'google') return t('local.providerGoogle');
+    if (normalized === 'grok' || normalized === 'xai' || normalized === 'grok-cli') return 'Grok (xAI)';
     return method;
   }
   function getStatusBadge(a) {
@@ -2211,6 +2212,7 @@
     else if (type === 'sso') modalSso(title, body);
     else if (type === 'local') modalLocal(title, body);
     else if (type === 'credentials') modalCredentials(title, body);
+    else if (type === 'grok') modalGrok(title, body);
     else if (type === 'codebuddy') modalCodeBuddy(title, body);
     else if (type === 'cookie') modalCookie(title, body);
     if (!modal.classList.contains('active')) openDialog('addModal');
@@ -2229,6 +2231,8 @@
       api('/auth/kiro-sso/cancel', { method: 'POST', body: JSON.stringify({ sessionId: kiroSsoSession }) }).catch(() => {});
     }
     kiroSsoSession = '';
+    if (grokPollTimer) { clearTimeout(grokPollTimer); grokPollTimer = null; }
+    grokSession = '';
   }
   function modalAdd(title, body) {
     title.textContent = t('modal.chooseProvider');
@@ -2237,6 +2241,7 @@
       '<div class="method-list provider-list">' +
       methodCard('kiro', t('modal.kiroProvider'), t('modal.kiroProviderDesc')) +
       methodCard('codebuddy-methods', t('modal.codebuddyProvider'), t('modal.codebuddyProviderDesc')) +
+      methodCard('grok', t('modal.grokProvider'), t('modal.grokProviderDesc')) +
       '</div>' +
       '<div class="modal-footer"><button class="btn btn-secondary" data-close-add="1" type="button">' + escapeHtml(t('common.cancel')) + '</button></div>';
   }
@@ -2438,6 +2443,80 @@
       '<button class="btn btn-primary" id="importCookieBtn" type="button">' + escapeHtml(t('common.add')) + '</button>' +
       '</div>';
     $('importCookieBtn').addEventListener('click', importFromCookie);
+  }
+  function modalGrok(title, body) {
+    title.textContent = t('modal.grokProvider');
+    body.innerHTML =
+      '<p class="help-block">' + escapeHtml(t('modal.grokProviderDesc')) + '</p>' +
+      '<div id="grokStep1">' +
+      '<div class="modal-footer">' +
+      '<button class="btn btn-secondary" data-modal-goto="add" type="button">' + escapeHtml(t('common.back')) + '</button>' +
+      '<button class="btn btn-primary" id="grokImportTabBtn" type="button">' + escapeHtml(t('grok.importTokens')) + '</button>' +
+      '<button class="btn btn-primary" id="grokDeviceBtn" type="button">' + escapeHtml(t('grok.deviceLogin')) + '</button>' +
+      '</div>' +
+      '</div>' +
+      '<div id="grokImportStep" class="hidden">' +
+      '<p class="help-block">' + escapeHtml(t('grok.importHint')) + '</p>' +
+      '<div class="form-group"><label>' + escapeHtml(t('grok.tokensLabel')) + '</label>' +
+      '<textarea id="grokImportJson" class="font-mono" placeholder=\'{\"email\":\"a@x.ai\",\"tokens\":{\"access_token\":\"eyJ...\",\"refresh_token\":\"...\",\"expires_at\":\"2026-07-14T08:18:50Z\"}}\'></textarea></div>' +
+      '<div class="modal-footer"><button class="btn btn-secondary" data-modal-goto="grok" type="button">' + escapeHtml(t('common.back')) + '</button><button class="btn btn-primary" id="importGrokBtn" type="button">' + escapeHtml(t('common.add')) + '</button></div>' +
+      '</div>' +
+      '<div id="grokDeviceStep" class="hidden">' +
+      '<div class="message message-info message-center"><p class="builder-code" id="grokUserCode"></p><p class="text-xs mt-2">' + escapeHtml(t('grok.verifyCode')) + '</p></div>' +
+      '<div class="form-group mt-4"><label>' + escapeHtml(t('grok.verifyUrl')) + '</label>' +
+      '<div class="endpoint"><span id="grokVerifyUrl" class="font-mono text-sm"></span></div>' +
+      '<div class="modal-footer"><button class="btn btn-sm btn-outline flex-1" id="grokOpenBtn" type="button">' + escapeHtml(t('grok.open')) + '</button><button class="btn btn-sm btn-outline flex-1" id="grokCopyBtn" type="button">' + escapeHtml(t('grok.copy')) + '</button></div></div>' +
+      '<p id="grokStatus" class="text-center text-sm mt-4 muted-text">' + escapeHtml(t('grok.waiting')) + '</p>' +
+      '<div class="modal-footer"><button class="btn btn-secondary" data-modal-goto="grok" type="button">' + escapeHtml(t('common.back')) + '</button></div>' +
+      '</div>';
+    $('grokImportTabBtn').addEventListener('click', () => { $('grokStep1').classList.add('hidden'); $('grokImportStep').classList.remove('hidden'); });
+    $('grokDeviceBtn').addEventListener('click', startGrokAuth);
+    $('importGrokBtn').addEventListener('click', importGrokTokens);
+    $('grokOpenBtn').addEventListener('click', () => window.open($('grokVerifyUrl').textContent, '_blank'));
+    $('grokCopyBtn').addEventListener('click', () => { navigator.clipboard.writeText($('grokVerifyUrl').textContent); toastPrimary(t('common.copied')); });
+  }
+  let grokSession = '';
+  let grokPollTimer = null;
+  async function startGrokAuth() {
+    try {
+      const d = await api('/auth/grok/start', { method: 'POST', body: JSON.stringify({}) });
+      if (!d.sessionId) { toastError(t('common.failed') + ': ' + (d.error || 'unknown')); return; }
+      grokSession = d.sessionId;
+      $('grokStep1').classList.add('hidden');
+      $('grokDeviceStep').classList.remove('hidden');
+      $('grokUserCode').textContent = d.userCode;
+      $('grokVerifyUrl').textContent = d.verificationUri;
+      grokPoll();
+    } catch (e) { toastError(t('common.failed') + ': ' + e.message); }
+  }
+  function grokPoll() {
+    if (!grokSession) return;
+    grokPollTimer = setTimeout(async () => {
+      try {
+        const d = await api('/auth/grok/poll', { method: 'POST', body: JSON.stringify({ sessionId: grokSession }) });
+        if (d.completed) {
+          grokSession = ''; grokPollTimer = null;
+          closeModal(); await loadAccounts(); await loadStats();
+          toastPrimary(t('grok.loginSuccess') + (d.account ? ': ' + (d.account.email || d.account.id) : ''));
+          return;
+        }
+        if (d.status === 'pending' || d.status === 'slow_down') { $('grokStatus').textContent = t('grok.waiting'); grokPoll(); }
+        else if (d.error) { grokSession = ''; grokPollTimer = null; toastError(t('common.failed') + ': ' + d.error); }
+        else grokPoll();
+      } catch (e) { grokSession = ''; grokPollTimer = null; toastError(t('common.failed') + ': ' + e.message); }
+    }, 5000);
+  }
+  async function importGrokTokens() {
+    const raw = $('grokImportJson').value.trim();
+    if (!raw) { toastWarning(t('grok.tokensRequired')); return; }
+    try {
+      const d = await api('/auth/grok/import', { method: 'POST', body: raw });
+      if (d.success) {
+        closeModal(); await loadAccounts(); await loadStats();
+        const extra = (d.errors && d.errors.length) ? '\n' + d.errors.join('\n') : '';
+        toastPrimary(t('grok.importSuccess') + ': ' + d.imported + extra);
+      } else { toastError(t('common.failed') + ': ' + (d.error || 'unknown')); }
+    } catch (e) { toastError(t('common.failed') + ': ' + e.message); }
   }
   function updateLocalFields() {
     const p = $('localProvider').value;
