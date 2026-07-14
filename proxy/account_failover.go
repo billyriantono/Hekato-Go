@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"errors"
 	"kiro-go/config"
 	"kiro-go/logger"
 	"strings"
@@ -93,12 +94,21 @@ func (h *Handler) handleAccountFailure(account *config.Account, err error) {
 		return
 	}
 
+	// Typed upstream errors carry the HTTP status, so classification does not
+	// depend on provider-specific error wording. String checks remain as the
+	// fallback for errors from non-HTTP paths (token refresh, stream parsing).
+	status := 0
+	var ue *UpstreamError
+	if errors.As(err, &ue) {
+		status = ue.Status
+	}
+
 	errMsg := err.Error()
 	switch {
 	case isOverageErrorMessage(errMsg):
 		h.disableAccountOverage(account)
 		h.pool.RecordError(account.ID, false)
-	case isQuotaErrorMessage(errMsg):
+	case status == 429 || isQuotaErrorMessage(errMsg):
 		h.pool.RecordError(account.ID, true)
 	case isSuspensionErrorMessage(errMsg):
 		h.disableAccount(account, "BANNED", "AWS temporarily suspended - unusual user activity detected")
@@ -107,7 +117,7 @@ func (h *Handler) handleAccountFailure(account *config.Account, err error) {
 		// Treat as a soft failure: short cooldown so the next request rotates account,
 		// but never auto-disable — operators can still investigate via warn logs.
 		h.pool.RecordError(account.ID, false)
-	case isAuthErrorMessage(errMsg):
+	case status == 401 || status == 403 || isAuthErrorMessage(errMsg):
 		h.disableAccount(account, "BANNED", "Authentication failed - token invalid or expired")
 	default:
 		h.pool.RecordError(account.ID, false)

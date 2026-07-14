@@ -144,12 +144,12 @@ func authOidcURL() func(string) string { return auth.GetOIDCTokenURLForTest() }
 // clientSecret, so the old default branch misclassified them as "social".
 func TestNormalizeImportAuthMethod(t *testing.T) {
 	cases := []struct {
-		name           string
-		authMethod     string
-		clientID       string
-		clientSecret   string
-		tokenEndpoint  string
-		want           string
+		name          string
+		authMethod    string
+		clientID      string
+		clientSecret  string
+		tokenEndpoint string
+		want          string
 	}{
 		{"explicit external_idp", "external_idp", "c", "", "https://login.microsoftonline.com/t/oauth2/v2.0/token", "external_idp"},
 		{"azure alias", "AzureAD", "c", "", "https://login.microsoftonline.com/t/oauth2/v2.0/token", "external_idp"},

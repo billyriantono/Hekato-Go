@@ -48,6 +48,7 @@ type Account struct {
 	ClientSecret string `json:"clientSecret,omitempty"` // OIDC client secret (for IdC auth)
 	AuthMethod   string `json:"authMethod"`             // Authentication method: "idc" (AWS IdC), "social" (GitHub/Google), or "external_idp" (enterprise SSO, e.g. Azure AD)
 	Provider     string `json:"provider,omitempty"`     // Identity provider name (e.g., "BuilderId", "GitHub", "AzureAD")
+	ProviderKind string `json:"providerKind,omitempty"` // Canonical upstream provider ("kiro"/"codebuddy"/"grok"); stamped at create time, legacy rows fall back to substring classification
 	Region       string `json:"region"`                 // AWS region for OIDC endpoints
 	StartUrl     string `json:"startUrl,omitempty"`     // AWS SSO start URL
 	ExpiresAt    int64  `json:"expiresAt,omitempty"`    // Token expiration timestamp (Unix seconds)
@@ -536,6 +537,11 @@ func GetEnabledAccounts() []Account {
 }
 
 func AddAccount(account Account) error {
+	// Fail closed at creation: an account whose provider cannot be determined
+	// would otherwise be misrouted at request time.
+	if err := StampProviderKind(&account); err != nil {
+		return err
+	}
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	// Reject a duplicate id under the write lock. The import path pre-checks with
@@ -554,6 +560,11 @@ func AddAccount(account Account) error {
 }
 
 func UpdateAccount(id string, account Account) error {
+	// Best-effort restamp: edits to legacy rows gain the canonical field, but an
+	// unclassifiable legacy account must remain updatable (e.g. to disable it).
+	if kind, err := ProviderForAccount(&account); err == nil {
+		account.ProviderKind = string(kind)
+	}
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	for i, a := range cfg.Accounts {

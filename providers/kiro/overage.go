@@ -1,4 +1,4 @@
-package proxy
+package kiro
 
 import (
 	"bytes"
@@ -7,6 +7,7 @@ import (
 	"io"
 	"kiro-go/config"
 	"kiro-go/logger"
+	"kiro-go/providers"
 	"net/http"
 	neturl "net/url"
 	"strings"
@@ -64,7 +65,7 @@ func FetchOverageStatus(account *config.Account) (*OverageSnapshot, error) {
 	}
 	setKiroHeaders(req, account)
 
-	resp, err := GetRestClientForAccount(account).Do(req)
+	resp, err := providers.GetRestClientForAccount(account).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +140,7 @@ func SetOverageStatus(account *config.Account, enabled bool) (*OverageSnapshot, 
 	setKiroHeaders(req, account)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := GetRestClientForAccount(account).Do(req)
+	resp, err := providers.GetRestClientForAccount(account).Do(req)
 	if err != nil {
 		return nil, err
 	}

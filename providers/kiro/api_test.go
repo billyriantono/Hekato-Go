@@ -1,16 +1,12 @@
-package proxy
+package kiro
 
 import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
-	"io"
 	"kiro-go/config"
-	"net/http"
-	"net/http/httptest"
-	"net/url"
+	"kiro-go/providers"
 	"testing"
-	"time"
 )
 
 func TestNormalizeChunkBasicProgression(t *testing.T) {
@@ -54,10 +50,10 @@ func TestParseEventStreamFinishesPendingToolUseOnEOF(t *testing.T) {
 		"input":     `{"server":"ida-pro-mcp"}`,
 	}))
 
-	var toolUses []KiroToolUse
+	var toolUses []providers.KiroToolUse
 	var completed bool
-	err := parseEventStream(stream, &KiroStreamCallback{
-		OnToolUse: func(toolUse KiroToolUse) {
+	err := parseEventStream(stream, &providers.KiroStreamCallback{
+		OnToolUse: func(toolUse providers.KiroToolUse) {
 			toolUses = append(toolUses, toolUse)
 		},
 		OnComplete: func(_, _ int) {
@@ -104,19 +100,19 @@ func TestParseEventStreamNilCallbackFieldsAreNoOp(t *testing.T) {
 		"content": "hello",
 	}))
 
-	if err := parseEventStream(stream, &KiroStreamCallback{}); err != nil {
+	if err := parseEventStream(stream, &providers.KiroStreamCallback{}); err != nil {
 		t.Fatalf("expected empty callback to be a no-op, got %v", err)
 	}
 }
 
 func TestHandleToolUseEventGeneratesMissingToolUseID(t *testing.T) {
-	var toolUses []KiroToolUse
+	var toolUses []providers.KiroToolUse
 	current := handleToolUseEvent(map[string]interface{}{
 		"name":  "mcpIdaProMcpStatus",
 		"input": `{"server":"ida-pro-mcp"}`,
 		"stop":  true,
-	}, nil, &KiroStreamCallback{
-		OnToolUse: func(toolUse KiroToolUse) {
+	}, nil, &providers.KiroStreamCallback{
+		OnToolUse: func(toolUse providers.KiroToolUse) {
 			toolUses = append(toolUses, toolUse)
 		},
 	})
@@ -136,9 +132,9 @@ func TestHandleToolUseEventGeneratesMissingToolUseID(t *testing.T) {
 }
 
 func TestHandleToolUseEventReplacesGeneratedIDWhenRealIDArrives(t *testing.T) {
-	var toolUses []KiroToolUse
-	callback := &KiroStreamCallback{
-		OnToolUse: func(toolUse KiroToolUse) {
+	var toolUses []providers.KiroToolUse
+	callback := &providers.KiroStreamCallback{
+		OnToolUse: func(toolUse providers.KiroToolUse) {
 			toolUses = append(toolUses, toolUse)
 		},
 	}
@@ -168,68 +164,8 @@ func TestHandleToolUseEventReplacesGeneratedIDWhenRealIDArrives(t *testing.T) {
 	}
 }
 
-func TestBuildKiroTransportUsesExplicitProxyURL(t *testing.T) {
-	transport := buildKiroTransport("http://proxy.local:8080")
-	req := &http.Request{URL: mustParseURL(t, "https://q.us-east-1.amazonaws.com")}
-
-	got, err := transport.Proxy(req)
-	if err != nil {
-		t.Fatalf("unexpected proxy error: %v", err)
-	}
-	assertProxyURL(t, got, "http://proxy.local:8080")
-}
-
-func TestBuildKiroTransportFallsBackToEnvironmentProxy(t *testing.T) {
-	t.Setenv("HTTPS_PROXY", "http://env-proxy.local:2323")
-	t.Setenv("NO_PROXY", "")
-	t.Setenv("no_proxy", "")
-
-	transport := buildKiroTransport("")
-	req := &http.Request{URL: mustParseURL(t, "https://q.us-east-1.amazonaws.com")}
-
-	got, err := transport.Proxy(req)
-	if err != nil {
-		t.Fatalf("unexpected proxy error: %v", err)
-	}
-	assertProxyURL(t, got, "http://env-proxy.local:2323")
-}
-
-func TestAccountRelayOverridesGlobalOutbound(t *testing.T) {
-	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Relay-Target") != "https://q.us-east-1.amazonaws.com/test" || r.Header.Get("X-Relay-Key") != "account-secret" {
-			t.Fatalf("unexpected relay headers: %q/%q", r.Header.Get("X-Relay-Target"), r.Header.Get("X-Relay-Key"))
-		}
-		_, _ = io.WriteString(w, "ok")
-	}))
-	defer relay.Close()
-
-	resp, err := GetRestClientForAccount(&config.Account{RelayURL: relay.URL, RelaySecret: "account-secret"}).Get("https://q.us-east-1.amazonaws.com/test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if body, _ := io.ReadAll(resp.Body); string(body) != "ok" {
-		t.Fatalf("body = %q", body)
-	}
-}
-
-func TestInitKiroHttpClientKeepsShortRestTimeout(t *testing.T) {
-	InitKiroHttpClient("")
-	t.Cleanup(func() { InitKiroHttpClient("") })
-
-	streamClient := kiroHttpStore.Load()
-	restClient := kiroRestHttpStore.Load()
-
-	if streamClient.Timeout != 5*time.Minute {
-		t.Fatalf("expected streaming timeout to be 5m, got %s", streamClient.Timeout)
-	}
-	if restClient.Timeout != 30*time.Second {
-		t.Fatalf("expected REST timeout to stay 30s, got %s", restClient.Timeout)
-	}
-}
-
 func TestSetPayloadProfileArnForAccountUsesAccountArn(t *testing.T) {
-	payload := &KiroPayload{ProfileArn: "arn:aws:codewhisperer:profile/stale"}
+	payload := &providers.KiroPayload{ProfileArn: "arn:aws:codewhisperer:profile/stale"}
 
 	setPayloadProfileArnForAccount(payload, &config.Account{ProfileArn: " arn:aws:codewhisperer:profile/current "})
 	if payload.ProfileArn != "arn:aws:codewhisperer:profile/current" {
@@ -238,30 +174,11 @@ func TestSetPayloadProfileArnForAccountUsesAccountArn(t *testing.T) {
 }
 
 func TestSetPayloadProfileArnForAccountPreservesExplicitPayloadArn(t *testing.T) {
-	payload := &KiroPayload{ProfileArn: " arn:aws:codewhisperer:profile/explicit "}
+	payload := &providers.KiroPayload{ProfileArn: " arn:aws:codewhisperer:profile/explicit "}
 
 	setPayloadProfileArnForAccount(payload, &config.Account{})
 	if payload.ProfileArn != "arn:aws:codewhisperer:profile/explicit" {
 		t.Fatalf("expected explicit payload profile ARN to be preserved, got %q", payload.ProfileArn)
-	}
-}
-
-func mustParseURL(t *testing.T, raw string) *url.URL {
-	t.Helper()
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		t.Fatalf("invalid test URL: %v", err)
-	}
-	return parsed
-}
-
-func assertProxyURL(t *testing.T, got *url.URL, want string) {
-	t.Helper()
-	if got == nil {
-		t.Fatalf("expected proxy URL %q, got nil", want)
-	}
-	if got.String() != want {
-		t.Fatalf("expected proxy URL %q, got %q", want, got.String())
 	}
 }
 

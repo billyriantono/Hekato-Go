@@ -1,4 +1,8 @@
-package proxy
+// Package codebuddy implements the CodeBuddy (Tencent) upstream: the
+// OpenAI-compatible /v2/chat/completions transport for the Global and CN
+// variants, static model tables, and usage/credits lookups. Request-format
+// converters live in the proxy core next to the shared normalization layer.
+package codebuddy
 
 import (
 	"bufio"
@@ -8,6 +12,7 @@ import (
 	"io"
 	"kiro-go/config"
 	"kiro-go/logger"
+	"kiro-go/providers"
 	"net/http"
 	"strings"
 	"time"
@@ -86,11 +91,7 @@ var codeBuddyCNModels = []codeBuddyModel{
 	{ID: "claude-haiku-4.5", OwnedBy: "anthropic"},
 }
 
-func isCodeBuddyAccount(account *config.Account) bool {
-	return mustBeProvider(account, providerCodeBuddy)
-}
-
-func codeBuddyVariantForAccount(account *config.Account) codeBuddyVariant {
+func variantForAccount(account *config.Account) codeBuddyVariant {
 	if account == nil {
 		return codeBuddyGlobal
 	}
@@ -100,7 +101,6 @@ func codeBuddyVariantForAccount(account *config.Account) codeBuddyVariant {
 	}
 	return codeBuddyGlobal
 }
-
 func codeBuddyToken(account *config.Account) string {
 	if account == nil {
 		return ""
@@ -118,7 +118,6 @@ func codeBuddyAuthHeader(token string) string {
 	}
 	return "Bearer " + token
 }
-
 func applyCodeBuddyHeaders(h http.Header, v codeBuddyVariant, token string) {
 	conv := codeBuddyTraceID()
 	reqID := codeBuddyTraceID()
@@ -154,23 +153,21 @@ func applyCodeBuddyHeaders(h http.Header, v codeBuddyVariant, token string) {
 	h.Set("X-B3-SpanId", spanID)
 	h.Set("X-B3-Sampled", "1")
 }
-
 func codeBuddyTraceID() string {
 	return strings.ReplaceAll(uuid.NewString(), "-", "")
 }
-
-func codeBuddyModelsForAccount(account *config.Account) []ModelInfo {
+func ModelsForAccount(account *config.Account) []providers.ModelInfo {
 	src := codeBuddyGlobalModels
-	if codeBuddyVariantForAccount(account).Name == codeBuddyCN.Name {
+	if variantForAccount(account).Name == codeBuddyCN.Name {
 		src = codeBuddyCNModels
 	}
-	out := make([]ModelInfo, 0, len(src))
+	out := make([]providers.ModelInfo, 0, len(src))
 	for _, m := range src {
 		inputTypes := []string{"text"}
 		if m.Image {
 			inputTypes = append(inputTypes, "image")
 		}
-		out = append(out, ModelInfo{
+		out = append(out, providers.ModelInfo{
 			ModelId:    m.ID,
 			ModelName:  m.ID,
 			InputTypes: inputTypes,
@@ -179,200 +176,24 @@ func codeBuddyModelsForAccount(account *config.Account) []ModelInfo {
 	return out
 }
 
-type codeBuddyChatRequest struct {
-	Model         string                 `json:"model"`
-	Messages      []OpenAIMessage        `json:"messages"`
-	MaxTokens     int                    `json:"max_tokens,omitempty"`
-	Temperature   float64                `json:"temperature,omitempty"`
-	TopP          float64                `json:"top_p,omitempty"`
-	Stream        bool                   `json:"stream"`
-	StreamOptions map[string]bool        `json:"stream_options,omitempty"`
-	Tools         []OpenAITool           `json:"tools,omitempty"`
-	Extra         map[string]interface{} `json:"-"`
+type ChatRequest struct {
+	Model         string                    `json:"model"`
+	Messages      []providers.OpenAIMessage `json:"messages"`
+	MaxTokens     int                       `json:"max_tokens,omitempty"`
+	Temperature   float64                   `json:"temperature,omitempty"`
+	TopP          float64                   `json:"top_p,omitempty"`
+	Stream        bool                      `json:"stream"`
+	StreamOptions map[string]bool           `json:"stream_options,omitempty"`
+	Tools         []providers.OpenAITool    `json:"tools,omitempty"`
+	Extra         map[string]interface{}    `json:"-"`
 }
 
-// ClaudeToCodeBuddy converts a Claude-format request to CodeBuddy's native
-// OpenAI-compatible /v2/chat/completions body. It intentionally reuses the
-// existing ClaudeToKiro normalizer so prompt/tool/image behavior stays identical
-// across Kiro and CodeBuddy until we split the shared normalization layer.
-func ClaudeToCodeBuddy(req *ClaudeRequest, thinking bool) codeBuddyChatRequest {
-	out := codeBuddyFromNormalizedPayload(ClaudeToKiro(req, thinking))
-	// CodeBuddy's CLI path is streaming-first. We always request upstream SSE and
-	// aggregate locally for non-stream downstream clients.
-	out.Stream = true
-	out.StreamOptions = map[string]bool{"include_usage": true}
-	return out
-}
-
-// OpenAIToCodeBuddy converts an OpenAI Chat Completions request to CodeBuddy's
-// native /v2/chat/completions body. Match enowx's CodeBuddy provider: OpenAI
-// chat requests stay OpenAI-on-the-wire instead of passing through Kiro's
-// payload shape first.
-func OpenAIToCodeBuddy(req *OpenAIRequest, thinking bool) codeBuddyChatRequest {
-	if req == nil {
-		return codeBuddyChatRequest{Model: "auto", Stream: false}
-	}
-	out := codeBuddyChatRequest{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		MaxTokens:   req.MaxTokens,
-		Temperature: req.Temperature,
-		TopP:        req.TopP,
-		// CodeBuddy Global accepts the same streaming shape used by the CLI/enowx
-		// common path. Non-stream client responses are aggregated by our handler.
-		Stream:        true,
-		StreamOptions: map[string]bool{"include_usage": true},
-		Tools:         req.Tools,
-	}
-	if len(out.Messages) == 0 {
-		out.Messages = []OpenAIMessage{{Role: "user", Content: minimalFallbackUserContent}}
-	}
-	out.Messages = ensureCodeBuddySystemMessage(out.Messages)
-	return out
-}
-
-func codeBuddyFromNormalizedPayload(payload *KiroPayload) codeBuddyChatRequest {
-	model := "auto"
-	if payload != nil {
-		if m := strings.TrimSpace(payload.ConversationState.CurrentMessage.UserInputMessage.ModelID); m != "" {
-			model = m
-		}
-	}
-
-	req := codeBuddyChatRequest{
-		Model:  model,
-		Stream: true,
-	}
-	if payload == nil {
-		return req
-	}
-	if payload.InferenceConfig != nil {
-		req.MaxTokens = payload.InferenceConfig.MaxTokens
-		req.Temperature = payload.InferenceConfig.Temperature
-		req.TopP = payload.InferenceConfig.TopP
-	}
-
-	for _, h := range payload.ConversationState.History {
-		appendKiroHistoryAsOpenAI(&req.Messages, h)
-	}
-	current := payload.ConversationState.CurrentMessage.UserInputMessage
-	appendKiroUserAsOpenAI(&req.Messages, current)
-	if current.UserInputMessageContext != nil {
-		req.Tools = convertKiroToolsToOpenAI(current.UserInputMessageContext.Tools)
-	}
-	if len(req.Messages) == 0 {
-		req.Messages = append(req.Messages, OpenAIMessage{Role: "user", Content: minimalFallbackUserContent})
-	}
-	req.Messages = ensureCodeBuddySystemMessage(req.Messages)
-	return req
-}
-
-func ensureCodeBuddySystemMessage(messages []OpenAIMessage) []OpenAIMessage {
-	for _, msg := range messages {
-		if strings.EqualFold(strings.TrimSpace(msg.Role), "system") {
-			return messages
-		}
-	}
-	out := make([]OpenAIMessage, 0, len(messages)+1)
-	out = append(out, OpenAIMessage{Role: "system", Content: "You are CodeBuddy, a helpful AI coding assistant."})
-	out = append(out, messages...)
-	return out
-}
-
-func appendKiroHistoryAsOpenAI(messages *[]OpenAIMessage, h KiroHistoryMessage) {
-	if h.UserInputMessage != nil {
-		appendKiroUserAsOpenAI(messages, *h.UserInputMessage)
-	}
-	if h.AssistantResponseMessage != nil {
-		msg := OpenAIMessage{Role: "assistant", Content: h.AssistantResponseMessage.Content}
-		for _, tu := range h.AssistantResponseMessage.ToolUses {
-			msg.ToolCalls = append(msg.ToolCalls, kiroToolUseToOpenAI(tu))
-		}
-		*messages = append(*messages, msg)
-	}
-}
-
-func appendKiroUserAsOpenAI(messages *[]OpenAIMessage, u KiroUserInputMessage) {
-	if u.UserInputMessageContext != nil {
-		for _, tr := range u.UserInputMessageContext.ToolResults {
-			*messages = append(*messages, OpenAIMessage{
-				Role:       "tool",
-				ToolCallID: tr.ToolUseID,
-				Content:    kiroToolResultText(tr),
-			})
-		}
-	}
-	content := strings.TrimSpace(u.Content)
-	if content == "" || strings.HasPrefix(content, toolResultsContinuationPrefix) {
-		return
-	}
-	*messages = append(*messages, OpenAIMessage{Role: "user", Content: codeBuddyContent(u.Content, u.Images)})
-}
-
-func codeBuddyContent(text string, images []KiroImage) interface{} {
-	if len(images) == 0 {
-		return text
-	}
-	parts := make([]map[string]interface{}, 0, len(images)+1)
-	if strings.TrimSpace(text) != "" {
-		parts = append(parts, map[string]interface{}{"type": "text", "text": text})
-	}
-	for _, img := range images {
-		format := strings.TrimSpace(img.Format)
-		if format == "" {
-			format = "png"
-		}
-		parts = append(parts, map[string]interface{}{
-			"type": "image_url",
-			"image_url": map[string]interface{}{
-				"url": "data:image/" + format + ";base64," + img.Source.Bytes,
-			},
-		})
-	}
-	return parts
-}
-
-func kiroToolResultText(tr KiroToolResult) string {
-	parts := make([]string, 0, len(tr.Content))
-	for _, c := range tr.Content {
-		if strings.TrimSpace(c.Text) != "" {
-			parts = append(parts, c.Text)
-		}
-	}
-	return strings.Join(parts, "\n")
-}
-
-func kiroToolUseToOpenAI(tu KiroToolUse) ToolCall {
-	args, _ := json.Marshal(tu.Input)
-	tc := ToolCall{ID: tu.ToolUseID, Type: "function"}
-	tc.Function.Name = tu.Name
-	tc.Function.Arguments = string(args)
-	return tc
-}
-
-func convertKiroToolsToOpenAI(tools []KiroToolWrapper) []OpenAITool {
-	out := make([]OpenAITool, 0, len(tools))
-	for _, kt := range tools {
-		var ot OpenAITool
-		ot.Type = "function"
-		ot.Function.Name = kt.ToolSpecification.Name
-		ot.Function.Description = kt.ToolSpecification.Description
-		ot.Function.Parameters = kt.ToolSpecification.InputSchema.JSON
-		out = append(out, ot)
-	}
-	return out
-}
-
-func callCodeBuddyChatAPI(account *config.Account, payload *KiroPayload, callback *KiroStreamCallback) error {
-	return callCodeBuddyChatRequestAPI(account, codeBuddyFromNormalizedPayload(payload), callback)
-}
-
-func callCodeBuddyChatRequestAPI(account *config.Account, chatReq codeBuddyChatRequest, callback *KiroStreamCallback) error {
+func Call(account *config.Account, chatReq ChatRequest, callback *providers.KiroStreamCallback) error {
 	token := codeBuddyToken(account)
 	if token == "" {
 		return fmt.Errorf("codebuddy: api key is required")
 	}
-	v := codeBuddyVariantForAccount(account)
+	v := variantForAccount(account)
 
 	resp, rawErr, err := doCodeBuddyChatRequest(account, v, token, chatReq)
 	if err != nil {
@@ -388,7 +209,7 @@ func callCodeBuddyChatRequestAPI(account *config.Account, chatReq codeBuddyChatR
 		if len(body) == 0 {
 			body, _ = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		}
-		return fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, v.Name, string(body))
+		return providers.Errorf(resp.StatusCode, "HTTP %d from %s: %s", resp.StatusCode, v.Name, string(body))
 	}
 
 	ct := strings.ToLower(resp.Header.Get("Content-Type"))
@@ -398,7 +219,7 @@ func callCodeBuddyChatRequestAPI(account *config.Account, chatReq codeBuddyChatR
 	return parseCodeBuddyJSON(resp.Body, callback)
 }
 
-func doCodeBuddyChatRequest(account *config.Account, v codeBuddyVariant, token string, chatReq codeBuddyChatRequest) (*http.Response, []byte, error) {
+func doCodeBuddyChatRequest(account *config.Account, v codeBuddyVariant, token string, chatReq ChatRequest) (*http.Response, []byte, error) {
 	reqBody, err := json.Marshal(chatReq)
 	if err != nil {
 		return nil, nil, err
@@ -414,7 +235,7 @@ func doCodeBuddyChatRequest(account *config.Account, v codeBuddyVariant, token s
 		req.Header.Set("X-Model-ID", strings.TrimSpace(chatReq.Model))
 	}
 
-	resp, err := GetClientForAccount(account).Do(req)
+	resp, err := providers.GetClientForAccount(account).Do(req)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -425,23 +246,15 @@ func doCodeBuddyChatRequest(account *config.Account, v codeBuddyVariant, token s
 	return resp, body, nil
 }
 
-func shouldRetryCodeBuddyAuto(status int, body []byte, model string) bool {
-	if status != http.StatusBadRequest || strings.EqualFold(strings.TrimSpace(model), "auto") {
-		return false
-	}
-	lower := strings.ToLower(string(body))
-	return strings.Contains(lower, "11101") || strings.Contains(lower, "invalid request") || strings.Contains(lower, "parse message failed")
-}
-
 type codeBuddyToolDeltaState struct {
 	ID        string
 	Name      string
 	Arguments strings.Builder
 }
 
-func parseCodeBuddySSE(body io.Reader, callback *KiroStreamCallback) error {
+func parseCodeBuddySSE(body io.Reader, callback *providers.KiroStreamCallback) error {
 	if callback == nil {
-		callback = &KiroStreamCallback{}
+		callback = &providers.KiroStreamCallback{}
 	}
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
@@ -465,10 +278,10 @@ func parseCodeBuddySSE(body io.Reader, callback *KiroStreamCallback) error {
 			continue
 		}
 		if usage, ok := evt["usage"].(map[string]interface{}); ok {
-			if v, ok := readTokenNumber(usage, "prompt_tokens", "promptTokens", "input_tokens", "inputTokens"); ok {
+			if v, ok := providers.ReadTokenNumber(usage, "prompt_tokens", "promptTokens", "input_tokens", "inputTokens"); ok {
 				inputTokens = v
 			}
-			if v, ok := readTokenNumber(usage, "completion_tokens", "completionTokens", "output_tokens", "outputTokens"); ok {
+			if v, ok := providers.ReadTokenNumber(usage, "completion_tokens", "completionTokens", "output_tokens", "outputTokens"); ok {
 				outputTokens = v
 			}
 		}
@@ -493,7 +306,7 @@ func parseCodeBuddySSE(body io.Reader, callback *KiroStreamCallback) error {
 	return nil
 }
 
-func dispatchCodeBuddyDelta(delta map[string]interface{}, toolStates map[int]*codeBuddyToolDeltaState, callback *KiroStreamCallback) {
+func dispatchCodeBuddyDelta(delta map[string]interface{}, toolStates map[int]*codeBuddyToolDeltaState, callback *providers.KiroStreamCallback) {
 	if text, ok := delta["content"].(string); ok && text != "" && callback.OnText != nil {
 		callback.OnText(text, false)
 	}
@@ -531,7 +344,7 @@ func dispatchCodeBuddyDelta(delta map[string]interface{}, toolStates map[int]*co
 	}
 }
 
-func flushCodeBuddyTools(toolStates map[int]*codeBuddyToolDeltaState, callback *KiroStreamCallback) {
+func flushCodeBuddyTools(toolStates map[int]*codeBuddyToolDeltaState, callback *providers.KiroStreamCallback) {
 	if callback == nil || callback.OnToolUse == nil {
 		return
 	}
@@ -550,20 +363,20 @@ func flushCodeBuddyTools(toolStates map[int]*codeBuddyToolDeltaState, callback *
 		if input == nil {
 			input = map[string]interface{}{}
 		}
-		callback.OnToolUse(KiroToolUse{ToolUseID: id, Name: st.Name, Input: input})
+		callback.OnToolUse(providers.KiroToolUse{ToolUseID: id, Name: st.Name, Input: input})
 	}
 }
 
-func parseCodeBuddyJSON(body io.Reader, callback *KiroStreamCallback) error {
+func parseCodeBuddyJSON(body io.Reader, callback *providers.KiroStreamCallback) error {
 	if callback == nil {
-		callback = &KiroStreamCallback{}
+		callback = &providers.KiroStreamCallback{}
 	}
 	var out struct {
 		Choices []struct {
 			Message struct {
-				Content          string     `json:"content"`
-				ReasoningContent string     `json:"reasoning_content"`
-				ToolCalls        []ToolCall `json:"tool_calls"`
+				Content          string               `json:"content"`
+				ReasoningContent string               `json:"reasoning_content"`
+				ToolCalls        []providers.ToolCall `json:"tool_calls"`
 			} `json:"message"`
 		} `json:"choices"`
 		Usage map[string]interface{} `json:"usage"`
@@ -585,13 +398,13 @@ func parseCodeBuddyJSON(body io.Reader, callback *KiroStreamCallback) error {
 				if input == nil {
 					input = map[string]interface{}{}
 				}
-				callback.OnToolUse(KiroToolUse{ToolUseID: tc.ID, Name: tc.Function.Name, Input: input})
+				callback.OnToolUse(providers.KiroToolUse{ToolUseID: tc.ID, Name: tc.Function.Name, Input: input})
 			}
 		}
 	}
 	if callback.OnComplete != nil {
-		inTok, _ := readTokenNumber(out.Usage, "prompt_tokens", "promptTokens", "input_tokens", "inputTokens")
-		outTok, _ := readTokenNumber(out.Usage, "completion_tokens", "completionTokens", "output_tokens", "outputTokens")
+		inTok, _ := providers.ReadTokenNumber(out.Usage, "prompt_tokens", "promptTokens", "input_tokens", "inputTokens")
+		outTok, _ := providers.ReadTokenNumber(out.Usage, "completion_tokens", "completionTokens", "output_tokens", "outputTokens")
 		callback.OnComplete(inTok, outTok)
 	}
 	return nil
@@ -599,9 +412,9 @@ func parseCodeBuddyJSON(body io.Reader, callback *KiroStreamCallback) error {
 
 const codeBuddyCNMainSubProduct = "sp_tcaca_codebuddy_ide"
 
-func FetchCodeBuddyUsage(account *config.Account) (*config.AccountInfo, error) {
+func FetchUsage(account *config.Account) (*config.AccountInfo, error) {
 	info := &config.AccountInfo{LastRefresh: time.Now().Unix()}
-	if codeBuddyVariantForAccount(account).Name != codeBuddyCN.Name {
+	if variantForAccount(account).Name != codeBuddyCN.Name {
 		info.SubscriptionType = "CODEBUDDY"
 		info.SubscriptionTitle = "CodeBuddy Global"
 		return info, nil
@@ -626,7 +439,7 @@ func fetchCodeBuddyCNCredits(account *config.Account) (limit, used, remain float
 	if token == "" {
 		return 0, 0, 0, fmt.Errorf("codebuddy-cn: api key is required")
 	}
-	v := codeBuddyVariantForAccount(account)
+	v := variantForAccount(account)
 	now := time.Now()
 	body, _ := json.Marshal(map[string]interface{}{
 		"PageNumber":               1,
@@ -645,7 +458,7 @@ func fetchCodeBuddyCNCredits(account *config.Account) (limit, used, remain float
 	req.Header.Set("X-Domain", v.Domain)
 	req.Header.Set("User-Agent", "CLI/2.106.3 CodeBuddy/2.106.3")
 
-	resp, err := GetRestClientForAccount(account).Do(req)
+	resp, err := providers.GetRestClientForAccount(account).Do(req)
 	if err != nil {
 		return 0, 0, 0, err
 	}

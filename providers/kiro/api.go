@@ -1,6 +1,8 @@
-// Package proxy is the core proxy layer for the Kiro API.
-// It handles streaming API calls to the Kiro backend and parses AWS Event Stream responses.
-package proxy
+// Package kiro implements the Kiro (AWS CodeWhisperer / Amazon Q) upstream:
+// streaming chat over the AWS Event Stream protocol, REST APIs (usage, models,
+// profiles), request headers, the Overages switch, and the Kiro auth/import
+// admin endpoints.
+package kiro
 
 import (
 	"bytes"
@@ -8,29 +10,24 @@ import (
 	"fmt"
 	"io"
 	"kiro-go/config"
-	"kiro-go/egress"
 	"kiro-go/logger"
+	"kiro-go/providers"
 	"net/http"
 	"net/url"
-	"regexp"
-	"strconv"
 	"strings"
-	"sync"
-	"sync/atomic"
-	"time"
 
 	"github.com/google/uuid"
 )
 
 // Endpoint configuration (auto-fallback on quota exhaustion).
-type kiroEndpoint struct {
+type Endpoint struct {
 	URL       string
 	Origin    string
 	AmzTarget string
 	Name      string
 }
 
-var kiroEndpoints = []kiroEndpoint{
+var Endpoints = []Endpoint{
 	{
 		URL:       "https://q.us-east-1.amazonaws.com/generateAssistantResponse",
 		Origin:    "AI_EDITOR",
@@ -51,187 +48,9 @@ var kiroEndpoints = []kiroEndpoint{
 	},
 }
 
-// Global HTTP clients, swappable at runtime to apply proxy reconfiguration without restart.
-var kiroHttpStore atomic.Pointer[http.Client]
-var kiroRestHttpStore atomic.Pointer[http.Client]
-
-// proxyClientCache caches http.Client instances keyed by proxy URL for per-account proxy support.
-var proxyClientCache sync.Map
-
-func init() {
-	InitKiroHttpClient("")
-}
-
-func clientForAccount(account *config.Account, rest bool) *http.Client {
-	if account == nil || (account.ProxyURL == "" && account.RelayURL == "") {
-		if rest {
-			return kiroRestHttpStore.Load()
-		}
-		return kiroHttpStore.Load()
-	}
-	key := fmt.Sprintf("%t\x00%s\x00%s\x00%s", rest, account.ProxyURL, account.RelayURL, account.RelaySecret)
-	if cached, ok := proxyClientCache.Load(key); ok {
-		return cached.(*http.Client)
-	}
-	transport := http.RoundTripper(buildKiroTransport(account.ProxyURL))
-	if account.RelayURL != "" {
-		transport = egress.NewRelayTransportWith(transport, account.RelayURL, account.RelaySecret)
-	}
-	timeout := 5 * time.Minute
-	if rest {
-		timeout = 30 * time.Second
-	}
-	client := &http.Client{Timeout: timeout, Transport: transport}
-	proxyClientCache.Store(key, client)
-	return client
-}
-
-func GetClientForAccount(account *config.Account) *http.Client {
-	return clientForAccount(account, false)
-}
-func GetRestClientForAccount(account *config.Account) *http.Client {
-	return clientForAccount(account, true)
-}
-
-// buildKiroTransport constructs an HTTP Transport with optional outbound proxy support.
-func buildKiroTransport(proxyURL string) *http.Transport {
-	t := &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 20,
-		IdleConnTimeout:     90 * time.Second,
-		DisableCompression:  false,
-		ForceAttemptHTTP2:   true,
-	}
-	if proxyURL != "" {
-		if u, err := url.Parse(proxyURL); err == nil {
-			t.Proxy = http.ProxyURL(u)
-			// Proxied connections cannot negotiate HTTP/2.
-			t.ForceAttemptHTTP2 = false
-		}
-	} else {
-		t.Proxy = http.ProxyFromEnvironment
-	}
-	return t
-}
-
-// InitKiroHttpClient initializes (or reinitializes) the HTTP clients used for Kiro API requests.
-func InitKiroHttpClient(proxyURL string) {
-	client := &http.Client{
-		Timeout:   5 * time.Minute,
-		Transport: egress.NewRelayTransport(buildKiroTransport(proxyURL)),
-	}
-	kiroHttpStore.Store(client)
-
-	restClient := &http.Client{
-		Timeout:   30 * time.Second,
-		Transport: egress.NewRelayTransport(buildKiroTransport(proxyURL)),
-	}
-	kiroRestHttpStore.Store(restClient)
-}
-
-// ==================== Request Structs ====================
-
-// KiroPayload is the top-level request body sent to the Kiro API.
-type KiroPayload struct {
-	ConversationState struct {
-		AgentContinuationId string `json:"agentContinuationId,omitempty"`
-		AgentTaskType       string `json:"agentTaskType,omitempty"`
-		ChatTriggerType     string `json:"chatTriggerType"`
-		ConversationID      string `json:"conversationId"`
-		CurrentMessage      struct {
-			UserInputMessage KiroUserInputMessage `json:"userInputMessage"`
-		} `json:"currentMessage"`
-		History []KiroHistoryMessage `json:"history,omitempty"`
-	} `json:"conversationState"`
-	ProfileArn      string           `json:"profileArn,omitempty"`
-	InferenceConfig *InferenceConfig `json:"inferenceConfig,omitempty"`
-
-	// ToolNameMap maps sanitized tool names (sent to Kiro) back to the
-	// original names supplied by the client. Used to restore original names
-	// in tool_use responses so the client can match them to its tool registry.
-	// Not serialized to the Kiro API request body.
-	ToolNameMap map[string]string `json:"-"`
-}
-
-type KiroUserInputMessage struct {
-	Content                 string                   `json:"content"`
-	ModelID                 string                   `json:"modelId,omitempty"`
-	Origin                  string                   `json:"origin"`
-	Images                  []KiroImage              `json:"images,omitempty"`
-	UserInputMessageContext *UserInputMessageContext `json:"userInputMessageContext,omitempty"`
-}
-
-type UserInputMessageContext struct {
-	Tools       []KiroToolWrapper `json:"tools,omitempty"`
-	ToolResults []KiroToolResult  `json:"toolResults,omitempty"`
-}
-
-type KiroToolWrapper struct {
-	ToolSpecification struct {
-		Name        string      `json:"name"`
-		Description string      `json:"description"`
-		InputSchema InputSchema `json:"inputSchema"`
-	} `json:"toolSpecification"`
-}
-
-type InputSchema struct {
-	JSON interface{} `json:"json"`
-}
-
-type KiroToolResult struct {
-	ToolUseID string              `json:"toolUseId"`
-	Content   []KiroResultContent `json:"content"`
-	Status    string              `json:"status"`
-}
-
-type KiroResultContent struct {
-	Text string `json:"text"`
-}
-
-type KiroImage struct {
-	Format string `json:"format"`
-	Source struct {
-		Bytes string `json:"bytes"`
-	} `json:"source"`
-}
-
-type KiroHistoryMessage struct {
-	UserInputMessage         *KiroUserInputMessage         `json:"userInputMessage,omitempty"`
-	AssistantResponseMessage *KiroAssistantResponseMessage `json:"assistantResponseMessage,omitempty"`
-}
-
-type KiroAssistantResponseMessage struct {
-	Content  string        `json:"content"`
-	ToolUses []KiroToolUse `json:"toolUses,omitempty"`
-}
-
-type KiroToolUse struct {
-	ToolUseID string                 `json:"toolUseId"`
-	Name      string                 `json:"name"`
-	Input     map[string]interface{} `json:"input"`
-}
-
-type InferenceConfig struct {
-	MaxTokens   int     `json:"maxTokens,omitempty"`
-	Temperature float64 `json:"temperature,omitempty"`
-	TopP        float64 `json:"topP,omitempty"`
-}
-
-// ==================== Stream Callbacks ====================
-
-// KiroStreamCallback stream response callbacks
-type KiroStreamCallback struct {
-	OnText         func(text string, isThinking bool)
-	OnToolUse      func(toolUse KiroToolUse)
-	OnComplete     func(inputTokens, outputTokens int)
-	OnError        func(err error)
-	OnCredits      func(credits float64)
-	OnContextUsage func(percentage float64)
-}
-
 // ==================== API Call ====================
 
-func setPayloadProfileArnForAccount(payload *KiroPayload, account *config.Account) {
+func setPayloadProfileArnForAccount(payload *providers.KiroPayload, account *config.Account) {
 	if payload == nil {
 		return
 	}
@@ -245,7 +64,7 @@ func setPayloadProfileArnForAccount(payload *KiroPayload, account *config.Accoun
 }
 
 // getSortedEndpoints returns endpoints ordered by user preference, with optional fallback.
-func getSortedEndpoints(preferred string) []kiroEndpoint {
+func getSortedEndpoints(preferred string) []Endpoint {
 	fallback := config.GetEndpointFallback()
 
 	var primary int
@@ -258,17 +77,17 @@ func getSortedEndpoints(preferred string) []kiroEndpoint {
 		primary = 2
 	default:
 		// "auto": Kiro first, then fallback to others
-		return []kiroEndpoint{kiroEndpoints[0], kiroEndpoints[1], kiroEndpoints[2]}
+		return []Endpoint{Endpoints[0], Endpoints[1], Endpoints[2]}
 	}
 
 	if !fallback {
 		// No fallback: only use the selected endpoint
-		return []kiroEndpoint{kiroEndpoints[primary]}
+		return []Endpoint{Endpoints[primary]}
 	}
 
 	// With fallback: selected first, then others in order
-	result := []kiroEndpoint{kiroEndpoints[primary]}
-	for i, ep := range kiroEndpoints {
+	result := []Endpoint{Endpoints[primary]}
+	for i, ep := range Endpoints {
 		if i != primary {
 			result = append(result, ep)
 		}
@@ -277,7 +96,7 @@ func getSortedEndpoints(preferred string) []kiroEndpoint {
 }
 
 // CallKiroAPI calls the Kiro streaming API, trying each configured endpoint with automatic fallback.
-func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroStreamCallback) error {
+func CallAPI(account *config.Account, payload *providers.KiroPayload, callback *providers.KiroStreamCallback) error {
 	originalProfileArn := ""
 	if payload != nil {
 		originalProfileArn = payload.ProfileArn
@@ -301,7 +120,7 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 		originalOnToolUse := callback.OnToolUse
 		nameMap := payload.ToolNameMap
 		wrapped := *callback
-		wrapped.OnToolUse = func(tu KiroToolUse) {
+		wrapped.OnToolUse = func(tu providers.KiroToolUse) {
 			if original, ok := nameMap[tu.Name]; ok {
 				tu.Name = original
 			}
@@ -355,7 +174,7 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 		req.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
 		req.Header.Set("Amz-Sdk-Invocation-Id", uuid.New().String())
 
-		resp, err := GetClientForAccount(account).Do(req)
+		resp, err := providers.GetClientForAccount(account).Do(req)
 		if err != nil {
 			lastErr = err
 			logger.Warnf("[KiroAPI] Endpoint %s failed: %v", ep.Name, err)
@@ -365,14 +184,14 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 		if resp.StatusCode == 429 {
 			resp.Body.Close()
 			logger.Warnf("[KiroAPI] Endpoint %s quota exhausted (429), trying next...", ep.Name)
-			lastErr = fmt.Errorf("quota exhausted on %s", ep.Name)
+			lastErr = providers.Errorf(429, "quota exhausted on %s", ep.Name)
 			continue
 		}
 
 		if resp.StatusCode != 200 {
 			errBody, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			lastErr = fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, ep.Name, string(errBody))
+			lastErr = providers.Errorf(resp.StatusCode, "HTTP %d from %s: %s", resp.StatusCode, ep.Name, string(errBody))
 			// Authentication errors and payment errors are not retried across endpoints.
 			if resp.StatusCode == 401 || resp.StatusCode == 403 || resp.StatusCode == 402 {
 				return lastErr
@@ -391,7 +210,6 @@ func CallKiroAPI(account *config.Account, payload *KiroPayload, callback *KiroSt
 	}
 	return fmt.Errorf("all endpoints failed")
 }
-
 func accountEmailForLog(account *config.Account) string {
 	if account == nil {
 		return "<nil>"
@@ -402,9 +220,9 @@ func accountEmailForLog(account *config.Account) string {
 // ==================== Event Stream Parsing ====================
 
 // parseEventStream decodes an AWS binary Event Stream response body.
-func parseEventStream(body io.Reader, callback *KiroStreamCallback) error {
+func parseEventStream(body io.Reader, callback *providers.KiroStreamCallback) error {
 	if callback == nil {
-		callback = &KiroStreamCallback{}
+		callback = &providers.KiroStreamCallback{}
 	}
 
 	// Read directly without bufio to avoid buffering latency in streaming responses.
@@ -514,14 +332,14 @@ func updateTokensFromEvent(event map[string]interface{}, currentInputTokens, cur
 			continue
 		}
 
-		if v, ok := readTokenNumber(usage,
+		if v, ok := providers.ReadTokenNumber(usage,
 			"outputTokens", "completionTokens", "totalOutputTokens",
 			"output_tokens", "completion_tokens", "total_output_tokens",
 		); ok {
 			outputTokens = v
 		}
 
-		if v, ok := readTokenNumber(usage,
+		if v, ok := providers.ReadTokenNumber(usage,
 			"inputTokens", "promptTokens", "totalInputTokens",
 			"input_tokens", "prompt_tokens", "total_input_tokens",
 		); ok {
@@ -529,18 +347,18 @@ func updateTokensFromEvent(event map[string]interface{}, currentInputTokens, cur
 			continue
 		}
 
-		uncached, _ := readTokenNumber(usage, "uncachedInputTokens", "uncached_input_tokens")
-		cacheRead, _ := readTokenNumber(usage, "cacheReadInputTokens", "cache_read_input_tokens")
-		cacheWrite, _ := readTokenNumber(usage, "cacheWriteInputTokens", "cache_write_input_tokens", "cacheCreationInputTokens", "cache_creation_input_tokens")
+		uncached, _ := providers.ReadTokenNumber(usage, "uncachedInputTokens", "uncached_input_tokens")
+		cacheRead, _ := providers.ReadTokenNumber(usage, "cacheReadInputTokens", "cache_read_input_tokens")
+		cacheWrite, _ := providers.ReadTokenNumber(usage, "cacheWriteInputTokens", "cache_write_input_tokens", "cacheCreationInputTokens", "cache_creation_input_tokens")
 		if uncached+cacheRead+cacheWrite > 0 {
 			inputTokens = uncached + cacheRead + cacheWrite
 			continue
 		}
 
-		total, ok := readTokenNumber(usage, "totalTokens", "total_tokens")
+		total, ok := providers.ReadTokenNumber(usage, "totalTokens", "total_tokens")
 		if ok && total > 0 {
 			candidateOutput := outputTokens
-			if v, vok := readTokenNumber(usage,
+			if v, vok := providers.ReadTokenNumber(usage,
 				"outputTokens", "completionTokens", "totalOutputTokens",
 				"output_tokens", "completion_tokens", "total_output_tokens",
 			); vok {
@@ -554,52 +372,6 @@ func updateTokensFromEvent(event map[string]interface{}, currentInputTokens, cur
 
 	return inputTokens, outputTokens
 }
-
-// getContextWindowSize returns the context window size (in tokens) for a model.
-//
-// Per Kiro's ListAvailableModels, the 1M-token context window applies to
-// Claude 4.6 and newer (sonnet-4.6, opus-4.6, opus-4.7, opus-4.8, and future
-// 4.x releases), while 4.5 and earlier (opus-4.5, sonnet-4.5, sonnet-4,
-// haiku-4.5) use a 200K window. This value is used to convert the upstream
-// contextUsagePercentage into an absolute input-token count that clients rely
-// on to decide when to compact; an undersized window under-reports tokens and
-// prevents clients from compacting in time.
-func getContextWindowSize(model string) int {
-	if isLargeContextModel(model) {
-		return 1_000_000
-	}
-	return 200_000
-}
-
-// largeContextMinor matches "claude-<family>-<major>.<minor>" (dot or dash form)
-// and is used to classify 1M-window models by version.
-var claudeVersionExtractor = regexp.MustCompile(`claude-(?:opus|sonnet|haiku)-(\d+)[.-](\d+)`)
-
-func isLargeContextModel(model string) bool {
-	m := strings.ToLower(model)
-	if match := claudeVersionExtractor.FindStringSubmatch(m); match != nil {
-		major, errMaj := strconv.Atoi(match[1])
-		minor, errMin := strconv.Atoi(match[2])
-		if errMaj == nil && errMin == nil {
-			// 1M window for Claude >= 4.6 (4.6, 4.7, 4.8, ...) and any major >= 5.
-			if major > 4 {
-				return true
-			}
-			if major == 4 && minor >= 6 {
-				return true
-			}
-			return false
-		}
-	}
-	// Fallback substring checks for non-standard identifiers.
-	for _, tag := range []string{"4.6", "4-6", "4.7", "4-7", "4.8", "4-8", "4.9", "4-9"} {
-		if strings.Contains(m, tag) {
-			return true
-		}
-	}
-	return false
-}
-
 func collectUsageMaps(v interface{}, out *[]map[string]interface{}) {
 	switch t := v.(type) {
 	case map[string]interface{}:
@@ -618,7 +390,6 @@ func collectUsageMaps(v interface{}, out *[]map[string]interface{}) {
 		}
 	}
 }
-
 func normalizeChunk(chunk string, previous *string) string {
 	if chunk == "" {
 		return ""
@@ -664,35 +435,6 @@ func normalizeChunk(chunk string, previous *string) string {
 	return chunk
 }
 
-func readTokenNumber(m map[string]interface{}, keys ...string) (int, bool) {
-	for _, k := range keys {
-		v, ok := m[k]
-		if !ok {
-			continue
-		}
-		switch n := v.(type) {
-		case float64:
-			return int(n), true
-		case int:
-			return n, true
-		case int64:
-			return int(n), true
-		case json.Number:
-			if parsed, err := n.Int64(); err == nil {
-				return int(parsed), true
-			}
-		case string:
-			if parsed, err := strconv.Atoi(n); err == nil {
-				return parsed, true
-			}
-			if parsed, err := strconv.ParseFloat(n, 64); err == nil {
-				return int(parsed), true
-			}
-		}
-	}
-	return 0, false
-}
-
 // ==================== Tool Use Handling ====================
 
 type toolUseState struct {
@@ -702,7 +444,7 @@ type toolUseState struct {
 	GeneratedID bool
 }
 
-func handleToolUseEvent(event map[string]interface{}, current *toolUseState, callback *KiroStreamCallback) *toolUseState {
+func handleToolUseEvent(event map[string]interface{}, current *toolUseState, callback *providers.KiroStreamCallback) *toolUseState {
 	toolUseID := firstStringField(event, "toolUseId", "toolUseID", "tool_use_id", "id")
 	name := firstStringField(event, "name", "toolName", "tool_name")
 	isStop := firstBoolField(event, "stop", "isStop", "done")
@@ -744,7 +486,7 @@ func handleToolUseEvent(event map[string]interface{}, current *toolUseState, cal
 	return current
 }
 
-func finishToolUse(state *toolUseState, callback *KiroStreamCallback) {
+func finishToolUse(state *toolUseState, callback *providers.KiroStreamCallback) {
 	if state == nil || state.Name == "" || callback == nil || callback.OnToolUse == nil {
 		return
 	}
@@ -758,7 +500,7 @@ func finishToolUse(state *toolUseState, callback *KiroStreamCallback) {
 	if input == nil {
 		input = make(map[string]interface{})
 	}
-	callback.OnToolUse(KiroToolUse{
+	callback.OnToolUse(providers.KiroToolUse{
 		ToolUseID: state.ToolUseID,
 		Name:      state.Name,
 		Input:     input,
