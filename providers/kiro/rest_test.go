@@ -1,9 +1,10 @@
-package proxy
+package kiro
 
 import (
 	"io"
 	"kiro-go/auth"
 	"kiro-go/config"
+	"kiro-go/providers"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -13,13 +14,13 @@ import (
 )
 
 func TestResolveProfileArnReturnsCachedValueWithoutRequest(t *testing.T) {
-	kiroRestHttpStore.Store(&http.Client{
+	providers.SwapClientsForTest(nil, &http.Client{
 		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 			t.Fatal("unexpected HTTP request for cached profile ARN")
 			return nil, nil
 		}),
 	})
-	t.Cleanup(func() { InitKiroHttpClient("") })
+	t.Cleanup(func() { providers.InitKiroHttpClient("") })
 
 	account := &config.Account{ProfileArn: " arn:aws:codewhisperer:profile/test "}
 	got, err := ResolveProfileArn(account)
@@ -73,7 +74,7 @@ func TestResolveProfileArnFetchesAndCachesProfile(t *testing.T) {
 		t.Fatalf("add account: %v", err)
 	}
 
-	kiroRestHttpStore.Store(&http.Client{
+	providers.SwapClientsForTest(nil, &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			if req.Method != http.MethodPost {
 				t.Fatalf("expected POST, got %s", req.Method)
@@ -91,7 +92,7 @@ func TestResolveProfileArnFetchesAndCachesProfile(t *testing.T) {
 			}, nil
 		}),
 	})
-	t.Cleanup(func() { InitKiroHttpClient("") })
+	t.Cleanup(func() { providers.InitKiroHttpClient("") })
 
 	requestAccount := account
 	requestAccount.UsageCurrent = 0
@@ -123,7 +124,7 @@ func TestResolveProfileArnSuppressesBuilderIDUnsupportedLookup(t *testing.T) {
 	t.Cleanup(clearProfileArnResolutionCooldowns)
 
 	var calls int32
-	kiroRestHttpStore.Store(&http.Client{
+	providers.SwapClientsForTest(nil, &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			atomic.AddInt32(&calls, 1)
 			if req.URL.Path != "/ListAvailableProfiles" {
@@ -136,7 +137,7 @@ func TestResolveProfileArnSuppressesBuilderIDUnsupportedLookup(t *testing.T) {
 			}, nil
 		}),
 	})
-	t.Cleanup(func() { InitKiroHttpClient("") })
+	t.Cleanup(func() { providers.InitKiroHttpClient("") })
 
 	account := &config.Account{
 		ID:          "builder-1",
@@ -167,7 +168,7 @@ func TestResolveProfileArnKeepsRefreshFallbackForBuilderIDUnsupportedLookup(t *t
 	clearProfileArnResolutionCooldowns()
 	t.Cleanup(clearProfileArnResolutionCooldowns)
 
-	kiroRestHttpStore.Store(&http.Client{
+	providers.SwapClientsForTest(nil, &http.Client{
 		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 			return &http.Response{
 				StatusCode: http.StatusForbidden,
@@ -176,7 +177,7 @@ func TestResolveProfileArnKeepsRefreshFallbackForBuilderIDUnsupportedLookup(t *t
 			}, nil
 		}),
 	})
-	t.Cleanup(func() { InitKiroHttpClient("") })
+	t.Cleanup(func() { providers.InitKiroHttpClient("") })
 
 	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -235,7 +236,7 @@ func TestRefreshAccountInfoDoesNotDisableBuilderIDWhenProfileLookupUnsupported(t
 	}
 
 	var profileCalls, usageCalls int32
-	kiroRestHttpStore.Store(&http.Client{
+	providers.SwapClientsForTest(nil, &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			switch req.URL.Path {
 			case "/ListAvailableProfiles":
@@ -261,7 +262,7 @@ func TestRefreshAccountInfoDoesNotDisableBuilderIDWhenProfileLookupUnsupported(t
 			}
 		}),
 	})
-	t.Cleanup(func() { InitKiroHttpClient("") })
+	t.Cleanup(func() { providers.InitKiroHttpClient("") })
 
 	requestAccount := account
 	if _, err := RefreshAccountInfo(&requestAccount); err != nil {

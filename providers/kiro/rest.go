@@ -1,4 +1,4 @@
-package proxy
+package kiro
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"kiro-go/auth"
 	"kiro-go/config"
 	"kiro-go/logger"
+	"kiro-go/providers"
 	"net/http"
 	neturl "net/url"
 	"os"
@@ -169,7 +170,7 @@ func GetUsageLimits(account *config.Account) (*UsageLimitsResponse, error) {
 
 	setKiroHeaders(req, account)
 
-	resp, err := GetRestClientForAccount(account).Do(req)
+	resp, err := providers.GetRestClientForAccount(account).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -177,7 +178,7 @@ func GetUsageLimits(account *config.Account) (*UsageLimitsResponse, error) {
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, providers.Errorf(resp.StatusCode, "HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
 	var result UsageLimitsResponse
@@ -200,7 +201,7 @@ func GetUserInfo(account *config.Account) (*UserInfoResponse, error) {
 	setKiroHeaders(req, account)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := GetRestClientForAccount(account).Do(req)
+	resp, err := providers.GetRestClientForAccount(account).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +209,7 @@ func GetUserInfo(account *config.Account) (*UserInfoResponse, error) {
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, providers.Errorf(resp.StatusCode, "HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
 	var result UserInfoResponse
@@ -217,20 +218,7 @@ func GetUserInfo(account *config.Account) (*UserInfoResponse, error) {
 	}
 	return &result, nil
 }
-
-// ListAvailableModels dispatches through the registered provider adapter.
-func ListAvailableModels(account *config.Account) ([]ModelInfo, error) {
-	adapter, err := adapterForAccount(account)
-	if err != nil {
-		return nil, err
-	}
-	if adapter.models == nil {
-		return nil, unsupportedProviderCapability(adapter.kind, "model discovery")
-	}
-	return adapter.models(account)
-}
-
-func listKiroModels(account *config.Account) ([]ModelInfo, error) {
+func ListModels(account *config.Account) ([]providers.ModelInfo, error) {
 	if err := ensureRestProfileArn(account); err != nil {
 		return nil, fmt.Errorf("resolve profileArn: %w", err)
 	}
@@ -246,7 +234,7 @@ func listKiroModels(account *config.Account) ([]ModelInfo, error) {
 
 	setKiroHeaders(req, account)
 
-	resp, err := GetRestClientForAccount(account).Do(req)
+	resp, err := providers.GetRestClientForAccount(account).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -254,11 +242,11 @@ func listKiroModels(account *config.Account) ([]ModelInfo, error) {
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, providers.Errorf(resp.StatusCode, "HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
 	var result struct {
-		Models []ModelInfo `json:"models"`
+		Models []providers.ModelInfo `json:"models"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, err
@@ -499,7 +487,7 @@ func listAvailableProfilesInRegion(ctx context.Context, account *config.Account,
 	setKiroHeaders(req, account)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := GetRestClientForAccount(account).Do(req)
+	resp, err := providers.GetRestClientForAccount(account).Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -507,7 +495,7 @@ func listAvailableProfilesInRegion(ctx context.Context, account *config.Account,
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+		return "", providers.Errorf(resp.StatusCode, "HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
 	var result struct {
@@ -547,20 +535,7 @@ func setKiroHeaders(req *http.Request, account *config.Account) {
 	req.Header.Set("Accept", "application/json")
 	applyKiroBaseHeaders(req, account, headerValues)
 }
-
-// RefreshAccountInfo dispatches through the registered provider adapter.
 func RefreshAccountInfo(account *config.Account) (*config.AccountInfo, error) {
-	adapter, err := adapterForAccount(account)
-	if err != nil {
-		return nil, err
-	}
-	if adapter.usage == nil {
-		return nil, unsupportedProviderCapability(adapter.kind, "usage refresh")
-	}
-	return adapter.usage(account)
-}
-
-func refreshKiroAccountInfo(account *config.Account) (*config.AccountInfo, error) {
 	info := &config.AccountInfo{
 		LastRefresh: time.Now().Unix(),
 	}
@@ -762,16 +737,4 @@ type UserInfoResponse struct {
 	UserId string `json:"userId"`
 	Idp    string `json:"idp"`
 	Status string `json:"status"`
-}
-
-type ModelInfo struct {
-	ModelId        string   `json:"modelId"`
-	ModelName      string   `json:"modelName"`
-	Description    string   `json:"description"`
-	InputTypes     []string `json:"supportedInputTypes"`
-	RateMultiplier float64  `json:"rateMultiplier"`
-	TokenLimits    *struct {
-		MaxInputTokens  int `json:"maxInputTokens"`
-		MaxOutputTokens int `json:"maxOutputTokens"`
-	} `json:"tokenLimits"`
 }

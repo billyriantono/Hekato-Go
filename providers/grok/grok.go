@@ -1,4 +1,7 @@
-package proxy
+// Package grok implements the Grok (xAI) upstream. Grok CLI speaks the OpenAI
+// Responses API natively at cli-chat-proxy.grok.com, so requests are forwarded
+// verbatim and the SSE stream (or JSON object) passes straight back.
+package grok
 
 import (
 	"bufio"
@@ -7,13 +10,14 @@ import (
 	"fmt"
 	"io"
 	"kiro-go/config"
+	"kiro-go/providers"
 	"net/http"
 	"strings"
 	"time"
 )
 
 // Grok (xAI) upstream. Grok CLI speaks the OpenAI Responses API natively at
-// cli-chat-proxy.grok.com, so we forward the ResponsesRequest verbatim and
+// cli-chat-proxy.grok.com, so we forward the providers.ResponsesRequest verbatim and
 // pass the SSE stream (or JSON object) straight back to the client.
 const (
 	grokBaseURL          = "https://cli-chat-proxy.grok.com/v1/responses"
@@ -27,18 +31,14 @@ const (
 
 // Test seams for provider-dispatch regression checks.
 var (
-	grokResponsesEndpoint = grokBaseURL
-	grokBillingEndpoint   = grokBillingURL
-	grokUserEndpoint      = grokUserURL
+	ResponsesEndpoint = grokBaseURL
+	BillingEndpoint   = grokBillingURL
+	UserEndpoint      = grokUserURL
 )
 
-func isGrokAccount(account *config.Account) bool {
-	return mustBeProvider(account, providerGrok)
-}
-
 // grokModels returns the static model list for Grok accounts.
-func grokModels() []ModelInfo {
-	return []ModelInfo{
+func staticModels() []providers.ModelInfo {
+	return []providers.ModelInfo{
 		{ModelId: "grok-4.5"},
 		{ModelId: "grok-4.5-high"},
 		{ModelId: "grok-4.5-medium"},
@@ -46,24 +46,24 @@ func grokModels() []ModelInfo {
 	}
 }
 
-func doGrokRequest(account *config.Account, req *ResponsesRequest) (*http.Response, error) {
+func doGrokRequest(account *config.Account, req *providers.ResponsesRequest) (*http.Response, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal grok request: %w", err)
 	}
-	httpReq, err := http.NewRequest("POST", grokResponsesEndpoint, bytes.NewReader(body))
+	httpReq, err := http.NewRequest("POST", ResponsesEndpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build grok request: %w", err)
 	}
 	setGrokHeaders(httpReq, account)
-	resp, err := GetRestClientForAccount(account).Do(httpReq)
+	resp, err := providers.GetRestClientForAccount(account).Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("grok upstream: %w", err)
 	}
 	if resp.StatusCode != 200 {
 		defer resp.Body.Close()
 		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("grok upstream HTTP %d: %s", resp.StatusCode, string(b))
+		return nil, providers.Errorf(resp.StatusCode, "grok upstream HTTP %d: %s", resp.StatusCode, string(b))
 	}
 	return resp, nil
 }
@@ -81,7 +81,7 @@ func setGrokHeaders(req *http.Request, account *config.Account) {
 
 // CallGrokUpstreamAPI forwards a native Responses request and writes its body
 // directly to the client.
-func CallGrokUpstreamAPI(w http.ResponseWriter, flusher http.Flusher, account *config.Account, req *ResponsesRequest) error {
+func CallUpstream(w http.ResponseWriter, flusher http.Flusher, account *config.Account, req *providers.ResponsesRequest) error {
 	resp, err := doGrokRequest(account, req)
 	if err != nil {
 		return err
@@ -97,7 +97,7 @@ func CallGrokUpstreamAPI(w http.ResponseWriter, flusher http.Flusher, account *c
 		return proxyGrokSSE(w, flusher, resp.Body)
 	}
 
-	// Non-stream: pass the JSON ResponsesObject straight through.
+	// Non-stream: pass the JSON providers.ResponsesObject straight through.
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_, err = io.Copy(w, resp.Body)
 	return err
@@ -106,7 +106,7 @@ func CallGrokUpstreamAPI(w http.ResponseWriter, flusher http.Flusher, account *c
 // callGrokOpenAIAPI adapts Chat Completions-shaped callers (including the admin
 // smoke test) to Grok's native Responses API and emits the existing callback
 // contract used by the rest of the proxy.
-func callGrokOpenAIAPI(account *config.Account, req *OpenAIRequest, callback *KiroStreamCallback) error {
+func CallOpenAI(account *config.Account, req *providers.OpenAIRequest, callback *providers.KiroStreamCallback) error {
 	input, err := json.Marshal(req.Messages)
 	if err != nil {
 		return fmt.Errorf("marshal grok input: %w", err)
@@ -115,7 +115,7 @@ func callGrokOpenAIAPI(account *config.Account, req *OpenAIRequest, callback *Ki
 	for _, suffix := range []string{"-high", "-medium", "-low"} {
 		model = strings.TrimSuffix(model, suffix)
 	}
-	grokReq := &ResponsesRequest{Model: model, Input: input, Stream: req.Stream, Tools: req.Tools}
+	grokReq := &providers.ResponsesRequest{Model: model, Input: input, Stream: req.Stream, Tools: req.Tools}
 	if req.MaxTokens > 0 {
 		grokReq.MaxOutputTokens = &req.MaxTokens
 	}
@@ -130,7 +130,7 @@ func callGrokOpenAIAPI(account *config.Account, req *OpenAIRequest, callback *Ki
 	if req.Stream {
 		return consumeGrokSSE(resp.Body, callback)
 	}
-	var out ResponsesObject
+	var out providers.ResponsesObject
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return fmt.Errorf("decode grok response: %w", err)
 	}
@@ -144,7 +144,7 @@ func callGrokOpenAIAPI(account *config.Account, req *OpenAIRequest, callback *Ki
 	return nil
 }
 
-func emitGrokOutput(items []ResponseOutputItem, callback *KiroStreamCallback) {
+func emitGrokOutput(items []providers.ResponseOutputItem, callback *providers.KiroStreamCallback) {
 	if callback == nil {
 		return
 	}
@@ -160,13 +160,13 @@ func emitGrokOutput(items []ResponseOutputItem, callback *KiroStreamCallback) {
 			if callback.OnToolUse != nil {
 				var input map[string]interface{}
 				_ = json.Unmarshal([]byte(item.Arguments), &input)
-				callback.OnToolUse(KiroToolUse{ToolUseID: item.CallID, Name: item.Name, Input: input})
+				callback.OnToolUse(providers.KiroToolUse{ToolUseID: item.CallID, Name: item.Name, Input: input})
 			}
 		}
 	}
 }
 
-func consumeGrokSSE(r io.Reader, callback *KiroStreamCallback) error {
+func consumeGrokSSE(r io.Reader, callback *providers.KiroStreamCallback) error {
 	scanner := bufio.NewScanner(r)
 	// Tool arguments can exceed Scanner's small default token limit.
 	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
@@ -180,10 +180,10 @@ func consumeGrokSSE(r io.Reader, callback *KiroStreamCallback) error {
 			continue
 		}
 		var event struct {
-			Type     string             `json:"type"`
-			Delta    string             `json:"delta"`
-			Item     ResponseOutputItem `json:"item"`
-			Response ResponsesObject    `json:"response"`
+			Type     string                       `json:"type"`
+			Delta    string                       `json:"delta"`
+			Item     providers.ResponseOutputItem `json:"item"`
+			Response providers.ResponsesObject    `json:"response"`
 		}
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
 			continue
@@ -194,7 +194,7 @@ func consumeGrokSSE(r io.Reader, callback *KiroStreamCallback) error {
 				callback.OnText(event.Delta, false)
 			}
 		case "response.output_item.done":
-			emitGrokOutput([]ResponseOutputItem{event.Item}, callback)
+			emitGrokOutput([]providers.ResponseOutputItem{event.Item}, callback)
 		case "response.completed":
 			if callback != nil && callback.OnComplete != nil {
 				callback.OnComplete(event.Response.Usage.InputTokens, event.Response.Usage.OutputTokens)
@@ -229,19 +229,19 @@ func proxyGrokSSE(w http.ResponseWriter, flusher http.Flusher, rc io.Reader) err
 
 // FetchGrokUsage refreshes the account/user and credit data exposed by the
 // official Grok CLI endpoints.
-func FetchGrokUsage(account *config.Account) (*config.AccountInfo, error) {
+func FetchUsage(account *config.Account) (*config.AccountInfo, error) {
 	info := &config.AccountInfo{SubscriptionType: "GROK", SubscriptionTitle: "Grok", LastRefresh: time.Now().Unix()}
 
-	billingReq, _ := http.NewRequest("GET", grokBillingEndpoint, nil)
+	billingReq, _ := http.NewRequest("GET", BillingEndpoint, nil)
 	setGrokHeaders(billingReq, account)
-	resp, err := GetRestClientForAccount(account).Do(billingReq)
+	resp, err := providers.GetRestClientForAccount(account).Do(billingReq)
 	if err != nil {
 		return nil, fmt.Errorf("grok billing: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("grok billing HTTP %d: %s", resp.StatusCode, body)
+		return nil, providers.Errorf(resp.StatusCode, "grok billing HTTP %d: %s", resp.StatusCode, body)
 	}
 	var billing struct {
 		CreditsRemaining float64 `json:"credits_remaining"`
@@ -265,9 +265,9 @@ func FetchGrokUsage(account *config.Account) (*config.AccountInfo, error) {
 		info.UsagePercent = info.UsageCurrent / info.UsageLimit
 	}
 
-	userReq, _ := http.NewRequest("GET", grokUserEndpoint, nil)
+	userReq, _ := http.NewRequest("GET", UserEndpoint, nil)
 	setGrokHeaders(userReq, account)
-	if userResp, userErr := GetRestClientForAccount(account).Do(userReq); userErr == nil {
+	if userResp, userErr := providers.GetRestClientForAccount(account).Do(userReq); userErr == nil {
 		defer userResp.Body.Close()
 		if userResp.StatusCode == http.StatusOK {
 			var user struct {
@@ -294,22 +294,22 @@ func FetchGrokUsage(account *config.Account) (*config.AccountInfo, error) {
 }
 
 // refreshGrokModels fetches the live model list; falls back to the static list.
-func refreshGrokModels(account *config.Account) []ModelInfo {
+func RefreshModels(account *config.Account) []providers.ModelInfo {
 	req, _ := http.NewRequest("GET", grokModelsURL, nil)
 	req.Header.Set("Authorization", "Bearer "+account.AccessToken)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("x-grok-client-identifier", grokClientIdentifier)
 	req.Header.Set("x-grok-client-version", grokClientVersion)
 
-	client := GetRestClientForAccount(account)
+	client := providers.GetRestClientForAccount(account)
 	client.Timeout = 30 * time.Second
 	resp, err := client.Do(req)
 	if err != nil {
-		return grokModels()
+		return staticModels()
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return grokModels()
+		return staticModels()
 	}
 	var out struct {
 		Data []struct {
@@ -317,11 +317,11 @@ func refreshGrokModels(account *config.Account) []ModelInfo {
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || len(out.Data) == 0 {
-		return grokModels()
+		return staticModels()
 	}
-	models := make([]ModelInfo, 0, len(out.Data))
+	models := make([]providers.ModelInfo, 0, len(out.Data))
 	for _, m := range out.Data {
-		mi := ModelInfo{ModelId: m.ID}
+		mi := providers.ModelInfo{ModelId: m.ID}
 		models = append(models, mi)
 	}
 	return models

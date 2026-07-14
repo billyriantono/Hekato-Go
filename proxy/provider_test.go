@@ -3,6 +3,7 @@ package proxy
 import (
 	"encoding/json"
 	"kiro-go/config"
+	"kiro-go/providers/grok"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -28,9 +29,9 @@ func TestCallOpenAIUpstreamRoutesGrokWithoutKiro(t *testing.T) {
 	}))
 	defer server.Close()
 
-	old := grokResponsesEndpoint
-	grokResponsesEndpoint = server.URL
-	defer func() { grokResponsesEndpoint = old }()
+	old := grok.ResponsesEndpoint
+	grok.ResponsesEndpoint = server.URL
+	defer func() { grok.ResponsesEndpoint = old }()
 
 	var text string
 	var inTokens, outTokens int
@@ -65,9 +66,9 @@ func TestRefreshAccountInfoRoutesGrokWithoutKiro(t *testing.T) {
 	}))
 	defer user.Close()
 
-	oldBilling, oldUser := grokBillingEndpoint, grokUserEndpoint
-	grokBillingEndpoint, grokUserEndpoint = billing.URL, user.URL
-	defer func() { grokBillingEndpoint, grokUserEndpoint = oldBilling, oldUser }()
+	oldBilling, oldUser := grok.BillingEndpoint, grok.UserEndpoint
+	grok.BillingEndpoint, grok.UserEndpoint = billing.URL, user.URL
+	defer func() { grok.BillingEndpoint, grok.UserEndpoint = oldBilling, oldUser }()
 
 	info, err := RefreshAccountInfo(&config.Account{AuthMethod: "grok", Provider: "grok", AccessToken: "token"})
 	if err != nil {

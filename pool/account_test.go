@@ -183,7 +183,7 @@ func TestGetNextForModelExcludingSkipsExcludedAccounts(t *testing.T) {
 	)
 	excluded := map[string]bool{"a": true}
 	for i := 0; i < 5; i++ {
-		acc := p.GetNextForModelExcluding("model", excluded)
+		acc := p.GetNextForModelExcluding("model", excluded, nil)
 		if acc == nil {
 			t.Fatal("expected account b, got nil")
 		}
@@ -195,7 +195,7 @@ func TestGetNextForModelExcludingSkipsExcludedAccounts(t *testing.T) {
 
 func TestGetNextForModelExcludingReturnsNilWhenAllExcluded(t *testing.T) {
 	p := newTestPool(config.Account{ID: "only"})
-	acc := p.GetNextForModelExcluding("model", map[string]bool{"only": true})
+	acc := p.GetNextForModelExcluding("model", map[string]bool{"only": true}, nil)
 	if acc != nil {
 		t.Fatalf("expected nil when only account is excluded, got %q", acc.ID)
 	}
@@ -203,7 +203,7 @@ func TestGetNextForModelExcludingReturnsNilWhenAllExcluded(t *testing.T) {
 
 func TestGetNextForModelExcludingReturnsNilOnEmptyPool(t *testing.T) {
 	p := newTestPool()
-	acc := p.GetNextForModelExcluding("model", map[string]bool{})
+	acc := p.GetNextForModelExcluding("model", map[string]bool{}, nil)
 	if acc != nil {
 		t.Fatalf("expected nil for empty pool, got %q", acc.ID)
 	}
@@ -269,7 +269,7 @@ func TestGetNextForModelExcludingSkipsExcludedAccount(t *testing.T) {
 	p.SetModelList("a", []string{"claude-sonnet-4.5"})
 	p.SetModelList("b", []string{"claude-sonnet-4.5"})
 
-	acc := p.GetNextForModelExcluding("claude-sonnet-4.5", map[string]bool{"a": true})
+	acc := p.GetNextForModelExcluding("claude-sonnet-4.5", map[string]bool{"a": true}, nil)
 	if acc == nil || acc.ID != "b" {
 		t.Fatalf("expected account b, got %#v", acc)
 	}
@@ -323,5 +323,33 @@ func TestReloadDropsOverQuotaAccountWhenAllowOverUsageDisabled(t *testing.T) {
 
 	if got := p.GetNext(); got != nil {
 		t.Fatalf("expected over-quota account to be dropped, got %q", got.ID)
+	}
+}
+
+func TestGetNextForModelPessimisticOnceModelIsKnown(t *testing.T) {
+	// Account "hot" declares the model; account "cold" has no list yet.
+	// Once any list contains the model, empty-list accounts must not match it.
+	p := newTestPool(config.Account{ID: "hot"}, config.Account{ID: "cold"})
+	p.modelLists["hot"] = map[string]bool{"grok-4": true}
+	for i := 0; i < 5; i++ {
+		acc := p.GetNextForModelExcluding("grok-4", nil, nil)
+		if acc == nil || acc.ID != "hot" {
+			t.Fatalf("iteration %d: want account hot, got %v", i, acc)
+		}
+	}
+	// A model unknown everywhere keeps optimistic routing (cold start).
+	if acc := p.GetNextForModelExcluding("unknown-model", nil, nil); acc == nil {
+		t.Fatal("unknown model should still route optimistically")
+	}
+}
+
+func TestGetNextForModelAppliesAccountFilter(t *testing.T) {
+	p := newTestPool(config.Account{ID: "a"}, config.Account{ID: "b"})
+	onlyB := func(acc *config.Account) bool { return acc.ID == "b" }
+	for i := 0; i < 5; i++ {
+		acc := p.GetNextForModelExcluding("model", nil, onlyB)
+		if acc == nil || acc.ID != "b" {
+			t.Fatalf("iteration %d: want account b, got %v", i, acc)
+		}
 	}
 }

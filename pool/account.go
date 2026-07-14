@@ -118,7 +118,7 @@ func (p *AccountPool) GetNextExcluding(excluded map[string]bool) *config.Account
 		return acc
 	}
 
-		// 无可用账号，返回冷却时间最短的（排除额度用尽的，除非允许超额）
+	// 无可用账号，返回冷却时间最短的（排除额度用尽的，除非允许超额）
 	var best *config.Account
 	var earliest time.Time
 	for i := range p.accounts {
@@ -168,25 +168,41 @@ func (p *AccountPool) GetModelList(accountID string) []string {
 	return ids
 }
 
+// modelKnownAnywhere 报告是否有任一账号的模型列表包含该模型。
+// 一旦模型归属已知，空列表账号不再乐观放行（防止冷启动误路由）。
+func (p *AccountPool) modelKnownAnywhere(modelKey string) bool {
+	for _, set := range p.modelLists {
+		if set[modelKey] {
+			return true
+		}
+	}
+	return false
+}
+
 // accountHasModel 检查账号是否支持指定模型。
-// 若该账号尚无模型列表（冷启动），视为支持所有模型。
-func (p *AccountPool) accountHasModel(accountID, model string) bool {
+// 若该账号尚无模型列表（冷启动）：仅当该模型在所有账号中都未知时才乐观放行；
+// 若已有其他账号声明支持该模型，则空列表账号视为不支持。
+func (p *AccountPool) accountHasModel(accountID, modelKey string, modelKnown bool) bool {
 	list, ok := p.modelLists[accountID]
 	if !ok || len(list) == 0 {
-		return true // 冷启动：列表未就绪，乐观放行
+		return !modelKnown
 	}
-	return list[strings.ToLower(strings.TrimSpace(model))]
+	return list[modelKey]
 }
+
+// AccountFilter 是账号选择的额外过滤条件（如 provider 是否支持请求所需的
+// endpoint capability）。nil 表示不过滤。
+type AccountFilter func(*config.Account) bool
 
 // GetNextForModel 获取下一个支持指定模型的可用账号。
 // model 应为去掉 thinking 后缀的实际模型名。
 // 若无账号有该模型列表数据，行为与 GetNext 相同（乐观路由）。
 func (p *AccountPool) GetNextForModel(model string) *config.Account {
-	return p.GetNextForModelExcluding(model, nil)
+	return p.GetNextForModelExcluding(model, nil, nil)
 }
 
-// GetNextForModelExcluding 获取下一个支持指定模型的可用账号，并跳过指定账号。
-func (p *AccountPool) GetNextForModelExcluding(model string, excluded map[string]bool) *config.Account {
+// GetNextForModelExcluding 获取下一个支持指定模型且通过 filter 的可用账号，并跳过指定账号。
+func (p *AccountPool) GetNextForModelExcluding(model string, excluded map[string]bool, filter AccountFilter) *config.Account {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -198,6 +214,8 @@ func (p *AccountPool) GetNextForModelExcluding(model string, excluded map[string
 	now := time.Now()
 	n := len(p.accounts)
 	seen := make(map[string]bool)
+	modelKey := strings.ToLower(strings.TrimSpace(model))
+	modelKnown := p.modelKnownAnywhere(modelKey)
 
 	for i := 0; i < n; i++ {
 		idx := atomic.AddUint64(&p.currentIndex, 1) % uint64(n)
@@ -210,7 +228,11 @@ func (p *AccountPool) GetNextForModelExcluding(model string, excluded map[string
 		if seen[acc.ID] {
 			continue
 		}
-		if !p.accountHasModel(acc.ID, model) {
+		if filter != nil && !filter(acc) {
+			seen[acc.ID] = true
+			continue
+		}
+		if !p.accountHasModel(acc.ID, modelKey, modelKnown) {
 			seen[acc.ID] = true
 			continue
 		}
@@ -237,7 +259,10 @@ func (p *AccountPool) GetNextForModelExcluding(model string, excluded map[string
 		if excluded != nil && excluded[acc.ID] {
 			continue
 		}
-		if !p.accountHasModel(acc.ID, model) {
+		if filter != nil && !filter(acc) {
+			continue
+		}
+		if !p.accountHasModel(acc.ID, modelKey, modelKnown) {
 			continue
 		}
 		if isQuotaBlocked(*acc, allowOverUsage) {
@@ -434,7 +459,6 @@ func (p *AccountPool) AvailableCount() int {
 // UpdateStats 更新账号统计
 func (p *AccountPool) UpdateStats(id string, tokens int, credits float64) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	var updated bool
 	var requestCount, errorCount, totalTokens int
 	var totalCredits float64
@@ -462,8 +486,12 @@ func (p *AccountPool) UpdateStats(id string, tokens int, credits float64) {
 			p.accounts[i].LastUsed = lastUsed
 		}
 	}
+	p.mu.Unlock()
 	if updated {
-		go config.UpdateAccountStats(id, requestCount, errorCount, totalTokens, totalCredits, lastUsed)
+		// Synchronous (outside the pool lock) so a trailing goroutine can never
+		// race shutdown or write into a reinitialized config path.
+		// ponytail: one config save per request — batch/debounce if write volume matters.
+		config.UpdateAccountStats(id, requestCount, errorCount, totalTokens, totalCredits, lastUsed)
 	}
 }
 

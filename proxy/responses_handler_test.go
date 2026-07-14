@@ -6,6 +6,8 @@ import (
 	"io"
 	"kiro-go/config"
 	accountpool "kiro-go/pool"
+	"kiro-go/providers"
+	"kiro-go/providers/kiro"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -289,17 +291,16 @@ func setupResponsesTestHandler(t *testing.T) (*Handler, func()) {
 
 func swapKiroEndpointsForTest(t *testing.T, server *httptest.Server) func() {
 	t.Helper()
-	oldEndpoints := kiroEndpoints
-	kiroEndpoints = []kiroEndpoint{{
+	oldEndpoints := kiro.Endpoints
+	kiro.Endpoints = []kiro.Endpoint{{
 		URL:    server.URL,
 		Origin: "AI_EDITOR",
 		Name:   "test",
 	}}
-	oldClient := kiroHttpStore.Load()
-	kiroHttpStore.Store(&http.Client{Timeout: time.Second, Transport: &http.Transport{}})
+	restoreClients := providers.SwapClientsForTest(&http.Client{Timeout: time.Second, Transport: &http.Transport{}}, nil)
 	return func() {
-		kiroEndpoints = oldEndpoints
-		kiroHttpStore.Store(oldClient)
+		kiro.Endpoints = oldEndpoints
+		restoreClients()
 	}
 }
 

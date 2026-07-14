@@ -25,3 +25,27 @@ func TestProviderForAccount(t *testing.T) {
 		})
 	}
 }
+
+func TestProviderKindFieldWinsOverLegacyClassification(t *testing.T) {
+	// Explicit canonical field beats substring classification: this account's
+	// free-text fields would legacy-classify as Kiro ("google" substring).
+	acc := &Account{ProviderKind: "grok", AuthMethod: "social", Provider: "Google"}
+	got, err := ProviderForAccount(acc)
+	if err != nil || got != ProviderGrok {
+		t.Fatalf("got provider=%q err=%v, want %q", got, err, ProviderGrok)
+	}
+}
+
+func TestStampProviderKind(t *testing.T) {
+	acc := &Account{AuthMethod: "idc", Provider: "BuilderId"}
+	if err := StampProviderKind(acc); err != nil {
+		t.Fatal(err)
+	}
+	if acc.ProviderKind != string(ProviderKiro) {
+		t.Fatalf("got providerKind=%q, want %q", acc.ProviderKind, ProviderKiro)
+	}
+	// Unclassifiable accounts fail closed at creation.
+	if err := StampProviderKind(&Account{AuthMethod: "oauth", Provider: "new-provider"}); err == nil {
+		t.Fatal("expected error for unclassifiable account")
+	}
+}

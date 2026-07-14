@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"kiro-go/config"
 	accountpool "kiro-go/pool"
+	"kiro-go/providers"
+	"kiro-go/providers/kiro"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -71,17 +73,16 @@ func TestClaudeNonStreamRetriesNextAccountAfterPreResponseFailure(t *testing.T) 
 	}))
 	defer server.Close()
 
-	oldEndpoints := kiroEndpoints
-	kiroEndpoints = []kiroEndpoint{{
+	oldEndpoints := kiro.Endpoints
+	kiro.Endpoints = []kiro.Endpoint{{
 		URL:    server.URL,
 		Origin: "AI_EDITOR",
 		Name:   "test",
 	}}
-	defer func() { kiroEndpoints = oldEndpoints }()
+	defer func() { kiro.Endpoints = oldEndpoints }()
 
-	oldClient := kiroHttpStore.Load()
-	kiroHttpStore.Store(&http.Client{Timeout: time.Second, Transport: &http.Transport{}})
-	defer kiroHttpStore.Store(oldClient)
+	restoreClients := providers.SwapClientsForTest(&http.Client{Timeout: time.Second, Transport: &http.Transport{}}, nil)
+	defer restoreClients()
 
 	p := accountpool.GetPool()
 	p.Reload()
