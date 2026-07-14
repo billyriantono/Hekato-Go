@@ -2241,6 +2241,8 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiStartGrokAuth(w, r)
 	case path == "/auth/grok/poll" && r.Method == "POST":
 		h.apiPollGrokAuth(w, r)
+	case path == "/auth/grok/import" && r.Method == "POST":
+		h.apiImportGrok(w, r)
 	case path == "/auth/kiro-sso/start" && r.Method == "POST":
 		h.apiStartKiroSso(w, r)
 	case path == "/auth/kiro-sso/poll" && r.Method == "POST":
