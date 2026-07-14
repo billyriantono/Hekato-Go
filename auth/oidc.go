@@ -25,22 +25,25 @@ var socialTokenURL = func() string {
 // RefreshToken 刷新 access token
 // Returns: accessToken, refreshToken, expiresAt, profileArn, error
 func RefreshToken(account *config.Account) (string, string, int64, string, error) {
-	client := GetAuthClientForAccount(account)
-
-	// External IdP (enterprise SSO, e.g. Azure AD) tokens are refreshed against the
-	// IdP token endpoint (refresh_token grant, public client), NOT the AWS SSO OIDC
-	// endpoint. Selecting it on AuthMethod (rather than letting it fall through to the
-	// OIDC branch, which requires clientSecret) is what makes these accounts refresh.
-	if account.AuthMethod == "external_idp" {
-		return refreshExternalIdpToken(account.RefreshToken, account.ClientID, account.TokenEndpoint, account.Scopes, client)
+	provider, err := config.ProviderForAccount(account)
+	if err != nil {
+		return "", "", 0, "", err
 	}
-	if account.AuthMethod == "grok" {
-		accessToken, refreshToken, expiresIn, err := RefreshGrokToken(account.RefreshToken)
+	if provider == config.ProviderGrok {
+		accessToken, refreshToken, expiresIn, err := RefreshGrokToken(account)
 		if err != nil {
 			return "", "", 0, "", err
 		}
-		expiresAt := time.Now().Unix() + int64(expiresIn)
-		return accessToken, refreshToken, expiresAt, "", nil
+		return accessToken, refreshToken, time.Now().Unix() + int64(expiresIn), "", nil
+	}
+	if provider != config.ProviderKiro {
+		return "", "", 0, "", fmt.Errorf("provider %s has no OAuth refresh flow", provider)
+	}
+
+	client := GetAuthClientForAccount(account)
+	// External IdP tokens refresh at their own public-client endpoint.
+	if account.AuthMethod == "external_idp" {
+		return refreshExternalIdpToken(account.RefreshToken, account.ClientID, account.TokenEndpoint, account.Scopes, client)
 	}
 	if account.AuthMethod == "social" {
 		return refreshSocialToken(account.RefreshToken, client)

@@ -143,13 +143,19 @@ func (h *Handler) handleResponsesNonStream(
 			continue
 		}
 
-		// Grok accounts are forwarded verbatim to cli-chat-proxy.grok.com (OpenAI
-		// Responses API). The upstream JSON is passed straight through.
-		if isGrokAccount(account) {
-			if gerr := CallGrokUpstreamAPI(w, nil, account, req); gerr != nil {
-				lastErr = gerr
+		adapter, adapterErr := adapterForAccount(account)
+		if adapterErr != nil {
+			lastErr = adapterErr
+			excluded[account.ID] = true
+			h.handleAccountFailure(account, adapterErr)
+			continue
+		}
+		// Providers with a native Responses transport bypass the chat converter.
+		if adapter.nativeResponses != nil {
+			if providerErr := adapter.nativeResponses(w, nil, account, req); providerErr != nil {
+				lastErr = providerErr
 				excluded[account.ID] = true
-				h.handleAccountFailure(account, gerr)
+				h.handleAccountFailure(account, providerErr)
 				continue
 			}
 			h.recordSuccessForApiKey(apiKeyID, 0, 0, 0)
@@ -344,13 +350,19 @@ func (h *Handler) handleResponsesStream(
 			continue
 		}
 
-		// Grok accounts are forwarded verbatim to cli-chat-proxy.grok.com (OpenAI
-		// Responses API). The upstream SSE is passed straight through.
-		if isGrokAccount(account) {
-			if gerr := CallGrokUpstreamAPI(w, flusher, account, req); gerr != nil {
-				lastErr = gerr
+		adapter, adapterErr := adapterForAccount(account)
+		if adapterErr != nil {
+			lastErr = adapterErr
+			excluded[account.ID] = true
+			h.handleAccountFailure(account, adapterErr)
+			continue
+		}
+		// Providers with a native Responses transport pass SSE through directly.
+		if adapter.nativeResponses != nil {
+			if providerErr := adapter.nativeResponses(w, flusher, account, req); providerErr != nil {
+				lastErr = providerErr
 				excluded[account.ID] = true
-				h.handleAccountFailure(account, gerr)
+				h.handleAccountFailure(account, providerErr)
 				continue
 			}
 			h.recordSuccessForApiKey(apiKeyID, 0, 0, 0)
