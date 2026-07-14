@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"kiro-go/config"
 	"net/http"
 	"net/url"
 	"strings"
@@ -16,11 +17,11 @@ import (
 // Public PKCE-less device client — no client secret. Mirrors the official
 // grok-cli / grok-build HAR capture and the 9router reference implementation.
 const (
-	grokTokenURL     = "https://auth.x.ai/oauth2/token"
+	grokTokenURL      = "https://auth.x.ai/oauth2/token"
 	grokDeviceCodeURL = "https://auth.x.ai/oauth2/device/code"
-	grokClientID     = "b1a00492-073a-47ea-816f-4c329264a828"
-	grokScope        = "openid profile email offline_access grok-cli:access api:access conversations:read conversations:write"
-	grokReferrer     = "grok-build"
+	grokClientID      = "b1a00492-073a-47ea-816f-4c329264a828"
+	grokScope         = "openid profile email offline_access grok-cli:access api:access conversations:read conversations:write"
+	grokReferrer      = "grok-build"
 	// ponytail: single global client_id; xAI has no per-tenant registration
 )
 
@@ -189,7 +190,8 @@ func PollGrokAuth(sessionID string) (accessToken, refreshToken string, expiresIn
 }
 
 // RefreshGrokToken refreshes an xAI access token using a refresh_token grant.
-func RefreshGrokToken(refreshToken string) (string, string, int, error) {
+func RefreshGrokToken(account *config.Account) (string, string, int, error) {
+	refreshToken := account.RefreshToken
 	form := url.Values{}
 	form.Set("client_id", grokClientID)
 	form.Set("grant_type", "refresh_token")
@@ -199,8 +201,7 @@ func RefreshGrokToken(refreshToken string) (string, string, int, error) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	client := httpClient()
-	resp, err := client.Do(req)
+	resp, err := GetAuthClientForAccount(account).Do(req)
 	if err != nil {
 		return "", "", 0, fmt.Errorf("grok refresh failed: %w", err)
 	}

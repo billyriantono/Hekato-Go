@@ -87,12 +87,7 @@ var codeBuddyCNModels = []codeBuddyModel{
 }
 
 func isCodeBuddyAccount(account *config.Account) bool {
-	if account == nil {
-		return false
-	}
-	am := strings.ToLower(strings.TrimSpace(account.AuthMethod))
-	provider := strings.ToLower(strings.TrimSpace(account.Provider))
-	return strings.Contains(am, "codebuddy") || strings.Contains(provider, "codebuddy")
+	return mustBeProvider(account, providerCodeBuddy)
 }
 
 func codeBuddyVariantForAccount(account *config.Account) codeBuddyVariant {

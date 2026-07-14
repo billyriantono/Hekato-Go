@@ -2,30 +2,37 @@ package proxy
 
 import "kiro-go/config"
 
-// CallUpstreamAPI routes an already-normalized internal chat payload to the
-// selected account's provider. Prefer the typed helpers below when the original
-// client request is still available, so provider-specific converters can run.
+// CallUpstreamAPI routes an already-normalized internal payload through the
+// selected provider adapter.
 func CallUpstreamAPI(account *config.Account, payload *KiroPayload, callback *KiroStreamCallback) error {
-	if isCodeBuddyAccount(account) {
-		return callCodeBuddyChatAPI(account, payload, callback)
+	adapter, err := adapterForAccount(account)
+	if err != nil {
+		return err
 	}
-	return CallKiroAPI(account, payload, callback)
+	if adapter.internalChat == nil {
+		return unsupportedProviderCapability(adapter.kind, "internal chat payloads")
+	}
+	return adapter.internalChat(account, payload, callback)
 }
 
-// CallClaudeUpstreamAPI converts a Claude request with the selected provider's
-// converter, then dispatches to that provider.
 func CallClaudeUpstreamAPI(account *config.Account, req *ClaudeRequest, thinking bool, callback *KiroStreamCallback) error {
-	if isCodeBuddyAccount(account) {
-		return callCodeBuddyChatRequestAPI(account, ClaudeToCodeBuddy(req, thinking), callback)
+	adapter, err := adapterForAccount(account)
+	if err != nil {
+		return err
 	}
-	return CallKiroAPI(account, ClaudeToKiro(req, thinking), callback)
+	if adapter.claudeChat == nil {
+		return unsupportedProviderCapability(adapter.kind, "Claude requests")
+	}
+	return adapter.claudeChat(account, req, thinking, callback)
 }
 
-// CallOpenAIUpstreamAPI converts an OpenAI Chat/Responses request with the
-// selected provider's converter, then dispatches to that provider.
 func CallOpenAIUpstreamAPI(account *config.Account, req *OpenAIRequest, thinking bool, callback *KiroStreamCallback) error {
-	if isCodeBuddyAccount(account) {
-		return callCodeBuddyChatRequestAPI(account, OpenAIToCodeBuddy(req, thinking), callback)
+	adapter, err := adapterForAccount(account)
+	if err != nil {
+		return err
 	}
-	return CallKiroAPI(account, OpenAIToKiro(req, thinking), callback)
+	if adapter.openAIChat == nil {
+		return unsupportedProviderCapability(adapter.kind, "OpenAI requests")
+	}
+	return adapter.openAIChat(account, req, thinking, callback)
 }

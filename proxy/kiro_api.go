@@ -218,15 +218,19 @@ func GetUserInfo(account *config.Account) (*UserInfoResponse, error) {
 	return &result, nil
 }
 
-// ListAvailableModels 获取可用模型列表
+// ListAvailableModels dispatches through the registered provider adapter.
 func ListAvailableModels(account *config.Account) ([]ModelInfo, error) {
-	if isCodeBuddyAccount(account) {
-		return codeBuddyModelsForAccount(account), nil
+	adapter, err := adapterForAccount(account)
+	if err != nil {
+		return nil, err
 	}
-	if isGrokAccount(account) {
-		return refreshGrokModels(account), nil
+	if adapter.models == nil {
+		return nil, unsupportedProviderCapability(adapter.kind, "model discovery")
 	}
+	return adapter.models(account)
+}
 
+func listKiroModels(account *config.Account) ([]ModelInfo, error) {
 	if err := ensureRestProfileArn(account); err != nil {
 		return nil, fmt.Errorf("resolve profileArn: %w", err)
 	}
@@ -544,12 +548,19 @@ func setKiroHeaders(req *http.Request, account *config.Account) {
 	applyKiroBaseHeaders(req, account, headerValues)
 }
 
-// RefreshAccountInfo 刷新账户信息（使用量、订阅等）
+// RefreshAccountInfo dispatches through the registered provider adapter.
 func RefreshAccountInfo(account *config.Account) (*config.AccountInfo, error) {
-	if isCodeBuddyAccount(account) {
-		return FetchCodeBuddyUsage(account)
+	adapter, err := adapterForAccount(account)
+	if err != nil {
+		return nil, err
 	}
+	if adapter.usage == nil {
+		return nil, unsupportedProviderCapability(adapter.kind, "usage refresh")
+	}
+	return adapter.usage(account)
+}
 
+func refreshKiroAccountInfo(account *config.Account) (*config.AccountInfo, error) {
 	info := &config.AccountInfo{
 		LastRefresh: time.Now().Unix(),
 	}
