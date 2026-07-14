@@ -2185,10 +2185,10 @@
     kiro: 'fa-solid fa-wand-magic-sparkles'
   };
   function methodCard(type, title, desc) {
-    var logos = { kiro: 'kiro.svg', 'codebuddy-methods': 'codebuddy.svg', codebuddy: 'codebuddy.svg' };
+    var logos = { kiro: 'kiro.svg', 'codebuddy-methods': 'codebuddy.svg', codebuddy: 'codebuddy.svg', grok: 'xai.svg' };
     var icon = METHOD_ICONS[type] || 'fa-solid fa-circle-plus';
     var iconHtml = logos[type]
-      ? '<img src="/admin/icons/' + logos[type] + '" alt="" aria-hidden="true" />'
+      ? '<img src="/admin/icons/' + logos[type] + '"' + (type === 'grok' ? ' class="provider-logo-xai"' : '') + ' alt="" aria-hidden="true" />'
       : '<i class="' + icon + '" aria-hidden="true"></i>';
     return '<button type="button" class="method-card" data-method="' + escapeAttr(type) + '">' +
       '<span class="method-icon">' + iconHtml + '</span>' +
@@ -2479,8 +2479,9 @@
   let grokPollTimer = null;
   async function startGrokAuth() {
     try {
-      const d = await api('/auth/grok/start', { method: 'POST', body: JSON.stringify({}) });
-      if (!d.sessionId) { toastError(t('common.failed') + ': ' + (d.error || 'unknown')); return; }
+      const res = await api('/auth/grok/start', { method: 'POST', body: JSON.stringify({}) });
+      const d = await res.json();
+      if (!res.ok || !d.sessionId) { toastError(t('common.failed') + ': ' + (d.error || res.statusText || 'unknown')); return; }
       grokSession = d.sessionId;
       $('grokStep1').classList.add('hidden');
       $('grokDeviceStep').classList.remove('hidden');
@@ -2493,8 +2494,9 @@
     if (!grokSession) return;
     grokPollTimer = setTimeout(async () => {
       try {
-        const d = await api('/auth/grok/poll', { method: 'POST', body: JSON.stringify({ sessionId: grokSession }) });
-        if (d.completed) {
+        const res = await api('/auth/grok/poll', { method: 'POST', body: JSON.stringify({ sessionId: grokSession }) });
+        const d = await res.json();
+        if (res.ok && d.completed) {
           grokSession = ''; grokPollTimer = null;
           closeModal(); await loadAccounts(); await loadStats();
           toastPrimary(t('grok.loginSuccess') + (d.account ? ': ' + (d.account.email || d.account.id) : ''));
@@ -2510,8 +2512,9 @@
     const raw = $('grokImportJson').value.trim();
     if (!raw) { toastWarning(t('grok.tokensRequired')); return; }
     try {
-      const d = await api('/auth/grok/import', { method: 'POST', body: raw });
-      if (d.success) {
+      const res = await api('/auth/grok/import', { method: 'POST', body: raw });
+      const d = await res.json();
+      if (res.ok && d.success) {
         closeModal(); await loadAccounts(); await loadStats();
         const extra = (d.errors && d.errors.length) ? '\n' + d.errors.join('\n') : '';
         toastPrimary(t('grok.importSuccess') + ': ' + d.imported + extra);

@@ -25,6 +25,8 @@ const ALLOW_SUFFIXES = [
   ".codebuddy.ai", // CodeBuddy Global (www.codebuddy.ai)
   ".codebuddy.cn", // CodeBuddy China domain header / future endpoints
   ".tencent.com", // CodeBuddy China API (copilot.tencent.com)
+  ".x.ai", // xAI OAuth (auth.x.ai, accounts.x.ai)
+  ".grok.com", // Grok CLI Responses API (cli-chat-proxy.grok.com)
 ];
 
 function hostAllowed(host) {

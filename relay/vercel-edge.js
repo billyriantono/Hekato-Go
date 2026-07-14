@@ -27,6 +27,8 @@ const ALLOW_SUFFIXES = [
   ".codebuddy.ai",
   ".codebuddy.cn",
   ".tencent.com",
+  ".x.ai",
+  ".grok.com",
 ];
 
 function hostAllowed(host) {
