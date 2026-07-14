@@ -143,6 +143,22 @@ func (h *Handler) handleResponsesNonStream(
 			continue
 		}
 
+		// Grok accounts are forwarded verbatim to cli-chat-proxy.grok.com (OpenAI
+		// Responses API). The upstream JSON is passed straight through.
+		if isGrokAccount(account) {
+			if gerr := CallGrokUpstreamAPI(w, nil, account, req); gerr != nil {
+				lastErr = gerr
+				excluded[account.ID] = true
+				h.handleAccountFailure(account, gerr)
+				continue
+			}
+			h.recordSuccessForApiKey(apiKeyID, 0, 0, 0)
+			h.pool.RecordSuccess(account.ID)
+			h.pool.UpdateStats(account.ID, 0, 0)
+			h.recordSuccessLog("responses", model, account.ID, 0, 0, time.Since(reqStart).Milliseconds())
+			return
+		}
+
 		var content, reasoningContent string
 		var toolUses []KiroToolUse
 		var inputTokens, outputTokens int
@@ -326,6 +342,22 @@ func (h *Handler) handleResponsesStream(
 			excluded[account.ID] = true
 			h.handleAccountFailure(account, err)
 			continue
+		}
+
+		// Grok accounts are forwarded verbatim to cli-chat-proxy.grok.com (OpenAI
+		// Responses API). The upstream SSE is passed straight through.
+		if isGrokAccount(account) {
+			if gerr := CallGrokUpstreamAPI(w, flusher, account, req); gerr != nil {
+				lastErr = gerr
+				excluded[account.ID] = true
+				h.handleAccountFailure(account, gerr)
+				continue
+			}
+			h.recordSuccessForApiKey(apiKeyID, 0, 0, 0)
+			h.pool.RecordSuccess(account.ID)
+			h.pool.UpdateStats(account.ID, 0, 0)
+			h.recordSuccessLog("responses", model, account.ID, 0, 0, time.Since(reqStart).Milliseconds())
+			return
 		}
 
 		send("response.in_progress", map[string]interface{}{
