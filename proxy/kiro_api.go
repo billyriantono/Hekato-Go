@@ -223,6 +223,9 @@ func ListAvailableModels(account *config.Account) ([]ModelInfo, error) {
 	if isCodeBuddyAccount(account) {
 		return codeBuddyModelsForAccount(account), nil
 	}
+	if isGrokAccount(account) {
+		return refreshGrokModels(account), nil
+	}
 
 	if err := ensureRestProfileArn(account); err != nil {
 		return nil, fmt.Errorf("resolve profileArn: %w", err)

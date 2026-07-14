@@ -34,6 +34,14 @@ func RefreshToken(account *config.Account) (string, string, int64, string, error
 	if account.AuthMethod == "external_idp" {
 		return refreshExternalIdpToken(account.RefreshToken, account.ClientID, account.TokenEndpoint, account.Scopes, client)
 	}
+	if account.AuthMethod == "grok" {
+		accessToken, refreshToken, expiresIn, err := RefreshGrokToken(account.RefreshToken)
+		if err != nil {
+			return "", "", 0, "", err
+		}
+		expiresAt := time.Now().Unix() + int64(expiresIn)
+		return accessToken, refreshToken, expiresAt, "", nil
+	}
 	if account.AuthMethod == "social" {
 		return refreshSocialToken(account.RefreshToken, client)
 	}
