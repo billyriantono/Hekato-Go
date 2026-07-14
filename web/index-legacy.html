@@ -1314,6 +1314,22 @@
                 'modal.credentialsDesc': '通过 Kiro Account Manager 导出的凭证添加账号',
                 'modal.cookieTitle': 'Kiro 网页 Cookie',
                 'modal.cookieDesc': '通过从 Kiro 网页 Cookie 中获取的 RefreshToken 添加账号',
+                'modal.grokTitle': 'Grok (xAI)',
+                'modal.grokDesc': '通过 xAI 设备码登录或导入 Grok CLI Token 添加账号',
+                'modal.grokImportTitle': '导入 Grok Token',
+                'modal.grokImportDesc': '粘贴 Grok Token 导出 JSON（支持单个对象、数组或每行一个对象）',
+                'grok.deviceLogin': '设备码登录',
+                'grok.importTokens': '导入 Token',
+                'grok.importHint': '需要: tokens.access_token, tokens.refresh_token。可选: tokens.email, tokens.expires_at / expires_in。',
+                'grok.tokensLabel': 'Grok Token JSON',
+                'grok.tokensRequired': '请提供 Grok Token JSON',
+                'grok.verifyCode': '请在 x.ai/activate 输入此验证码',
+                'grok.verifyUrl': '验证链接',
+                'grok.open': '打开',
+                'grok.copy': '复制',
+                'grok.waiting': '等待授权...',
+                'grok.loginSuccess': 'Grok 登录成功',
+                'grok.importSuccess': 'Grok Token 导入成功',
                 'cookie.howToGet': '如何获取 RefreshToken？',
                 'cookie.step1': '打开浏览器，访问并登录',
                 'cookie.step2': '在页面空白处右键 → 检查 → Application → Cookies → https://app.kiro.dev',
@@ -1595,6 +1611,22 @@
                 'modal.credentialsDesc': 'Add account via Kiro Account Manager exported credentials',
                 'modal.cookieTitle': 'Kiro Web Cookie',
                 'modal.cookieDesc': 'Add account via RefreshToken obtained from Kiro Web Cookie',
+                'modal.grokTitle': 'Grok (xAI)',
+                'modal.grokDesc': 'Add account via xAI device-code login or imported Grok CLI tokens',
+                'modal.grokImportTitle': 'Import Grok Tokens',
+                'modal.grokImportDesc': 'Paste Grok token export JSON (single object, array, or one object per line)',
+                'grok.deviceLogin': 'Device Code Login',
+                'grok.importTokens': 'Import Tokens',
+                'grok.importHint': 'Required: tokens.access_token, tokens.refresh_token. Optional: tokens.email, tokens.expires_at / expires_in.',
+                'grok.tokensLabel': 'Grok Token JSON',
+                'grok.tokensRequired': 'Please provide Grok Token JSON',
+                'grok.verifyCode': 'Enter this code at x.ai/activate',
+                'grok.verifyUrl': 'Verification URL',
+                'grok.open': 'Open',
+                'grok.copy': 'Copy',
+                'grok.waiting': 'Waiting for authorization...',
+                'grok.loginSuccess': 'Grok login successful',
+                'grok.importSuccess': 'Grok tokens imported',
                 'cookie.howToGet': 'How to get the RefreshToken?',
                 'cookie.step1': 'Open your browser and sign in at',
                 'cookie.step2': 'Right-click on blank area → Inspect → Application → Cookies → https://app.kiro.dev',
@@ -2115,6 +2147,7 @@
             if (!method) return '-';
             if (method === 'idc') return 'Enterprise';
             if (method === 'social') return 'Social';
+            if (method === 'grok' || method === 'xai' || method === 'grok-cli') return 'Grok (xAI)';
             return method;
         }
         function getStatusBadge(a) {
@@ -2744,6 +2777,7 @@
                     '<div class="card" style="margin:0;cursor:pointer;border:2px solid transparent;transition:border-color 0.2s" onclick="showModal(\'local\')" onmouseover="this.style.borderColor=\'#7c3aed\'" onmouseout="this.style.borderColor=\'transparent\'"><div style="font-weight:600;margin-bottom:6px">' + t('modal.localTitle') + '</div><div style="font-size:13px;color:#64748b">' + t('modal.localDesc') + '</div></div>' +
                     '<div class="card" style="margin:0;cursor:pointer;border:2px solid transparent;transition:border-color 0.2s" onclick="showModal(\'credentials\')" onmouseover="this.style.borderColor=\'#7c3aed\'" onmouseout="this.style.borderColor=\'transparent\'"><div style="font-weight:600;margin-bottom:6px">' + t('modal.credentialsTitle') + '</div><div style="font-size:13px;color:#64748b">' + t('modal.credentialsDesc') + '</div></div>' +
                     '<div class="card" style="margin:0;cursor:pointer;border:2px solid transparent;transition:border-color 0.2s" onclick="showModal(\'cookie\')" onmouseover="this.style.borderColor=\'#7c3aed\'" onmouseout="this.style.borderColor=\'transparent\'"><div style="font-weight:600;margin-bottom:6px">' + t('modal.cookieTitle') + '</div><div style="font-size:13px;color:#64748b">' + t('modal.cookieDesc') + '</div></div>' +
+                    '<div class="card" style="margin:0;cursor:pointer;border:2px solid transparent;transition:border-color 0.2s" onclick="showModal(\'grok\')" onmouseover="this.style.borderColor=\'#7c3aed\'" onmouseout="this.style.borderColor=\'transparent\'"><div style="font-weight:600;margin-bottom:6px">' + t('modal.grokTitle') + '</div><div style="font-size:13px;color:#64748b">' + t('modal.grokDesc') + '</div></div>' +
                     '</div>' +
                     '<div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal()">' + t('common.cancel') + '</button></div>';
             } else if (type === 'builderid') {
@@ -2789,6 +2823,27 @@
                     '<div class="form-group"><label>' + t('sso.tokenLabel') + ' <span style="font-weight:normal;color:#64748b;font-size:12px">' + t('sso.tokenHint') + '</span></label><textarea id="ssoToken" placeholder="' + t('sso.tokenPlaceholder') + '" style="min-height:120px"></textarea></div>' +
                     '<div class="form-group"><label>Region</label><input type="text" id="ssoRegion" value="us-east-1"></div>' +
                     '<div class="modal-footer"><button class="btn btn-secondary" onclick="showModal(\'add\')">' + t('common.back') + '</button><button class="btn btn-primary" onclick="importSsoToken()">' + t('common.add') + '</button></div>';
+            } else if (type === 'grok') {
+                title.textContent = t('modal.grokTitle');
+                body.innerHTML =
+                    '<p style="font-size:13px;color:#64748b;margin-bottom:16px">' + t('modal.grokDesc') + '</p>' +
+                    '<div id="grokStep1">' +
+                    '<div style="display:flex;gap:12px;margin-bottom:16px"><button class="btn btn-secondary" style="flex:1" onclick="showModal(\'grok-import\')">' + t('grok.importTokens') + '</button><button class="btn btn-primary" style="flex:1" onclick="startGrokAuth()">' + t('grok.deviceLogin') + '</button></div>' +
+                    '</div>' +
+                    '<div id="grokStep2" class="hidden">' +
+                    '<div class="message" style="background:#ede9fe;color:#7c3aed;text-align:center"><p style="font-size:18px;font-weight:600;margin-bottom:8px" id="grokUserCode"></p><p style="font-size:12px">' + t('grok.verifyCode') + '</p></div>' +
+                    '<div class="form-group" style="margin-top:16px"><label>' + t('grok.verifyUrl') + '</label><div class="endpoint" style="margin-bottom:0"><span id="grokVerifyUrl" style="font-size:12px;word-break:break-all"></span></div>' +
+                    '<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-sm btn-secondary" style="flex:1" onclick="window.open(document.getElementById(\'grokVerifyUrl\').textContent,\'_blank\')">' + t('grok.open') + '</button><button class="btn btn-sm btn-secondary" style="flex:1" onclick="navigator.clipboard.writeText(document.getElementById(\'grokVerifyUrl\').textContent);alert(\' + t('common.copied') + '\')">' + t('grok.copy') + '</button></div></div>' +
+                    '<p id="grokStatus" style="color:#64748b;margin:16px 0;font-size:13px;text-align:center">' + t('grok.waiting') + '</p>' +
+                    '<div class="modal-footer"><button class="btn btn-secondary" onclick="cancelGrokAuth()">' + t('common.cancel') + '</button></div>' +
+                    '</div>';
+            } else if (type === 'grok-import') {
+                title.textContent = t('modal.grokImportTitle');
+                body.innerHTML =
+                    '<p style="font-size:13px;color:#64748b;margin-bottom:16px">' + t('modal.grokImportDesc') + '</p>' +
+                    '<div style="font-size:12px;color:#64748b;margin-bottom:12px;line-height:1.5">' + t('grok.importHint') + '</div>' +
+                    '<div class="form-group"><label>' + t('grok.tokensLabel') + '</label><textarea id="grokImportJson" placeholder='[{ "email":"a@x.ai", "tokens":{ "access_token":"eyJ...", "refresh_token":"...", "expires_at":"2026-07-14T08:18:50Z" } }]' style="min-height:160px;font-family:monospace;font-size:12px"></textarea></div>' +
+                    '<div class="modal-footer"><button class="btn btn-secondary" onclick="showModal(\'grok\')">' + t('common.back') + '</button><button class="btn btn-primary" onclick="importGrokTokens()">' + t('common.add') + '</button></div>';
             } else if (type === 'iam') {
                 title.textContent = t('modal.iamTitle');
                 body.innerHTML =
@@ -2839,6 +2894,63 @@
             const d = await res.json();
             if (d.success) { closeModal(); loadAccounts(); loadStats(); alert(t('local.importSuccess') + ': ' + (d.account?.email || d.account?.id)); autoRefreshNewAccount(d.account?.id); }
             else alert(t('common.failed') + ': ' + d.error);
+        }
+        let grokSession = '';
+        let grokPollTimer = null;
+        async function startGrokAuth() {
+            try {
+                const res = await fetch('/admin/api/auth/grok/start', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Admin-Password': password } });
+                const d = await res.json();
+                if (d.sessionId) {
+                    grokSession = d.sessionId;
+                    document.getElementById('grokStep1').classList.add('hidden');
+                    document.getElementById('grokStep2').classList.remove('hidden');
+                    document.getElementById('grokUserCode').textContent = d.userCode;
+                    document.getElementById('grokVerifyUrl').textContent = d.verificationUri;
+                    grokPoll();
+                } else {
+                    alert(t('common.failed') + ': ' + (d.error || 'unknown'));
+                }
+            } catch (e) { alert(t('common.failed') + ': ' + e.message); }
+        }
+        function grokPoll() {
+            if (!grokSession) return;
+            grokPollTimer = setTimeout(async () => {
+                try {
+                    const res = await fetch('/admin/api/auth/grok/poll', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Admin-Password': password }, body: JSON.stringify({ sessionId: grokSession }) });
+                    const d = await res.json();
+                    if (d.completed) {
+                        grokSession = ''; grokPollTimer = null;
+                        closeModal(); loadAccounts(); loadStats();
+                        alert(t('grok.loginSuccess') + (d.account ? ': ' + (d.account.email || d.account.id) : ''));
+                        return;
+                    }
+                    if (d.status === 'pending' || d.status === 'slow_down') {
+                        document.getElementById('grokStatus').textContent = t('grok.waiting');
+                        grokPoll();
+                    } else if (d.error) {
+                        grokSession = ''; grokPollTimer = null;
+                        alert(t('common.failed') + ': ' + d.error);
+                    } else { grokPoll(); }
+                } catch (e) { grokSession = ''; grokPollTimer = null; alert(t('common.failed') + ': ' + e.message); }
+            }, 5000);
+        }
+        function cancelGrokAuth() {
+            grokSession = '';
+            if (grokPollTimer) { clearTimeout(grokPollTimer); grokPollTimer = null; }
+            closeModal();
+        }
+        async function importGrokTokens() {
+            const raw = document.getElementById('grokImportJson').value.trim();
+            if (!raw) { alert(t('grok.tokensRequired')); return; }
+            try {
+                const res = await fetch('/admin/api/auth/grok/import', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Admin-Password': password }, body: raw });
+                const d = await res.json();
+                if (d.success) {
+                    closeModal(); loadAccounts(); loadStats();
+                    alert(t('grok.importSuccess') + ': ' + d.imported + (d.errors && d.errors.length ? '\n' + d.errors.join('\n') : ''));
+                } else { alert(t('common.failed') + ': ' + (d.error || 'unknown')); }
+            } catch (e) { alert(t('common.failed') + ': ' + e.message); }
         }
         async function importCredentials() {
             try {
