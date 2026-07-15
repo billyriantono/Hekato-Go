@@ -85,3 +85,42 @@ func TestUnknownProviderDoesNotFallThroughToKiro(t *testing.T) {
 		t.Fatal("expected unsupported provider error")
 	}
 }
+
+// TestClaudeInterfaceRoutesToGrok proves a Claude-format request (/v1/messages
+// shape) can drive a Grok account: Grok now exposes claudeChat, which runs
+// ClaudeToIR → IRToOpenAI → Grok's OpenAI adapter.
+func TestClaudeInterfaceRoutesToGrok(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req ResponsesRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		if req.Model != "grok-4.5" {
+			t.Fatalf("model = %q, want grok-4.5", req.Model)
+		}
+		_ = json.NewEncoder(w).Encode(ResponsesObject{
+			Status: "completed",
+			Output: []ResponseOutputItem{{Type: "message", Content: []ResponseContentPart{{Type: "output_text", Text: "salut"}}}},
+			Usage:  ResponsesUsage{InputTokens: 3, OutputTokens: 2, TotalTokens: 5},
+		})
+	}))
+	defer server.Close()
+
+	old := grok.ResponsesEndpoint
+	grok.ResponsesEndpoint = server.URL
+	defer func() { grok.ResponsesEndpoint = old }()
+
+	var text string
+	err := CallClaudeUpstreamAPI(
+		&config.Account{AuthMethod: "grok", Provider: "grok", AccessToken: "grok-token"},
+		&ClaudeRequest{Model: "grok-4.5", Messages: []ClaudeMessage{{Role: "user", Content: "dis bonjour"}}},
+		false,
+		&KiroStreamCallback{OnText: func(s string, _ bool) { text += s }},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "salut" {
+		t.Fatalf("text = %q, want salut", text)
+	}
+}
