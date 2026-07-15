@@ -8,13 +8,13 @@ package providers
 // Kiro is the deliberate exception: its wire format IS its IR, so it keeps its
 // own ClaudeToKiro/OpenAIToKiro converters. Every OTHER provider consumes ChatIR.
 type ChatIR struct {
-	Model       string
-	System      string // already processed (prompt filters / thinking injection applied by the parser)
-	Messages    []IRMessage
-	Tools       []IRTool
-	MaxTokens   int
-	Temperature float64
-	TopP        float64
+	Model        string
+	SystemPrompt string // already processed (prompt filters / thinking injection applied by the parser)
+	Messages     []IRMessage
+	Tools        []IRTool
+	MaxTokens    int
+	Temperature  float64
+	TopP         float64
 }
 
 // IRMessage is one conversation turn. Role is "user" or "assistant".
@@ -32,5 +32,5 @@ type IRMessage struct {
 type IRTool struct {
 	Name        string
 	Description string
-	Schema      any
+	InputSchema any
 }

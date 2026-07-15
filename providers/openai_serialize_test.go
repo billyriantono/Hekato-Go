@@ -4,14 +4,14 @@ import "testing"
 
 func TestIRToOpenAIMapsSystemToolsAndResults(t *testing.T) {
 	ir := &ChatIR{
-		Model:  "grok-4.5",
-		System: "be terse",
+		Model:        "grok-4.5",
+		SystemPrompt: "be terse",
 		Messages: []IRMessage{
 			{Role: "user", Text: "run ls"},
 			{Role: "assistant", ToolCalls: []ToolUse{{ToolUseID: "c1", Name: "exec", Input: map[string]interface{}{"cmd": "ls"}}}},
 			{Role: "user", ToolResults: []ToolResult{{ToolUseID: "c1", Content: []ResultContent{{Text: "file.txt"}}}}},
 		},
-		Tools: []IRTool{{Name: "exec", Description: "run", Schema: map[string]interface{}{"type": "object"}}},
+		Tools: []IRTool{{Name: "exec", Description: "run", InputSchema: map[string]interface{}{"type": "object"}}},
 	}
 	req := IRToOpenAI(ir)
 

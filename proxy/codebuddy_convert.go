@@ -36,7 +36,7 @@ func OpenAIToCodeBuddy(req *OpenAIRequest, thinking bool) codebuddy.ChatRequest 
 }
 
 // openAIToIR parses an OpenAI request into the neutral ChatIR. System messages
-// become ir.System; user/assistant/tool messages map to IR turns. Prompt filters
+// become ir.SystemPrompt; user/assistant/tool messages map to IR turns. Prompt filters
 // and thinking injection are intentionally not applied here — matching the prior
 // OpenAI→CodeBuddy path, which passed messages through unfiltered.
 func openAIToIR(req *OpenAIRequest) *providers.ChatIR {
@@ -80,7 +80,7 @@ func openAIToIR(req *OpenAIRequest) *providers.ChatIR {
 		}
 	}
 	if len(system) > 0 {
-		ir.System = strings.Join(system, "\n")
+		ir.SystemPrompt = strings.Join(system, "\n")
 	}
 
 	for _, t := range req.Tools {
@@ -90,7 +90,7 @@ func openAIToIR(req *OpenAIRequest) *providers.ChatIR {
 		ir.Tools = append(ir.Tools, providers.IRTool{
 			Name:        t.Function.Name,
 			Description: t.Function.Description,
-			Schema:      t.Function.Parameters,
+			InputSchema: t.Function.Parameters,
 		})
 	}
 	return ir

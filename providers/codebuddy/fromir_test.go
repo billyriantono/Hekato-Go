@@ -7,8 +7,8 @@ import (
 
 func TestFromIREmitsSystemMessageNotPrimingPair(t *testing.T) {
 	ir := &providers.ChatIR{
-		Model:  "claude-opus-4.6",
-		System: "You are a French tutor.",
+		Model:        "claude-opus-4.6",
+		SystemPrompt: "You are a French tutor.",
 		Messages: []providers.IRMessage{
 			{Role: "user", Text: "bonjour"},
 		},
@@ -41,7 +41,7 @@ func TestFromIRToolCallAndResultRoundTrip(t *testing.T) {
 			}},
 		},
 		Tools: []providers.IRTool{
-			{Name: "exec_command", Description: "run", Schema: map[string]interface{}{"type": "object"}},
+			{Name: "exec_command", Description: "run", InputSchema: map[string]interface{}{"type": "object"}},
 		},
 	}
 	req := FromIR(ir)
