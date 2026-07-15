@@ -20,7 +20,7 @@ func TestResolveProfileArnReturnsCachedValueWithoutRequest(t *testing.T) {
 			return nil, nil
 		}),
 	})
-	t.Cleanup(func() { providers.InitKiroHttpClient("") })
+	t.Cleanup(func() { providers.InitHTTPClients("") })
 
 	account := &config.Account{ProfileArn: " arn:aws:codewhisperer:profile/test "}
 	got, err := ResolveProfileArn(account)
@@ -92,7 +92,7 @@ func TestResolveProfileArnFetchesAndCachesProfile(t *testing.T) {
 			}, nil
 		}),
 	})
-	t.Cleanup(func() { providers.InitKiroHttpClient("") })
+	t.Cleanup(func() { providers.InitHTTPClients("") })
 
 	requestAccount := account
 	requestAccount.UsageCurrent = 0
@@ -137,7 +137,7 @@ func TestResolveProfileArnSuppressesBuilderIDUnsupportedLookup(t *testing.T) {
 			}, nil
 		}),
 	})
-	t.Cleanup(func() { providers.InitKiroHttpClient("") })
+	t.Cleanup(func() { providers.InitHTTPClients("") })
 
 	account := &config.Account{
 		ID:          "builder-1",
@@ -177,7 +177,7 @@ func TestResolveProfileArnKeepsRefreshFallbackForBuilderIDUnsupportedLookup(t *t
 			}, nil
 		}),
 	})
-	t.Cleanup(func() { providers.InitKiroHttpClient("") })
+	t.Cleanup(func() { providers.InitHTTPClients("") })
 
 	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -262,7 +262,7 @@ func TestRefreshAccountInfoDoesNotDisableBuilderIDWhenProfileLookupUnsupported(t
 			}
 		}),
 	})
-	t.Cleanup(func() { providers.InitKiroHttpClient("") })
+	t.Cleanup(func() { providers.InitHTTPClients("") })
 
 	requestAccount := account
 	if _, err := RefreshAccountInfo(&requestAccount); err != nil {

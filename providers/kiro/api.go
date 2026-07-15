@@ -96,7 +96,7 @@ func getSortedEndpoints(preferred string) []Endpoint {
 }
 
 // CallKiroAPI calls the Kiro streaming API, trying each configured endpoint with automatic fallback.
-func CallAPI(account *config.Account, payload *providers.KiroPayload, callback *providers.KiroStreamCallback) error {
+func CallAPI(account *config.Account, payload *providers.KiroPayload, callback *providers.StreamCallback) error {
 	originalProfileArn := ""
 	if payload != nil {
 		originalProfileArn = payload.ProfileArn
@@ -120,7 +120,7 @@ func CallAPI(account *config.Account, payload *providers.KiroPayload, callback *
 		originalOnToolUse := callback.OnToolUse
 		nameMap := payload.ToolNameMap
 		wrapped := *callback
-		wrapped.OnToolUse = func(tu providers.KiroToolUse) {
+		wrapped.OnToolUse = func(tu providers.ToolUse) {
 			if original, ok := nameMap[tu.Name]; ok {
 				tu.Name = original
 			}
@@ -220,9 +220,9 @@ func accountEmailForLog(account *config.Account) string {
 // ==================== Event Stream Parsing ====================
 
 // parseEventStream decodes an AWS binary Event Stream response body.
-func parseEventStream(body io.Reader, callback *providers.KiroStreamCallback) error {
+func parseEventStream(body io.Reader, callback *providers.StreamCallback) error {
 	if callback == nil {
-		callback = &providers.KiroStreamCallback{}
+		callback = &providers.StreamCallback{}
 	}
 
 	// Read directly without bufio to avoid buffering latency in streaming responses.
@@ -444,7 +444,7 @@ type toolUseState struct {
 	GeneratedID bool
 }
 
-func handleToolUseEvent(event map[string]interface{}, current *toolUseState, callback *providers.KiroStreamCallback) *toolUseState {
+func handleToolUseEvent(event map[string]interface{}, current *toolUseState, callback *providers.StreamCallback) *toolUseState {
 	toolUseID := firstStringField(event, "toolUseId", "toolUseID", "tool_use_id", "id")
 	name := firstStringField(event, "name", "toolName", "tool_name")
 	isStop := firstBoolField(event, "stop", "isStop", "done")
@@ -486,7 +486,7 @@ func handleToolUseEvent(event map[string]interface{}, current *toolUseState, cal
 	return current
 }
 
-func finishToolUse(state *toolUseState, callback *providers.KiroStreamCallback) {
+func finishToolUse(state *toolUseState, callback *providers.StreamCallback) {
 	if state == nil || state.Name == "" || callback == nil || callback.OnToolUse == nil {
 		return
 	}
@@ -500,7 +500,7 @@ func finishToolUse(state *toolUseState, callback *providers.KiroStreamCallback) 
 	if input == nil {
 		input = make(map[string]interface{})
 	}
-	callback.OnToolUse(providers.KiroToolUse{
+	callback.OnToolUse(providers.ToolUse{
 		ToolUseID: state.ToolUseID,
 		Name:      state.Name,
 		Input:     input,

@@ -206,8 +206,8 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 	// 构建历史消息
 	history := make([]KiroHistoryMessage, 0)
 	var currentContent string
-	var currentImages []KiroImage
-	var currentToolResults []KiroToolResult
+	var currentImages []Image
+	var currentToolResults []ToolResult
 
 	for i, msg := range req.Messages {
 		isLast := i == len(req.Messages)-1
@@ -318,7 +318,7 @@ func ClaudeToKiro(req *ClaudeRequest, thinking bool) *KiroPayload {
 
 	// Only attach structured tool results when they answer the last history
 	// assistant turn; otherwise they have already been folded into finalContent.
-	var attachToolResults []KiroToolResult
+	var attachToolResults []ToolResult
 	if keepCurrentToolResults {
 		attachToolResults = currentToolResults
 	}
@@ -619,10 +619,10 @@ func extractSystemPrompt(system interface{}) string {
 	return ""
 }
 
-func extractClaudeUserContent(content interface{}) (string, []KiroImage, []KiroToolResult) {
+func extractClaudeUserContent(content interface{}) (string, []Image, []ToolResult) {
 	var text string
-	var images []KiroImage
-	var toolResults []KiroToolResult
+	var images []Image
+	var toolResults []ToolResult
 
 	if s, ok := content.(string); ok {
 		return s, nil, nil
@@ -654,9 +654,9 @@ func extractClaudeUserContent(content interface{}) (string, []KiroImage, []KiroT
 						resultContent = toolResultImagePlaceholder
 					}
 				}
-				toolResults = append(toolResults, KiroToolResult{
+				toolResults = append(toolResults, ToolResult{
 					ToolUseID: toolUseID,
-					Content:   []KiroResultContent{{Text: resultContent}},
+					Content:   []ResultContent{{Text: resultContent}},
 					Status:    "success",
 				})
 			}
@@ -666,7 +666,7 @@ func extractClaudeUserContent(content interface{}) (string, []KiroImage, []KiroT
 	return text, images, toolResults
 }
 
-func extractImageFromClaudeBlock(block map[string]interface{}) *KiroImage {
+func extractImageFromClaudeBlock(block map[string]interface{}) *Image {
 	if source, ok := block["source"].(map[string]interface{}); ok {
 		if data, ok := source["data"].(string); ok {
 			if img := parseDataURL(data); img != nil {
@@ -704,13 +704,13 @@ func extractImageFromClaudeBlock(block map[string]interface{}) *KiroImage {
 	return nil
 }
 
-func extractToolResultContent(content interface{}) (string, []KiroImage) {
+func extractToolResultContent(content interface{}) (string, []Image) {
 	if s, ok := content.(string); ok {
 		return s, nil
 	}
 	if blocks, ok := content.([]interface{}); ok {
 		var parts []string
-		var images []KiroImage
+		var images []Image
 		for _, b := range blocks {
 			block, ok := b.(map[string]interface{})
 			if !ok {
@@ -1025,8 +1025,8 @@ func OpenAIToKiro(req *OpenAIRequest, thinking bool) *KiroPayload {
 	// 构建历史消息
 	history := make([]KiroHistoryMessage, 0)
 	var currentContent string
-	var currentImages []KiroImage
-	var currentToolResults []KiroToolResult
+	var currentImages []Image
+	var currentToolResults []ToolResult
 
 	for i, msg := range nonSystemMessages {
 		isLast := i == len(nonSystemMessages)-1
@@ -1086,9 +1086,9 @@ func OpenAIToKiro(req *OpenAIRequest, thinking bool) *KiroPayload {
 			} else {
 				content = extractOpenAIMessageText(msg.Content)
 			}
-			currentToolResults = append(currentToolResults, KiroToolResult{
+			currentToolResults = append(currentToolResults, ToolResult{
 				ToolUseID: msg.ToolCallID,
-				Content:   []KiroResultContent{{Text: content}},
+				Content:   []ResultContent{{Text: content}},
 				Status:    "success",
 			})
 
@@ -1175,7 +1175,7 @@ func OpenAIToKiro(req *OpenAIRequest, thinking bool) *KiroPayload {
 		Images:  currentImages,
 	}
 
-	var attachToolResults []KiroToolResult
+	var attachToolResults []ToolResult
 	if keepCurrentToolResults {
 		attachToolResults = currentToolResults
 	}
@@ -1203,13 +1203,13 @@ func OpenAIToKiro(req *OpenAIRequest, thinking bool) *KiroPayload {
 	return payload
 }
 
-func extractOpenAIUserContent(content interface{}) (string, []KiroImage) {
+func extractOpenAIUserContent(content interface{}) (string, []Image) {
 	if s, ok := content.(string); ok {
 		return s, nil
 	}
 
 	var text string
-	var images []KiroImage
+	var images []Image
 
 	if part, ok := content.(map[string]interface{}); ok {
 		if t, ok := extractOpenAITextPart(part); ok {
@@ -1291,7 +1291,7 @@ func extractOpenAIMessageText(content interface{}) string {
 
 // collectToolResultIDs returns the set of toolUseId values referenced by the
 // given tool results.
-func collectToolResultIDs(toolResults []KiroToolResult) map[string]bool {
+func collectToolResultIDs(toolResults []ToolResult) map[string]bool {
 	if len(toolResults) == 0 {
 		return nil
 	}
@@ -1355,7 +1355,7 @@ func stripPollutedToolCallText(content string) string {
 // text instead of issuing real structured tool calls. All tool narration lives
 // in user "Tool results" turns, which the model reads but never authors, so it
 // has no invocation pattern to copy.
-func narrateToolResults(toolResults []KiroToolResult, names map[string]string) string {
+func narrateToolResults(toolResults []ToolResult, names map[string]string) string {
 	if len(toolResults) == 0 {
 		return ""
 	}
@@ -1661,7 +1661,7 @@ func truncateCurrentMessage(payload *KiroPayload) {
 	}
 }
 
-func buildToolResultsContinuation(toolResults []KiroToolResult) string {
+func buildToolResultsContinuation(toolResults []ToolResult) string {
 	if len(toolResults) == 0 {
 		return minimalFallbackUserContent
 	}
@@ -1773,7 +1773,7 @@ func extractOpenAITextPart(part map[string]interface{}) (string, bool) {
 	return "", false
 }
 
-func extractImageFromOpenAIPart(part map[string]interface{}) *KiroImage {
+func extractImageFromOpenAIPart(part map[string]interface{}) *Image {
 	partType, _ := part["type"].(string)
 	if partType != "" {
 		switch partType {
@@ -1864,7 +1864,7 @@ func normalizeUserContent(text string, hasImages bool) string {
 	return trimmed
 }
 
-func parseDataURL(url string) *KiroImage {
+func parseDataURL(url string) *Image {
 	cleaned := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(url, "\n", ""), "\r", ""))
 	if strings.Contains(cleaned, "[Image") {
 		return nil
@@ -1881,7 +1881,7 @@ func parseDataURL(url string) *KiroImage {
 	return parseBase64Image(matches[2], matches[1])
 }
 
-func parseBase64Image(data, format string) *KiroImage {
+func parseBase64Image(data, format string) *Image {
 	format = strings.ToLower(format)
 	if format == "jpg" {
 		format = "jpeg"
@@ -1902,7 +1902,7 @@ func parseBase64Image(data, format string) *KiroImage {
 		format = "png"
 	}
 
-	return &KiroImage{
+	return &Image{
 		Format: format,
 		Source: struct {
 			Bytes string `json:"bytes"`

@@ -16,28 +16,28 @@ import (
 )
 
 // Global HTTP clients, swappable at runtime to apply proxy reconfiguration without restart.
-var kiroHttpStore atomic.Pointer[http.Client]
-var kiroRestHttpStore atomic.Pointer[http.Client]
+var streamClientStore atomic.Pointer[http.Client]
+var restClientStore atomic.Pointer[http.Client]
 
 // proxyClientCache caches http.Client instances keyed by proxy URL for per-account proxy support.
 var proxyClientCache sync.Map
 
 func init() {
-	InitKiroHttpClient("")
+	InitHTTPClients("")
 }
 
 func clientForAccount(account *config.Account, rest bool) *http.Client {
 	if account == nil || (account.ProxyURL == "" && account.RelayURL == "") {
 		if rest {
-			return kiroRestHttpStore.Load()
+			return restClientStore.Load()
 		}
-		return kiroHttpStore.Load()
+		return streamClientStore.Load()
 	}
 	key := fmt.Sprintf("%t\x00%s\x00%s\x00%s", rest, account.ProxyURL, account.RelayURL, account.RelaySecret)
 	if cached, ok := proxyClientCache.Load(key); ok {
 		return cached.(*http.Client)
 	}
-	transport := http.RoundTripper(buildKiroTransport(account.ProxyURL))
+	transport := http.RoundTripper(buildTransport(account.ProxyURL))
 	if account.RelayURL != "" {
 		transport = egress.NewRelayTransportWith(transport, account.RelayURL, account.RelaySecret)
 	}
@@ -57,8 +57,8 @@ func GetRestClientForAccount(account *config.Account) *http.Client {
 	return clientForAccount(account, true)
 }
 
-// buildKiroTransport constructs an HTTP Transport with optional outbound proxy support.
-func buildKiroTransport(proxyURL string) *http.Transport {
+// buildTransport constructs an HTTP Transport with optional outbound proxy support.
+func buildTransport(proxyURL string) *http.Transport {
 	t := &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 20,
@@ -78,33 +78,33 @@ func buildKiroTransport(proxyURL string) *http.Transport {
 	return t
 }
 
-// InitKiroHttpClient initializes (or reinitializes) the HTTP clients used for Kiro API requests.
-func InitKiroHttpClient(proxyURL string) {
+// InitHTTPClients initializes (or reinitializes) the HTTP clients used for Kiro API requests.
+func InitHTTPClients(proxyURL string) {
 	client := &http.Client{
 		Timeout:   5 * time.Minute,
-		Transport: egress.NewRelayTransport(buildKiroTransport(proxyURL)),
+		Transport: egress.NewRelayTransport(buildTransport(proxyURL)),
 	}
-	kiroHttpStore.Store(client)
+	streamClientStore.Store(client)
 
 	restClient := &http.Client{
 		Timeout:   30 * time.Second,
-		Transport: egress.NewRelayTransport(buildKiroTransport(proxyURL)),
+		Transport: egress.NewRelayTransport(buildTransport(proxyURL)),
 	}
-	kiroRestHttpStore.Store(restClient)
+	restClientStore.Store(restClient)
 }
 
 // SwapClientsForTest replaces the default streaming/REST clients and returns a
 // restore func. Test-only seam for handler-level integration tests.
 func SwapClientsForTest(streaming, rest *http.Client) (restore func()) {
-	oldStreaming, oldRest := kiroHttpStore.Load(), kiroRestHttpStore.Load()
+	oldStreaming, oldRest := streamClientStore.Load(), restClientStore.Load()
 	if streaming != nil {
-		kiroHttpStore.Store(streaming)
+		streamClientStore.Store(streaming)
 	}
 	if rest != nil {
-		kiroRestHttpStore.Store(rest)
+		restClientStore.Store(rest)
 	}
 	return func() {
-		kiroHttpStore.Store(oldStreaming)
-		kiroRestHttpStore.Store(oldRest)
+		streamClientStore.Store(oldStreaming)
+		restClientStore.Store(oldRest)
 	}
 }

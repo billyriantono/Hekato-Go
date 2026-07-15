@@ -50,10 +50,10 @@ func TestParseEventStreamFinishesPendingToolUseOnEOF(t *testing.T) {
 		"input":     `{"server":"ida-pro-mcp"}`,
 	}))
 
-	var toolUses []providers.KiroToolUse
+	var toolUses []providers.ToolUse
 	var completed bool
-	err := parseEventStream(stream, &providers.KiroStreamCallback{
-		OnToolUse: func(toolUse providers.KiroToolUse) {
+	err := parseEventStream(stream, &providers.StreamCallback{
+		OnToolUse: func(toolUse providers.ToolUse) {
 			toolUses = append(toolUses, toolUse)
 		},
 		OnComplete: func(_, _ int) {
@@ -100,19 +100,19 @@ func TestParseEventStreamNilCallbackFieldsAreNoOp(t *testing.T) {
 		"content": "hello",
 	}))
 
-	if err := parseEventStream(stream, &providers.KiroStreamCallback{}); err != nil {
+	if err := parseEventStream(stream, &providers.StreamCallback{}); err != nil {
 		t.Fatalf("expected empty callback to be a no-op, got %v", err)
 	}
 }
 
 func TestHandleToolUseEventGeneratesMissingToolUseID(t *testing.T) {
-	var toolUses []providers.KiroToolUse
+	var toolUses []providers.ToolUse
 	current := handleToolUseEvent(map[string]interface{}{
 		"name":  "mcpIdaProMcpStatus",
 		"input": `{"server":"ida-pro-mcp"}`,
 		"stop":  true,
-	}, nil, &providers.KiroStreamCallback{
-		OnToolUse: func(toolUse providers.KiroToolUse) {
+	}, nil, &providers.StreamCallback{
+		OnToolUse: func(toolUse providers.ToolUse) {
 			toolUses = append(toolUses, toolUse)
 		},
 	})
@@ -132,9 +132,9 @@ func TestHandleToolUseEventGeneratesMissingToolUseID(t *testing.T) {
 }
 
 func TestHandleToolUseEventReplacesGeneratedIDWhenRealIDArrives(t *testing.T) {
-	var toolUses []providers.KiroToolUse
-	callback := &providers.KiroStreamCallback{
-		OnToolUse: func(toolUse providers.KiroToolUse) {
+	var toolUses []providers.ToolUse
+	callback := &providers.StreamCallback{
+		OnToolUse: func(toolUse providers.ToolUse) {
 			toolUses = append(toolUses, toolUse)
 		},
 	}

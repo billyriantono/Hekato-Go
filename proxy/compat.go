@@ -15,14 +15,14 @@ type (
 	UserInputMessageContext      = providers.UserInputMessageContext
 	KiroToolWrapper              = providers.KiroToolWrapper
 	InputSchema                  = providers.InputSchema
-	KiroToolResult               = providers.KiroToolResult
-	KiroResultContent            = providers.KiroResultContent
-	KiroImage                    = providers.KiroImage
+	ToolResult                   = providers.ToolResult
+	ResultContent                = providers.ResultContent
+	Image                        = providers.Image
 	KiroHistoryMessage           = providers.KiroHistoryMessage
 	KiroAssistantResponseMessage = providers.KiroAssistantResponseMessage
-	KiroToolUse                  = providers.KiroToolUse
+	KiroToolUse                  = providers.ToolUse
 	InferenceConfig              = providers.InferenceConfig
-	KiroStreamCallback           = providers.KiroStreamCallback
+	KiroStreamCallback           = providers.StreamCallback
 	ModelInfo                    = providers.ModelInfo
 	OpenAIRequest                = providers.OpenAIRequest
 	OpenAIMessage                = providers.OpenAIMessage
@@ -41,7 +41,7 @@ type (
 var (
 	GetClientForAccount     = providers.GetClientForAccount
 	GetRestClientForAccount = providers.GetRestClientForAccount
-	InitKiroHttpClient      = providers.InitKiroHttpClient
+	InitKiroHttpClient      = providers.InitHTTPClients
 	upstreamError           = providers.Errorf
 	readTokenNumber         = providers.ReadTokenNumber
 
