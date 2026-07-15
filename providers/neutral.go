@@ -1,25 +1,25 @@
 package providers
 
-// ChatIR is the provider-neutral intermediate representation of a chat request.
-// Frontend formats (Claude, OpenAI) are parsed INTO a ChatIR; provider packages
+// NeutralChat is the provider-neutral intermediate representation of a chat request.
+// Frontend formats (Claude, OpenAI) are parsed INTO a NeutralChat; provider packages
 // serialize FROM it into their own wire format. This is what lets a new provider
 // avoid converting from another provider's payload shape (e.g. KiroPayload).
 //
-// Kiro is the deliberate exception: its wire format IS its IR, so it keeps its
-// own ClaudeToKiro/OpenAIToKiro converters. Every OTHER provider consumes ChatIR.
-type ChatIR struct {
+// Kiro is the deliberate exception: its wire format IS its neutral form, so it keeps its
+// own ClaudeToKiro/OpenAIToKiro converters. Every OTHER provider consumes NeutralChat.
+type NeutralChat struct {
 	Model        string
 	SystemPrompt string // already processed (prompt filters / thinking injection applied by the parser)
-	Messages     []IRMessage
-	Tools        []IRTool
+	Messages     []NeutralMessage
+	Tools        []NeutralTool
 	MaxTokens    int
 	Temperature  float64
 	TopP         float64
 }
 
-// IRMessage is one conversation turn. Role is "user" or "assistant".
+// NeutralMessage is one conversation turn. Role is "user" or "assistant".
 // ToolCalls appear on assistant turns; ToolResults on user turns.
-type IRMessage struct {
+type NeutralMessage struct {
 	Role        string
 	Text        string
 	Images      []Image
@@ -27,9 +27,9 @@ type IRMessage struct {
 	ToolResults []ToolResult // user turn: results answering a prior tool call
 }
 
-// IRTool is a tool definition in neutral form (no provider-specific name
+// NeutralTool is a tool definition in neutral form (no provider-specific name
 // sanitization or schema cleaning — each serializer applies its own).
-type IRTool struct {
+type NeutralTool struct {
 	Name        string
 	Description string
 	InputSchema any

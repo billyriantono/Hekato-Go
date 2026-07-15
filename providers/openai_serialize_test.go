@@ -3,17 +3,17 @@ package providers
 import "testing"
 
 func TestIRToOpenAIMapsSystemToolsAndResults(t *testing.T) {
-	ir := &ChatIR{
+	ir := &NeutralChat{
 		Model:        "grok-4.5",
 		SystemPrompt: "be terse",
-		Messages: []IRMessage{
+		Messages: []NeutralMessage{
 			{Role: "user", Text: "run ls"},
 			{Role: "assistant", ToolCalls: []ToolUse{{ToolUseID: "c1", Name: "exec", Input: map[string]interface{}{"cmd": "ls"}}}},
 			{Role: "user", ToolResults: []ToolResult{{ToolUseID: "c1", Content: []ResultContent{{Text: "file.txt"}}}}},
 		},
-		Tools: []IRTool{{Name: "exec", Description: "run", InputSchema: map[string]interface{}{"type": "object"}}},
+		Tools: []NeutralTool{{Name: "exec", Description: "run", InputSchema: map[string]interface{}{"type": "object"}}},
 	}
-	req := IRToOpenAI(ir)
+	req := NeutralToOpenAI(ir)
 
 	if req.Model != "grok-4.5" {
 		t.Fatalf("model = %q", req.Model)
@@ -37,7 +37,7 @@ func TestIRToOpenAIMapsSystemToolsAndResults(t *testing.T) {
 }
 
 func TestIRToOpenAINilSafe(t *testing.T) {
-	if req := IRToOpenAI(nil); req == nil || len(req.Messages) != 0 {
-		t.Fatalf("nil IR should yield empty request, got %+v", req)
+	if req := NeutralToOpenAI(nil); req == nil || len(req.Messages) != 0 {
+		t.Fatalf("nil input should yield empty request, got %+v", req)
 	}
 }

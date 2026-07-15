@@ -7,12 +7,12 @@ import (
 
 const fallbackUserContent = "."
 
-// FromIR serializes a provider-neutral ChatIR into CodeBuddy's native
-// OpenAI-compatible /v2/chat/completions request. The generic IR→OpenAI mapping
-// is shared (providers.IRToOpenAI); this adds CodeBuddy specifics: default model
+// FromNeutral serializes a provider-neutral NeutralChat into CodeBuddy's native
+// OpenAI-compatible /v2/chat/completions request. The generic NeutralChat→OpenAI mapping
+// is shared (providers.NeutralToOpenAI); this adds CodeBuddy specifics: default model
 // "auto", a generic system prompt when none is present, and a fallback user turn.
-func FromIR(ir *providers.ChatIR) ChatRequest {
-	oai := providers.IRToOpenAI(ir)
+func FromNeutral(nc *providers.NeutralChat) ChatRequest {
+	oai := providers.NeutralToOpenAI(nc)
 
 	req := ChatRequest{
 		Model:       oai.Model,
@@ -43,7 +43,7 @@ func hasNonSystemMessage(messages []providers.OpenAIMessage) bool {
 }
 
 // ensureSystemMessage prepends a generic system prompt only when the request
-// carries none (i.e. the neutral IR had an empty System).
+// carries none (i.e. the NeutralChat had an empty SystemPrompt).
 func ensureSystemMessage(messages []providers.OpenAIMessage) []providers.OpenAIMessage {
 	for _, msg := range messages {
 		if strings.EqualFold(strings.TrimSpace(msg.Role), "system") {

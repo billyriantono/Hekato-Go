@@ -88,7 +88,7 @@ func TestUnknownProviderDoesNotFallThroughToKiro(t *testing.T) {
 
 // TestClaudeInterfaceRoutesToGrok proves a Claude-format request (/v1/messages
 // shape) can drive a Grok account: Grok now exposes claudeChat, which runs
-// ClaudeToIR → IRToOpenAI → Grok's OpenAI adapter.
+// ClaudeToNeutral → NeutralToOpenAI → Grok's OpenAI adapter.
 func TestClaudeInterfaceRoutesToGrok(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req ResponsesRequest

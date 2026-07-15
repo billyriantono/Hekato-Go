@@ -1,6 +1,6 @@
 // Package providers holds the shared contract between the proxy core and the
 // per-provider packages (providers/kiro, providers/codebuddy, providers/grok):
-// the internal request IR, wire types, upstream error type, outbound HTTP
+// the neutral request representation (NeutralChat), wire types, upstream error type, outbound HTTP
 // clients, and the admin route registry.
 package providers
 

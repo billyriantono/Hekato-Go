@@ -6,14 +6,14 @@ import (
 )
 
 func TestFromIREmitsSystemMessageNotPrimingPair(t *testing.T) {
-	ir := &providers.ChatIR{
+	ir := &providers.NeutralChat{
 		Model:        "claude-opus-4.6",
 		SystemPrompt: "You are a French tutor.",
-		Messages: []providers.IRMessage{
+		Messages: []providers.NeutralMessage{
 			{Role: "user", Text: "bonjour"},
 		},
 	}
-	req := FromIR(ir)
+	req := FromNeutral(ir)
 
 	if req.Model != "claude-opus-4.6" {
 		t.Fatalf("model = %q", req.Model)
@@ -30,8 +30,8 @@ func TestFromIREmitsSystemMessageNotPrimingPair(t *testing.T) {
 }
 
 func TestFromIRToolCallAndResultRoundTrip(t *testing.T) {
-	ir := &providers.ChatIR{
-		Messages: []providers.IRMessage{
+	ir := &providers.NeutralChat{
+		Messages: []providers.NeutralMessage{
 			{Role: "user", Text: "run ls"},
 			{Role: "assistant", ToolCalls: []providers.ToolUse{
 				{ToolUseID: "call_1", Name: "exec_command", Input: map[string]interface{}{"cmd": "ls"}},
@@ -40,11 +40,11 @@ func TestFromIRToolCallAndResultRoundTrip(t *testing.T) {
 				{ToolUseID: "call_1", Content: []providers.ResultContent{{Text: "file.txt"}}},
 			}},
 		},
-		Tools: []providers.IRTool{
+		Tools: []providers.NeutralTool{
 			{Name: "exec_command", Description: "run", InputSchema: map[string]interface{}{"type": "object"}},
 		},
 	}
-	req := FromIR(ir)
+	req := FromNeutral(ir)
 
 	// Tool names pass through unmodified (no Kiro camelCase sanitization).
 	if len(req.Tools) != 1 || req.Tools[0].Function.Name != "exec_command" {
@@ -69,7 +69,7 @@ func TestFromIRToolCallAndResultRoundTrip(t *testing.T) {
 }
 
 func TestFromIRFallsBackToGenericSystemAndUser(t *testing.T) {
-	req := FromIR(&providers.ChatIR{})
+	req := FromNeutral(&providers.NeutralChat{})
 	if len(req.Messages) < 2 {
 		t.Fatalf("want generic system + fallback user, got %d", len(req.Messages))
 	}
@@ -80,6 +80,6 @@ func TestFromIRFallsBackToGenericSystemAndUser(t *testing.T) {
 		t.Fatal("expected a fallback user message")
 	}
 	if req.Model != "auto" {
-		t.Fatalf("empty IR should default model to auto, got %q", req.Model)
+		t.Fatalf("empty input should default model to auto, got %q", req.Model)
 	}
 }
