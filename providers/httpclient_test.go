@@ -11,7 +11,7 @@ import (
 )
 
 func TestBuildKiroTransportUsesExplicitProxyURL(t *testing.T) {
-	transport := buildKiroTransport("http://proxy.local:8080")
+	transport := buildTransport("http://proxy.local:8080")
 	req := &http.Request{URL: mustParseURL(t, "https://q.us-east-1.amazonaws.com")}
 
 	got, err := transport.Proxy(req)
@@ -26,7 +26,7 @@ func TestBuildKiroTransportFallsBackToEnvironmentProxy(t *testing.T) {
 	t.Setenv("NO_PROXY", "")
 	t.Setenv("no_proxy", "")
 
-	transport := buildKiroTransport("")
+	transport := buildTransport("")
 	req := &http.Request{URL: mustParseURL(t, "https://q.us-east-1.amazonaws.com")}
 
 	got, err := transport.Proxy(req)
@@ -55,12 +55,12 @@ func TestAccountRelayOverridesGlobalOutbound(t *testing.T) {
 	}
 }
 
-func TestInitKiroHttpClientKeepsShortRestTimeout(t *testing.T) {
-	InitKiroHttpClient("")
-	t.Cleanup(func() { InitKiroHttpClient("") })
+func TestInitHTTPClientsKeepsShortRestTimeout(t *testing.T) {
+	InitHTTPClients("")
+	t.Cleanup(func() { InitHTTPClients("") })
 
-	streamClient := kiroHttpStore.Load()
-	restClient := kiroRestHttpStore.Load()
+	streamClient := streamClientStore.Load()
+	restClient := restClientStore.Load()
 
 	if streamClient.Timeout != 5*time.Minute {
 		t.Fatalf("expected streaming timeout to be 5m, got %s", streamClient.Timeout)

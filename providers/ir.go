@@ -28,13 +28,13 @@ type KiroUserInputMessage struct {
 	Content                 string                   `json:"content"`
 	ModelID                 string                   `json:"modelId,omitempty"`
 	Origin                  string                   `json:"origin"`
-	Images                  []KiroImage              `json:"images,omitempty"`
+	Images                  []Image                  `json:"images,omitempty"`
 	UserInputMessageContext *UserInputMessageContext `json:"userInputMessageContext,omitempty"`
 }
 
 type UserInputMessageContext struct {
 	Tools       []KiroToolWrapper `json:"tools,omitempty"`
-	ToolResults []KiroToolResult  `json:"toolResults,omitempty"`
+	ToolResults []ToolResult      `json:"toolResults,omitempty"`
 }
 
 type KiroToolWrapper struct {
@@ -49,17 +49,17 @@ type InputSchema struct {
 	JSON interface{} `json:"json"`
 }
 
-type KiroToolResult struct {
-	ToolUseID string              `json:"toolUseId"`
-	Content   []KiroResultContent `json:"content"`
-	Status    string              `json:"status"`
+type ToolResult struct {
+	ToolUseID string          `json:"toolUseId"`
+	Content   []ResultContent `json:"content"`
+	Status    string          `json:"status"`
 }
 
-type KiroResultContent struct {
+type ResultContent struct {
 	Text string `json:"text"`
 }
 
-type KiroImage struct {
+type Image struct {
 	Format string `json:"format"`
 	Source struct {
 		Bytes string `json:"bytes"`
@@ -72,11 +72,11 @@ type KiroHistoryMessage struct {
 }
 
 type KiroAssistantResponseMessage struct {
-	Content  string        `json:"content"`
-	ToolUses []KiroToolUse `json:"toolUses,omitempty"`
+	Content  string    `json:"content"`
+	ToolUses []ToolUse `json:"toolUses,omitempty"`
 }
 
-type KiroToolUse struct {
+type ToolUse struct {
 	ToolUseID string                 `json:"toolUseId"`
 	Name      string                 `json:"name"`
 	Input     map[string]interface{} `json:"input"`
@@ -90,10 +90,10 @@ type InferenceConfig struct {
 
 // ==================== Stream Callbacks ====================
 
-// KiroStreamCallback stream response callbacks
-type KiroStreamCallback struct {
+// StreamCallback stream response callbacks
+type StreamCallback struct {
 	OnText         func(text string, isThinking bool)
-	OnToolUse      func(toolUse KiroToolUse)
+	OnToolUse      func(toolUse ToolUse)
 	OnComplete     func(inputTokens, outputTokens int)
 	OnError        func(err error)
 	OnCredits      func(credits float64)

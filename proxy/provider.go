@@ -29,7 +29,6 @@ const (
 // missing capabilities return a clear error instead of falling through to Kiro.
 type providerAdapter struct {
 	kind            providerKind
-	internalChat    func(*config.Account, *KiroPayload, *KiroStreamCallback) error
 	claudeChat      func(*config.Account, *ClaudeRequest, bool, *KiroStreamCallback) error
 	openAIChat      func(*config.Account, *OpenAIRequest, bool, *KiroStreamCallback) error
 	nativeResponses func(http.ResponseWriter, http.Flusher, *config.Account, *ResponsesRequest) error
@@ -39,8 +38,7 @@ type providerAdapter struct {
 
 var providerAdapters = map[providerKind]providerAdapter{
 	providerKiro: {
-		kind:         providerKiro,
-		internalChat: kiro.CallAPI,
+		kind: providerKiro,
 		claudeChat: func(a *config.Account, r *ClaudeRequest, thinking bool, cb *KiroStreamCallback) error {
 			return kiro.CallAPI(a, ClaudeToKiro(r, thinking), cb)
 		},
@@ -51,8 +49,7 @@ var providerAdapters = map[providerKind]providerAdapter{
 		usage:  kiro.RefreshAccountInfo,
 	},
 	providerCodeBuddy: {
-		kind:         providerCodeBuddy,
-		internalChat: callCodeBuddyChatAPI,
+		kind: providerCodeBuddy,
 		claudeChat: func(a *config.Account, r *ClaudeRequest, thinking bool, cb *KiroStreamCallback) error {
 			return codebuddy.Call(a, ClaudeToCodeBuddy(r, thinking), cb)
 		},
@@ -150,12 +147,6 @@ func RefreshAccountInfo(account *config.Account) (*config.AccountInfo, error) {
 		return nil, unsupportedProviderCapability(adapter.kind, "usage refresh")
 	}
 	return adapter.usage(account)
-}
-
-// callCodeBuddyChatAPI adapts the internal normalized payload to CodeBuddy's
-// wire format before calling the provider transport.
-func callCodeBuddyChatAPI(account *config.Account, payload *KiroPayload, callback *KiroStreamCallback) error {
-	return codebuddy.Call(account, codeBuddyFromNormalizedPayload(payload), callback)
 }
 
 // Host implementation handed to provider admin routes (providers.Host).

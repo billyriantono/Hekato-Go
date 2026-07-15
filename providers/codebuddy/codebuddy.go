@@ -188,7 +188,7 @@ type ChatRequest struct {
 	Extra         map[string]interface{}    `json:"-"`
 }
 
-func Call(account *config.Account, chatReq ChatRequest, callback *providers.KiroStreamCallback) error {
+func Call(account *config.Account, chatReq ChatRequest, callback *providers.StreamCallback) error {
 	token := codeBuddyToken(account)
 	if token == "" {
 		return fmt.Errorf("codebuddy: api key is required")
@@ -252,9 +252,9 @@ type codeBuddyToolDeltaState struct {
 	Arguments strings.Builder
 }
 
-func parseCodeBuddySSE(body io.Reader, callback *providers.KiroStreamCallback) error {
+func parseCodeBuddySSE(body io.Reader, callback *providers.StreamCallback) error {
 	if callback == nil {
-		callback = &providers.KiroStreamCallback{}
+		callback = &providers.StreamCallback{}
 	}
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
@@ -306,7 +306,7 @@ func parseCodeBuddySSE(body io.Reader, callback *providers.KiroStreamCallback) e
 	return nil
 }
 
-func dispatchCodeBuddyDelta(delta map[string]interface{}, toolStates map[int]*codeBuddyToolDeltaState, callback *providers.KiroStreamCallback) {
+func dispatchCodeBuddyDelta(delta map[string]interface{}, toolStates map[int]*codeBuddyToolDeltaState, callback *providers.StreamCallback) {
 	if text, ok := delta["content"].(string); ok && text != "" && callback.OnText != nil {
 		callback.OnText(text, false)
 	}
@@ -344,7 +344,7 @@ func dispatchCodeBuddyDelta(delta map[string]interface{}, toolStates map[int]*co
 	}
 }
 
-func flushCodeBuddyTools(toolStates map[int]*codeBuddyToolDeltaState, callback *providers.KiroStreamCallback) {
+func flushCodeBuddyTools(toolStates map[int]*codeBuddyToolDeltaState, callback *providers.StreamCallback) {
 	if callback == nil || callback.OnToolUse == nil {
 		return
 	}
@@ -363,13 +363,13 @@ func flushCodeBuddyTools(toolStates map[int]*codeBuddyToolDeltaState, callback *
 		if input == nil {
 			input = map[string]interface{}{}
 		}
-		callback.OnToolUse(providers.KiroToolUse{ToolUseID: id, Name: st.Name, Input: input})
+		callback.OnToolUse(providers.ToolUse{ToolUseID: id, Name: st.Name, Input: input})
 	}
 }
 
-func parseCodeBuddyJSON(body io.Reader, callback *providers.KiroStreamCallback) error {
+func parseCodeBuddyJSON(body io.Reader, callback *providers.StreamCallback) error {
 	if callback == nil {
-		callback = &providers.KiroStreamCallback{}
+		callback = &providers.StreamCallback{}
 	}
 	var out struct {
 		Choices []struct {
@@ -398,7 +398,7 @@ func parseCodeBuddyJSON(body io.Reader, callback *providers.KiroStreamCallback) 
 				if input == nil {
 					input = map[string]interface{}{}
 				}
-				callback.OnToolUse(providers.KiroToolUse{ToolUseID: tc.ID, Name: tc.Function.Name, Input: input})
+				callback.OnToolUse(providers.ToolUse{ToolUseID: tc.ID, Name: tc.Function.Name, Input: input})
 			}
 		}
 	}

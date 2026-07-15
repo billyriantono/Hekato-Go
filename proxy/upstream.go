@@ -2,19 +2,6 @@ package proxy
 
 import "kiro-go/config"
 
-// CallUpstreamAPI routes an already-normalized internal payload through the
-// selected provider adapter.
-func CallUpstreamAPI(account *config.Account, payload *KiroPayload, callback *KiroStreamCallback) error {
-	adapter, err := adapterForAccount(account)
-	if err != nil {
-		return err
-	}
-	if adapter.internalChat == nil {
-		return unsupportedProviderCapability(adapter.kind, "internal chat payloads")
-	}
-	return adapter.internalChat(account, payload, callback)
-}
-
 func CallClaudeUpstreamAPI(account *config.Account, req *ClaudeRequest, thinking bool, callback *KiroStreamCallback) error {
 	adapter, err := adapterForAccount(account)
 	if err != nil {

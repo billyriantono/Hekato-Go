@@ -106,7 +106,7 @@ func CallUpstream(w http.ResponseWriter, flusher http.Flusher, account *config.A
 // callGrokOpenAIAPI adapts Chat Completions-shaped callers (including the admin
 // smoke test) to Grok's native Responses API and emits the existing callback
 // contract used by the rest of the proxy.
-func CallOpenAI(account *config.Account, req *providers.OpenAIRequest, callback *providers.KiroStreamCallback) error {
+func CallOpenAI(account *config.Account, req *providers.OpenAIRequest, callback *providers.StreamCallback) error {
 	input, err := json.Marshal(req.Messages)
 	if err != nil {
 		return fmt.Errorf("marshal grok input: %w", err)
@@ -144,7 +144,7 @@ func CallOpenAI(account *config.Account, req *providers.OpenAIRequest, callback 
 	return nil
 }
 
-func emitGrokOutput(items []providers.ResponseOutputItem, callback *providers.KiroStreamCallback) {
+func emitGrokOutput(items []providers.ResponseOutputItem, callback *providers.StreamCallback) {
 	if callback == nil {
 		return
 	}
@@ -160,13 +160,13 @@ func emitGrokOutput(items []providers.ResponseOutputItem, callback *providers.Ki
 			if callback.OnToolUse != nil {
 				var input map[string]interface{}
 				_ = json.Unmarshal([]byte(item.Arguments), &input)
-				callback.OnToolUse(providers.KiroToolUse{ToolUseID: item.CallID, Name: item.Name, Input: input})
+				callback.OnToolUse(providers.ToolUse{ToolUseID: item.CallID, Name: item.Name, Input: input})
 			}
 		}
 	}
 }
 
-func consumeGrokSSE(r io.Reader, callback *providers.KiroStreamCallback) error {
+func consumeGrokSSE(r io.Reader, callback *providers.StreamCallback) error {
 	scanner := bufio.NewScanner(r)
 	// Tool arguments can exceed Scanner's small default token limit.
 	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
