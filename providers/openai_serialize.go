@@ -5,26 +5,26 @@ import (
 	"strings"
 )
 
-// IRToOpenAI serializes a provider-neutral ChatIR into an OpenAI Chat
-// Completions request. It is the shared IR→OpenAI path reused by every provider
+// NeutralToOpenAI serializes a provider-neutral NeutralChat into an OpenAI Chat
+// Completions request. It is the shared NeutralChat→OpenAI path reused by every provider
 // that speaks OpenAI on the wire (CodeBuddy, Grok): the system prompt becomes a
 // system message, tool results become `tool` messages, and tool names/schemas
 // pass through unmodified.
-func IRToOpenAI(ir *ChatIR) *OpenAIRequest {
+func NeutralToOpenAI(nc *NeutralChat) *OpenAIRequest {
 	req := &OpenAIRequest{}
-	if ir == nil {
+	if nc == nil {
 		return req
 	}
-	req.Model = ir.Model
-	req.MaxTokens = ir.MaxTokens
-	req.Temperature = ir.Temperature
-	req.TopP = ir.TopP
+	req.Model = nc.Model
+	req.MaxTokens = nc.MaxTokens
+	req.Temperature = nc.Temperature
+	req.TopP = nc.TopP
 
-	if sys := strings.TrimSpace(ir.SystemPrompt); sys != "" {
+	if sys := strings.TrimSpace(nc.SystemPrompt); sys != "" {
 		req.Messages = append(req.Messages, OpenAIMessage{Role: "system", Content: sys})
 	}
 
-	for _, m := range ir.Messages {
+	for _, m := range nc.Messages {
 		switch m.Role {
 		case "assistant":
 			msg := OpenAIMessage{Role: "assistant", Content: m.Text}
@@ -49,7 +49,7 @@ func IRToOpenAI(ir *ChatIR) *OpenAIRequest {
 		}
 	}
 
-	for _, t := range ir.Tools {
+	for _, t := range nc.Tools {
 		req.Tools = append(req.Tools, toolToOpenAI(t))
 	}
 	return req
@@ -98,7 +98,7 @@ func toolUseToOpenAI(tu ToolUse) ToolCall {
 	return tc
 }
 
-func toolToOpenAI(t IRTool) OpenAITool {
+func toolToOpenAI(t NeutralTool) OpenAITool {
 	var ot OpenAITool
 	ot.Type = "function"
 	ot.Function.Name = t.Name

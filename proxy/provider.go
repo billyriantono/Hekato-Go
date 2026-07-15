@@ -62,7 +62,7 @@ var providerAdapters = map[providerKind]providerAdapter{
 	providerGrok: {
 		kind: providerGrok,
 		claudeChat: func(a *config.Account, r *ClaudeRequest, thinking bool, cb *KiroStreamCallback) error {
-			return grok.CallOpenAI(a, providers.IRToOpenAI(ClaudeToIR(r, thinking)), cb)
+			return grok.CallOpenAI(a, providers.NeutralToOpenAI(ClaudeToNeutral(r, thinking)), cb)
 		},
 		openAIChat: func(a *config.Account, r *OpenAIRequest, _ bool, cb *KiroStreamCallback) error {
 			return grok.CallOpenAI(a, r, cb)
