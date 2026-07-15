@@ -20,7 +20,7 @@ func IRToOpenAI(ir *ChatIR) *OpenAIRequest {
 	req.Temperature = ir.Temperature
 	req.TopP = ir.TopP
 
-	if sys := strings.TrimSpace(ir.System); sys != "" {
+	if sys := strings.TrimSpace(ir.SystemPrompt); sys != "" {
 		req.Messages = append(req.Messages, OpenAIMessage{Role: "system", Content: sys})
 	}
 
@@ -103,6 +103,6 @@ func toolToOpenAI(t IRTool) OpenAITool {
 	ot.Type = "function"
 	ot.Function.Name = t.Name
 	ot.Function.Description = t.Description
-	ot.Function.Parameters = t.Schema
+	ot.Function.Parameters = t.InputSchema
 	return ot
 }

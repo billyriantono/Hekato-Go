@@ -8,11 +8,11 @@ import "kiro-go/providers"
 // IR gets the same normalized view without depending on Kiro's payload shape.
 func ClaudeToIR(req *ClaudeRequest, thinking bool) *providers.ChatIR {
 	ir := &providers.ChatIR{
-		Model:       req.Model,
-		System:      buildClaudeSystemPrompt(req.System, thinking),
-		MaxTokens:   req.MaxTokens,
-		Temperature: req.Temperature,
-		TopP:        req.TopP,
+		Model:        req.Model,
+		SystemPrompt: buildClaudeSystemPrompt(req.System, thinking),
+		MaxTokens:    req.MaxTokens,
+		Temperature:  req.Temperature,
+		TopP:         req.TopP,
 	}
 
 	for _, msg := range req.Messages {
@@ -40,7 +40,7 @@ func ClaudeToIR(req *ClaudeRequest, thinking bool) *providers.ChatIR {
 		ir.Tools = append(ir.Tools, providers.IRTool{
 			Name:        t.Name,
 			Description: t.Description,
-			Schema:      t.InputSchema,
+			InputSchema: t.InputSchema,
 		})
 	}
 
