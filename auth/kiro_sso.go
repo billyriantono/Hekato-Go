@@ -35,10 +35,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"hekato-go/config"
+	"hekato-go/egress"
+	"hekato-go/logger"
 	"io"
-	"kiro-go/config"
-	"kiro-go/egress"
-	"kiro-go/logger"
 	"net"
 	"net/http"
 	"net/url"
@@ -385,9 +385,9 @@ func newRelayResponseWriter() *relayResponseWriter {
 	return &relayResponseWriter{header: make(http.Header), status: http.StatusOK}
 }
 
-func (w *relayResponseWriter) Header() http.Header       { return w.header }
+func (w *relayResponseWriter) Header() http.Header         { return w.header }
 func (w *relayResponseWriter) Write(b []byte) (int, error) { return len(b), nil }
-func (w *relayResponseWriter) WriteHeader(status int)    { w.status = status }
+func (w *relayResponseWriter) WriteHeader(status int)      { w.status = status }
 
 // RelayKiroSsoCallback feeds a redirect URL the operator pasted into the admin
 // panel through the session's callback state machine. This is the remote-browser
@@ -947,4 +947,3 @@ func hasActiveKiroSsoSession() bool {
 	}
 	return false
 }
-

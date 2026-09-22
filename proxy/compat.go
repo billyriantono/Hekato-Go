@@ -1,12 +1,11 @@
 // Type and function aliases bridging the proxy core to the shared providers
-// package after the per-provider package split. They keep the streaming
-// handlers and translators source-compatible; new code should reference
-// kiro-go/providers directly.
+// package. They keep the streaming handlers source-compatible; new code should
+// reference hekato-go/providers directly.
 package proxy
 
 import (
-	"kiro-go/providers"
-	"kiro-go/providers/kiro"
+	"hekato-go/providers"
+	"hekato-go/providers/kiro"
 )
 
 type (
@@ -20,9 +19,9 @@ type (
 	Image                        = providers.Image
 	KiroHistoryMessage           = providers.KiroHistoryMessage
 	KiroAssistantResponseMessage = providers.KiroAssistantResponseMessage
-	KiroToolUse                  = providers.ToolUse
+	ToolUse                      = providers.ToolUse
 	InferenceConfig              = providers.InferenceConfig
-	KiroStreamCallback           = providers.StreamCallback
+	StreamCallback               = providers.StreamCallback
 	ModelInfo                    = providers.ModelInfo
 	OpenAIRequest                = providers.OpenAIRequest
 	OpenAIMessage                = providers.OpenAIMessage
@@ -41,11 +40,10 @@ type (
 var (
 	GetClientForAccount     = providers.GetClientForAccount
 	GetRestClientForAccount = providers.GetRestClientForAccount
-	InitKiroHttpClient      = providers.InitHTTPClients
+	initHTTPClients         = providers.InitHTTPClients
 	upstreamError           = providers.Errorf
 	readTokenNumber         = providers.ReadTokenNumber
 
-	CallKiroAPI            = kiro.CallAPI
 	FetchOverageStatus     = kiro.FetchOverageStatus
 	SetOverageStatus       = kiro.SetOverageStatus
 	PersistOverageSnapshot = kiro.PersistOverageSnapshot

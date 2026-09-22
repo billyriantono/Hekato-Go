@@ -1,6 +1,8 @@
 # Build artifacts
 /kiro-go
 /kiro-go.exe
+/hekato-go
+/hekato-go.exe
 *.exe
 *.test
 *.out
@@ -22,3 +24,7 @@ Thumbs.db
 # Local backups / scratch
 backup*/
 PR-*.md
+
+# Dashboard toolchain
+dashboard/node_modules
+dashboard/dist

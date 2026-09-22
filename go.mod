@@ -1,4 +1,4 @@
-module kiro-go
+module hekato-go
 
 go 1.25.0
 

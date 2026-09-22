@@ -2,8 +2,8 @@ package proxy
 
 import (
 	"errors"
-	"kiro-go/config"
-	"kiro-go/logger"
+	"hekato-go/config"
+	"hekato-go/logger"
 	"strings"
 	"time"
 )

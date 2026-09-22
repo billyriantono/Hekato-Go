@@ -5,12 +5,9 @@ package proxy
 
 import (
 	"fmt"
-	"kiro-go/config"
-	"kiro-go/pool"
-	"kiro-go/providers"
-	"kiro-go/providers/codebuddy"
-	"kiro-go/providers/grok"
-	"kiro-go/providers/kiro"
+	"hekato-go/config"
+	"hekato-go/pool"
+	"hekato-go/providers"
 	"net/http"
 )
 
@@ -24,53 +21,30 @@ const (
 	providerGrok      = config.ProviderGrok
 )
 
-// providerAdapter is the one registration point for proxy capabilities. Adding
-// a provider no longer changes handlers: register supported operations here;
-// missing capabilities return a clear error instead of falling through to Kiro.
+// providerAdapter is the one registration point for proxy capabilities. Each
+// provider package is wired in its own provider_<name>.go file via
+// registerAdapter from init(); handlers never reference a provider directly.
+// Missing capabilities return a clear error instead of falling through.
 type providerAdapter struct {
-	kind            providerKind
-	claudeChat      func(*config.Account, *ClaudeRequest, bool, *KiroStreamCallback) error
-	openAIChat      func(*config.Account, *OpenAIRequest, bool, *KiroStreamCallback) error
-	nativeResponses func(http.ResponseWriter, http.Flusher, *config.Account, *ResponsesRequest) error
-	models          func(*config.Account) ([]ModelInfo, error)
-	usage           func(*config.Account) (*config.AccountInfo, error)
+	kind           providerKind
+	chatFromClaude func(*config.Account, *ClaudeRequest, bool, *StreamCallback) error
+	chatFromOpenAI func(*config.Account, *OpenAIRequest, bool, *StreamCallback) error
+	// responses is an optional native Responses-API transport; providers without
+	// it are served through chatFromOpenAI.
+	responses  func(http.ResponseWriter, http.Flusher, *config.Account, *ResponsesRequest) error
+	listModels func(*config.Account) ([]ModelInfo, error)
+	fetchUsage func(*config.Account) (*config.AccountInfo, error)
 }
 
-var providerAdapters = map[providerKind]providerAdapter{
-	providerKiro: {
-		kind: providerKiro,
-		claudeChat: func(a *config.Account, r *ClaudeRequest, thinking bool, cb *KiroStreamCallback) error {
-			return kiro.CallAPI(a, ClaudeToKiro(r, thinking), cb)
-		},
-		openAIChat: func(a *config.Account, r *OpenAIRequest, thinking bool, cb *KiroStreamCallback) error {
-			return kiro.CallAPI(a, OpenAIToKiro(r, thinking), cb)
-		},
-		models: kiro.ListModels,
-		usage:  kiro.RefreshAccountInfo,
-	},
-	providerCodeBuddy: {
-		kind: providerCodeBuddy,
-		claudeChat: func(a *config.Account, r *ClaudeRequest, thinking bool, cb *KiroStreamCallback) error {
-			return codebuddy.Call(a, ClaudeToCodeBuddy(r, thinking), cb)
-		},
-		openAIChat: func(a *config.Account, r *OpenAIRequest, thinking bool, cb *KiroStreamCallback) error {
-			return codebuddy.Call(a, OpenAIToCodeBuddy(r, thinking), cb)
-		},
-		models: func(a *config.Account) ([]ModelInfo, error) { return codebuddy.ModelsForAccount(a), nil },
-		usage:  codebuddy.FetchUsage,
-	},
-	providerGrok: {
-		kind: providerGrok,
-		claudeChat: func(a *config.Account, r *ClaudeRequest, thinking bool, cb *KiroStreamCallback) error {
-			return grok.CallOpenAI(a, providers.NeutralToOpenAI(ClaudeToNeutral(r, thinking)), cb)
-		},
-		openAIChat: func(a *config.Account, r *OpenAIRequest, _ bool, cb *KiroStreamCallback) error {
-			return grok.CallOpenAI(a, r, cb)
-		},
-		nativeResponses: grok.CallUpstream,
-		models:          func(a *config.Account) ([]ModelInfo, error) { return grok.RefreshModels(a), nil },
-		usage:           grok.FetchUsage,
-	},
+var providerAdapters = map[providerKind]providerAdapter{}
+
+// registerAdapter is called from each provider_<name>.go init(). Registering
+// the same kind twice is a programming error caught at startup.
+func registerAdapter(a providerAdapter) {
+	if _, dup := providerAdapters[a.kind]; dup {
+		panic(fmt.Sprintf("provider adapter registered twice: %s", a.kind))
+	}
+	providerAdapters[a.kind] = a
 }
 
 func providerForAccount(account *config.Account) (providerKind, error) {
@@ -103,11 +77,11 @@ const (
 func (a providerAdapter) supports(cap providerCapability) bool {
 	switch cap {
 	case capClaudeChat:
-		return a.claudeChat != nil
+		return a.chatFromClaude != nil
 	case capOpenAIChat:
-		return a.openAIChat != nil
+		return a.chatFromOpenAI != nil
 	case capResponses:
-		return a.nativeResponses != nil || a.openAIChat != nil
+		return a.responses != nil || a.chatFromOpenAI != nil
 	}
 	return false
 }
@@ -134,10 +108,10 @@ func ListAvailableModels(account *config.Account) ([]ModelInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	if adapter.models == nil {
+	if adapter.listModels == nil {
 		return nil, unsupportedProviderCapability(adapter.kind, "model discovery")
 	}
-	return adapter.models(account)
+	return adapter.listModels(account)
 }
 
 // RefreshAccountInfo dispatches usage refresh through the provider adapter.
@@ -146,10 +120,10 @@ func RefreshAccountInfo(account *config.Account) (*config.AccountInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	if adapter.usage == nil {
+	if adapter.fetchUsage == nil {
 		return nil, unsupportedProviderCapability(adapter.kind, "usage refresh")
 	}
-	return adapter.usage(account)
+	return adapter.fetchUsage(account)
 }
 
 // Host implementation handed to provider admin routes (providers.Host).

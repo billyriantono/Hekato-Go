@@ -1,7 +1,7 @@
 package codebuddy
 
 import (
-	"kiro-go/providers"
+	"hekato-go/providers"
 	"strings"
 )
 

@@ -14,15 +14,18 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"kiro-go/config"
-	"kiro-go/logger"
-	"kiro-go/pool"
-	"kiro-go/proxy"
+	"hekato-go/config"
+	"hekato-go/logger"
+	"hekato-go/pool"
+	"hekato-go/proxy"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 )
 
@@ -84,7 +87,19 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	if err := srv.ListenAndServe(); err != nil {
+	// Graceful shutdown: flush stats/metrics and drain connections on SIGINT/SIGTERM.
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+		<-sig
+		logger.Infof("Shutting down...")
+		handler.Shutdown()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}()
+
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Fatalf("Server failed: %v", err)
 	}
 }

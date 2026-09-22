@@ -2,10 +2,10 @@ package proxy
 
 import (
 	"encoding/json"
-	"kiro-go/config"
-	accountpool "kiro-go/pool"
-	"kiro-go/providers"
-	"kiro-go/providers/kiro"
+	"hekato-go/config"
+	accountpool "hekato-go/pool"
+	"hekato-go/providers"
+	"hekato-go/providers/kiro"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -98,7 +98,7 @@ func TestClaudeNonStreamRetriesNextAccountAfterPreResponseFailure(t *testing.T) 
 	}
 
 	rec := httptest.NewRecorder()
-	h.handleClaudeNonStream(rec, req, "claude-sonnet-4.5", false, claudeThinkingResponseOptions{}, 1, nil, "")
+	h.handleClaudeNonStream(rec, req, "claude-sonnet-4.5", false, claudeThinkingResponseOptions{}, 1, nil, "", "")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected retry to succeed, status=%d body=%s", rec.Code, rec.Body.String())

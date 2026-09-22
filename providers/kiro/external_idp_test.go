@@ -1,7 +1,7 @@
 package kiro
 
 import (
-	"kiro-go/config"
+	"hekato-go/config"
 	"net/http"
 	"testing"
 )

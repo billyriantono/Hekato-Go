@@ -98,4 +98,8 @@ type StreamCallback struct {
 	OnError        func(err error)
 	OnCredits      func(credits float64)
 	OnContextUsage func(percentage float64)
+	// OnStopReason receives the upstream stop reason, normalized to Anthropic
+	// vocabulary where known: "end_turn", "tool_use", "max_tokens"; other values
+	// are passed through lower-cased.
+	OnStopReason func(reason string)
 }

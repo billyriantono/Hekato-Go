@@ -40,32 +40,38 @@ func (s *jsonStore) Save(cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(s.path)
-	tmp, err := os.CreateTemp(dir, ".config-*.tmp")
+	return writeFileAtomic(s.path, data)
+}
+
+// writeFileAtomic writes data to a temp file in the target's directory, fsyncs,
+// then renames over the target so readers see either the old or the complete
+// new file, never a partial one.
+func writeFileAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*.tmp")
 	if err != nil {
-		return fmt.Errorf("create temp config: %w", err)
+		return fmt.Errorf("create temp file: %w", err)
 	}
 	tmpName := tmp.Name()
-	// Best-effort cleanup if we bail before the rename.
 	defer func() { _ = os.Remove(tmpName) }()
 
 	if err := tmp.Chmod(0600); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("chmod temp config: %w", err)
+		return fmt.Errorf("chmod temp file: %w", err)
 	}
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("write temp config: %w", err)
+		return fmt.Errorf("write temp file: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("fsync temp config: %w", err)
+		return fmt.Errorf("fsync temp file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp config: %w", err)
+		return fmt.Errorf("close temp file: %w", err)
 	}
-	if err := os.Rename(tmpName, s.path); err != nil {
-		return fmt.Errorf("rename temp config: %w", err)
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("rename temp file: %w", err)
 	}
 	return nil
 }

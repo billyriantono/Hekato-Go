@@ -3,8 +3,8 @@ package proxy
 import (
 	"encoding/json"
 	"fmt"
+	"hekato-go/config"
 	"io"
-	"kiro-go/config"
 	"net/http"
 	"strings"
 	"time"
@@ -111,28 +111,35 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 
 	apiKeyID := apiKeyIDFromContext(r.Context())
 	respID := generateResponseID()
+	affinityKey := openAIAffinityKey(openaiReq)
+	if isAutoModel(actualModel) {
+		actualModel = h.resolveAutoModel(w, "responses", actualModel, openAIRouteSignals(openaiReq, estimatedInputTokens, thinking), &affinityKey, capResponses)
+		openaiReq.Model = actualModel
+	}
 
 	if req.Stream {
 		h.handleResponsesStream(w, openaiReq, actualModel, thinking, estimatedInputTokens,
-			apiKeyID, respID, &req, storedInputCopy, storeResponse)
+			apiKeyID, respID, &req, storedInputCopy, storeResponse, affinityKey)
 		return
 	}
 
 	h.handleResponsesNonStream(w, openaiReq, actualModel, thinking, estimatedInputTokens,
-		apiKeyID, respID, &req, storedInputCopy, storeResponse)
+		apiKeyID, respID, &req, storedInputCopy, storeResponse, affinityKey)
 }
 
 func (h *Handler) handleResponsesNonStream(
 	w http.ResponseWriter, openaiReq *OpenAIRequest, model string, thinking bool,
 	estimatedInputTokens int, apiKeyID, respID string,
 	req *ResponsesRequest, storedInput json.RawMessage, storeResponse bool,
+
+	affinityKey string,
 ) {
 	excluded := make(map[string]bool)
 	var lastErr error
 	reqStart := time.Now()
 
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
-		account := h.pool.GetNextForModelExcluding(model, excluded, capabilityFilter(capResponses))
+		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capResponses))
 		if account == nil {
 			break
 		}
@@ -151,8 +158,8 @@ func (h *Handler) handleResponsesNonStream(
 			continue
 		}
 		// Providers with a native Responses transport bypass the chat converter.
-		if adapter.nativeResponses != nil {
-			if providerErr := adapter.nativeResponses(w, nil, account, req); providerErr != nil {
+		if adapter.responses != nil {
+			if providerErr := adapter.responses(w, nil, account, req); providerErr != nil {
 				lastErr = providerErr
 				excluded[account.ID] = true
 				h.handleAccountFailure(account, providerErr)
@@ -166,12 +173,12 @@ func (h *Handler) handleResponsesNonStream(
 		}
 
 		var content, reasoningContent string
-		var toolUses []KiroToolUse
+		var toolUses []ToolUse
 		var inputTokens, outputTokens int
 		var credits float64
 		var realInputTokens int
 
-		callback := &KiroStreamCallback{
+		callback := &StreamCallback{
 			OnText: func(text string, isThinking bool) {
 				if isThinking {
 					reasoningContent += text
@@ -179,7 +186,7 @@ func (h *Handler) handleResponsesNonStream(
 					content += text
 				}
 			},
-			OnToolUse:  func(tu KiroToolUse) { toolUses = append(toolUses, tu) },
+			OnToolUse:  func(tu ToolUse) { toolUses = append(toolUses, tu) },
 			OnComplete: func(inTok, outTok int) { inputTokens = inTok; outputTokens = outTok },
 			OnCredits:  func(c float64) { credits = c },
 			OnContextUsage: func(pct float64) {
@@ -187,7 +194,7 @@ func (h *Handler) handleResponsesNonStream(
 			},
 		}
 
-		err := CallOpenAIUpstreamAPI(account, openaiReq, thinking, callback)
+		err := callUpstreamFromOpenAI(account, openaiReq, thinking, callback)
 		if err != nil {
 			lastErr = err
 			excluded[account.ID] = true
@@ -236,7 +243,7 @@ func (h *Handler) handleResponsesNonStream(
 }
 
 func buildResponsesObject(
-	id, model, content string, toolUses []KiroToolUse,
+	id, model, content string, toolUses []ToolUse,
 	inputTokens, outputTokens int, req *ResponsesRequest,
 ) *ResponsesObject {
 	output := make([]ResponseOutputItem, 0, 1+len(toolUses))
@@ -296,6 +303,8 @@ func (h *Handler) handleResponsesStream(
 	w http.ResponseWriter, openaiReq *OpenAIRequest, model string, thinking bool,
 	estimatedInputTokens int, apiKeyID, respID string,
 	req *ResponsesRequest, storedInput json.RawMessage, storeResponse bool,
+
+	affinityKey string,
 ) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -339,7 +348,7 @@ func (h *Handler) handleResponsesStream(
 	reqStart := time.Now()
 
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
-		account := h.pool.GetNextForModelExcluding(model, excluded, capabilityFilter(capResponses))
+		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capResponses))
 		if account == nil {
 			break
 		}
@@ -358,8 +367,8 @@ func (h *Handler) handleResponsesStream(
 			continue
 		}
 		// Providers with a native Responses transport pass SSE through directly.
-		if adapter.nativeResponses != nil {
-			if providerErr := adapter.nativeResponses(w, flusher, account, req); providerErr != nil {
+		if adapter.responses != nil {
+			if providerErr := adapter.responses(w, flusher, account, req); providerErr != nil {
 				lastErr = providerErr
 				excluded[account.ID] = true
 				h.handleAccountFailure(account, providerErr)
@@ -380,7 +389,7 @@ func (h *Handler) handleResponsesStream(
 		var (
 			fullText        strings.Builder
 			reasoningText   strings.Builder
-			toolUses        []KiroToolUse
+			toolUses        []ToolUse
 			inputTokens     int
 			outputTokens    int
 			credits         float64
@@ -420,7 +429,7 @@ func (h *Handler) handleResponsesStream(
 			})
 		}
 
-		callback := &KiroStreamCallback{
+		callback := &StreamCallback{
 			OnText: func(text string, isThinking bool) {
 				if text == "" {
 					return
@@ -440,7 +449,7 @@ func (h *Handler) handleResponsesStream(
 				})
 				responseStarted = true
 			},
-			OnToolUse: func(tu KiroToolUse) {
+			OnToolUse: func(tu ToolUse) {
 				if messageStarted {
 					send("response.content_part.done", map[string]interface{}{
 						"type":          "response.content_part.done",
@@ -513,7 +522,7 @@ func (h *Handler) handleResponsesStream(
 			},
 		}
 
-		err := CallOpenAIUpstreamAPI(account, openaiReq, thinking, callback)
+		err := callUpstreamFromOpenAI(account, openaiReq, thinking, callback)
 		if err != nil {
 			if !responseStarted {
 				lastErr = err

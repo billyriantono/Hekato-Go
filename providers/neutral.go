@@ -5,8 +5,7 @@ package providers
 // serialize FROM it into their own wire format. This is what lets a new provider
 // avoid converting from another provider's payload shape (e.g. KiroPayload).
 //
-// Kiro is the deliberate exception: its wire format IS its neutral form, so it keeps its
-// own ClaudeToKiro/OpenAIToKiro converters. Every OTHER provider consumes NeutralChat.
+// Every provider, Kiro included (providers/kiro.FromNeutral), serializes from it.
 type NeutralChat struct {
 	Model        string
 	SystemPrompt string // already processed (prompt filters / thinking injection applied by the parser)

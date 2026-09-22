@@ -14,13 +14,13 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o kiro-go .
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o hekato-go .
 
 FROM alpine:latest
 RUN apk --no-cache add ca-certificates
 
 WORKDIR /app
-COPY --from=builder /app/kiro-go .
+COPY --from=builder /app/hekato-go .
 COPY --from=builder /app/web ./web
 RUN mkdir -p /app/data
 
@@ -35,4 +35,4 @@ EXPOSE 3128
 # instead: a Volume Mount in the Dokploy UI, or the kiro-data volume in
 # docker-compose.yml.
 
-CMD ["./kiro-go"]
+CMD ["./hekato-go"]

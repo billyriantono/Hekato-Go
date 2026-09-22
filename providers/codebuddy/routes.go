@@ -2,10 +2,10 @@ package codebuddy
 
 import (
 	"encoding/json"
-	"kiro-go/auth"
-	"kiro-go/config"
-	"kiro-go/logger"
-	"kiro-go/providers"
+	"hekato-go/auth"
+	"hekato-go/config"
+	"hekato-go/logger"
+	"hekato-go/providers"
 	"net/http"
 	"strings"
 )

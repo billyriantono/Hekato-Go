@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"hekato-go/providers/kiro"
 	"strings"
 	"testing"
 )
@@ -304,7 +305,7 @@ func TestToolResultsContinuationIncludesInstructionPrefix(t *testing.T) {
 	payload := OpenAIToKiro(req, false)
 	content := payload.ConversationState.CurrentMessage.UserInputMessage.Content
 
-	if !strings.Contains(content, toolResultsContinuationPrefix) {
+	if !strings.Contains(content, kiro.ToolResultsContinuationPrefix) {
 		t.Fatalf("expected tool continuation prefix, got %q", content)
 	}
 	if !strings.Contains(content, "result-1") {
@@ -340,7 +341,7 @@ func TestEnsureObjectSchemaRemovesKiroRejectedFieldsRecursively(t *testing.T) {
 		},
 	}
 
-	got := ensureObjectSchema(input).(map[string]interface{})
+	got := kiro.EnsureObjectSchema(input).(map[string]interface{})
 	if schemaContainsKey(got, "additionalProperties") {
 		t.Fatalf("expected additionalProperties to be removed recursively, got %#v", got)
 	}
@@ -362,7 +363,7 @@ func TestConvertOpenAIToolsSanitizesSchemaAndDescription(t *testing.T) {
 		"additionalProperties": false,
 	}
 
-	tools := convertOpenAITools([]OpenAITool{tool})
+	tools, _ := kiro.ConvertTools(openAIToNeutral(&OpenAIRequest{Tools: []OpenAITool{tool}}).Tools)
 	if len(tools) != 1 {
 		t.Fatalf("expected one converted tool, got %d", len(tools))
 	}
@@ -625,7 +626,7 @@ func TestOpenAIToolResultImageCarriedWhenFollowedByUser(t *testing.T) {
 
 	var toolHistImages int
 	for _, h := range payload.ConversationState.History {
-		if h.UserInputMessage != nil && strings.Contains(h.UserInputMessage.Content, toolResultsContinuationPrefix) {
+		if h.UserInputMessage != nil && strings.Contains(h.UserInputMessage.Content, kiro.ToolResultsContinuationPrefix) {
 			toolHistImages += len(h.UserInputMessage.Images)
 		}
 	}

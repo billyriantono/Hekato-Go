@@ -141,12 +141,14 @@ func scanAccount(rows *sql.Rows) (Account, error) {
 var apiKeyColumns = []string{
 	"id", "name", "key", "enabled", "migrated", "created_at", "last_used_at",
 	"token_limit", "credit_limit", "tokens_used", "credits_used", "requests_count",
+	"rpm_limit", "concurrency_limit",
 }
 
 func apiKeyValues(k *ApiKeyEntry) []any {
 	return []any{
 		k.ID, k.Name, k.Key, boolToInt(k.Enabled), boolToInt(k.Migrated), k.CreatedAt, k.LastUsedAt,
 		k.TokenLimit, k.CreditLimit, k.TokensUsed, k.CreditsUsed, k.RequestsCount,
+		k.RPMLimit, k.ConcurrencyLimit,
 	}
 }
 
@@ -156,6 +158,7 @@ func scanApiKey(rows *sql.Rows) (ApiKeyEntry, error) {
 	if err := rows.Scan(
 		&k.ID, &k.Name, &k.Key, &enabled, &migrated, &k.CreatedAt, &k.LastUsedAt,
 		&k.TokenLimit, &k.CreditLimit, &k.TokensUsed, &k.CreditsUsed, &k.RequestsCount,
+		&k.RPMLimit, &k.ConcurrencyLimit,
 	); err != nil {
 		return ApiKeyEntry{}, err
 	}
@@ -196,7 +199,12 @@ func (s *sqlStore) migrate() error {
 			created_at BIGINT, last_used_at BIGINT,
 			token_limit BIGINT, credit_limit DOUBLE PRECISION,
 			tokens_used BIGINT, credits_used DOUBLE PRECISION, requests_count BIGINT,
+			rpm_limit BIGINT DEFAULT 0, concurrency_limit BIGINT DEFAULT 0,
 			position BIGINT
+		)`,
+		`CREATE TABLE IF NOT EXISTS metrics_minutes (
+			minute BIGINT PRIMARY KEY,
+			data TEXT
 		)`,
 		`CREATE TABLE IF NOT EXISTS prompt_filter_rules (
 			id TEXT PRIMARY KEY,
@@ -209,11 +217,22 @@ func (s *sqlStore) migrate() error {
 			return fmt.Errorf("migrate: %w", err)
 		}
 	}
-	for _, col := range []string{"relay_url", "relay_secret"} {
-		if _, err := s.db.Exec(`SELECT ` + col + ` FROM accounts LIMIT 0`); err != nil {
-			if _, err := s.db.Exec(`ALTER TABLE accounts ADD COLUMN ` + col + ` TEXT`); err != nil {
-				return fmt.Errorf("migrate accounts.%s: %w", col, err)
+	addColumn := func(table, col, typ string) error {
+		if _, err := s.db.Exec(`SELECT ` + col + ` FROM ` + table + ` LIMIT 0`); err != nil {
+			if _, err := s.db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + col + ` ` + typ); err != nil {
+				return fmt.Errorf("migrate %s.%s: %w", table, col, err)
 			}
+		}
+		return nil
+	}
+	for _, col := range []string{"relay_url", "relay_secret"} {
+		if err := addColumn("accounts", col, "TEXT"); err != nil {
+			return err
+		}
+	}
+	for _, col := range []string{"rpm_limit", "concurrency_limit"} {
+		if err := addColumn("api_keys", col, "BIGINT DEFAULT 0"); err != nil {
+			return err
 		}
 	}
 	return nil

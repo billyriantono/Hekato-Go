@@ -2,9 +2,9 @@ package kiro
 
 import (
 	"encoding/json"
-	"kiro-go/auth"
-	"kiro-go/config"
-	"kiro-go/providers"
+	"hekato-go/auth"
+	"hekato-go/config"
+	"hekato-go/providers"
 	"net/http"
 	"strings"
 	"time"

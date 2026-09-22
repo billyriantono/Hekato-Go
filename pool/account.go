@@ -3,7 +3,7 @@
 package pool
 
 import (
-	"kiro-go/config"
+	"hekato-go/config"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -278,6 +278,41 @@ func (p *AccountPool) GetNextForModelExcluding(model string, excluded map[string
 		}
 	}
 	return best
+}
+
+// GetForModelByID returns the account with the given ID only if it is currently
+// routable for model (enabled, not cooling down, token fresh, quota ok, passes
+// filter). Used for conversation affinity; nil means "pick another".
+func (p *AccountPool) GetForModelByID(id, model string, filter AccountFilter) *config.Account {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	modelKey := strings.ToLower(strings.TrimSpace(model))
+	modelKnown := p.modelKnownAnywhere(modelKey)
+	now := time.Now()
+	allowOverUsage := config.GetAllowOverUsage()
+	for i := range p.accounts {
+		acc := &p.accounts[i]
+		if acc.ID != id {
+			continue
+		}
+		if filter != nil && !filter(acc) {
+			return nil
+		}
+		if !p.accountHasModel(acc.ID, modelKey, modelKnown) {
+			return nil
+		}
+		if cooldown, ok := p.cooldowns[acc.ID]; ok && now.Before(cooldown) {
+			return nil
+		}
+		if acc.ExpiresAt > 0 && now.Unix() > acc.ExpiresAt-tokenRefreshSkewSeconds {
+			return nil
+		}
+		if isQuotaBlocked(*acc, allowOverUsage) {
+			return nil
+		}
+		return acc
+	}
+	return nil
 }
 
 // GetByID 根据 ID 获取账号

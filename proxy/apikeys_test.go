@@ -2,7 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
-	"kiro-go/config"
+	"hekato-go/config"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"

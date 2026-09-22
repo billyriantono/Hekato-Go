@@ -2,7 +2,7 @@ package proxy
 
 import (
 	"context"
-	"kiro-go/config"
+	"hekato-go/config"
 	"net/http"
 	"strings"
 )
@@ -89,6 +89,26 @@ func (h *Handler) authenticate(r *http.Request) (*config.ApiKeyEntry, error) {
 		return nil, newAuthError(http.StatusUnauthorized, "authentication_error", "Invalid or missing API key")
 	}
 	return nil, nil
+}
+
+// admit runs authenticate plus the per-key rate limiter. On success it returns
+// the request with the key in context and a release func the caller must defer.
+func (h *Handler) admit(r *http.Request) (*http.Request, func(), *authError) {
+	entry, err := h.authenticate(r)
+	if err != nil {
+		ae, _ := err.(*authError)
+		if ae == nil {
+			ae = newAuthError(http.StatusUnauthorized, "authentication_error", err.Error())
+		}
+		return nil, nil, ae
+	}
+	if entry == nil {
+		return r, func() {}, nil
+	}
+	if ae := h.limiter.Acquire(entry); ae != nil {
+		return nil, nil, ae
+	}
+	return withApiKeyContext(r, entry), func() { h.limiter.Release(entry.ID) }, nil
 }
 
 // withApiKeyContext attaches the matched entry to the request context so downstream

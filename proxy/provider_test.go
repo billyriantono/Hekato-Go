@@ -2,8 +2,8 @@ package proxy
 
 import (
 	"encoding/json"
-	"kiro-go/config"
-	"kiro-go/providers/grok"
+	"hekato-go/config"
+	"hekato-go/providers/grok"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -35,11 +35,11 @@ func TestCallOpenAIUpstreamRoutesGrokWithoutKiro(t *testing.T) {
 
 	var text string
 	var inTokens, outTokens int
-	err := CallOpenAIUpstreamAPI(
+	err := callUpstreamFromOpenAI(
 		&config.Account{AuthMethod: "grok", Provider: "grok", AccessToken: "grok-token"},
 		&OpenAIRequest{Model: "grok-4.5-high", Messages: []OpenAIMessage{{Role: "user", Content: "say ok"}}},
 		false,
-		&KiroStreamCallback{
+		&StreamCallback{
 			OnText:     func(s string, _ bool) { text += s },
 			OnComplete: func(in, out int) { inTokens, outTokens = in, out },
 		},
@@ -80,7 +80,7 @@ func TestRefreshAccountInfoRoutesGrokWithoutKiro(t *testing.T) {
 }
 
 func TestUnknownProviderDoesNotFallThroughToKiro(t *testing.T) {
-	err := CallOpenAIUpstreamAPI(&config.Account{AuthMethod: "oauth", Provider: "future-provider"}, &OpenAIRequest{}, false, nil)
+	err := callUpstreamFromOpenAI(&config.Account{AuthMethod: "oauth", Provider: "future-provider"}, &OpenAIRequest{}, false, nil)
 	if err == nil {
 		t.Fatal("expected unsupported provider error")
 	}
@@ -111,11 +111,11 @@ func TestClaudeInterfaceRoutesToGrok(t *testing.T) {
 	defer func() { grok.ResponsesEndpoint = old }()
 
 	var text string
-	err := CallClaudeUpstreamAPI(
+	err := callUpstreamFromClaude(
 		&config.Account{AuthMethod: "grok", Provider: "grok", AccessToken: "grok-token"},
 		&ClaudeRequest{Model: "grok-4.5", Messages: []ClaudeMessage{{Role: "user", Content: "dis bonjour"}}},
 		false,
-		&KiroStreamCallback{OnText: func(s string, _ bool) { text += s }},
+		&StreamCallback{OnText: func(s string, _ bool) { text += s }},
 	)
 	if err != nil {
 		t.Fatal(err)

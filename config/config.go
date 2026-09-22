@@ -14,7 +14,8 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"kiro-go/logger"
+	"hash/fnv"
+	"hekato-go/logger"
 	"os"
 	"runtime"
 	"sync"
@@ -149,6 +150,9 @@ type ApiKeyEntry struct {
 	// Limits (0 = unlimited)
 	TokenLimit  int64   `json:"tokenLimit,omitempty"`
 	CreditLimit float64 `json:"creditLimit,omitempty"`
+	// Rate limits (0 = unlimited): max requests per rolling minute, max in-flight requests.
+	RPMLimit         int64 `json:"rpmLimit,omitempty"`
+	ConcurrencyLimit int64 `json:"concurrencyLimit,omitempty"`
 
 	// Cumulative usage (never auto-reset)
 	TokensUsed    int64   `json:"tokensUsed,omitempty"`
@@ -192,6 +196,9 @@ type Config struct {
 	//         "http://host:port",  "http://user:pass@host:port"
 	// Leave empty to connect directly.
 	ProxyURL string `json:"proxyURL,omitempty"`
+	// ProxyPool: accounts with no ProxyURL/RelayURL of their own are pinned to one
+	// of these (hash of account ID), so each account always egresses from the same IP.
+	ProxyPool []string `json:"proxyPool,omitempty"`
 
 	// Egress relay: an alternative to ProxyURL. The relay only routes traffic when
 	// RelayEnabled is true (the operator selects "Egress Relay" as the outbound
@@ -226,6 +233,13 @@ type Config struct {
 	// Accepted values: "debug", "info", "warn", "error". Defaults to "info".
 	// Can be overridden by the LOG_LEVEL environment variable.
 	LogLevel string `json:"logLevel,omitempty"`
+
+	// AccountRefreshMinutes: how often account tokens and quotas are re-checked
+	// upstream. 0 = default (ACCOUNT_REFRESH_MINUTES env or 30).
+	AccountRefreshMinutes int `json:"accountRefreshMinutes,omitempty"`
+
+	// AutoRoute configures the virtual "auto" model router (nil = defaults, disabled).
+	AutoRoute *AutoRouteConfig `json:"autoRoute,omitempty"`
 
 	// Global statistics (persisted across restarts)
 	TotalRequests   int     `json:"totalRequests,omitempty"`   // Total API requests received
@@ -271,6 +285,7 @@ var (
 // import source for an existing config.json.
 func Init(path string) error {
 	cfgPath = path
+	initCrypto()
 	st, err := newStore(path)
 	if err != nil {
 		return err
@@ -292,6 +307,9 @@ func Load() error {
 
 	loaded, err := store.Load()
 	if err != nil {
+		return err
+	}
+	if err := openConfig(loaded); err != nil {
 		return err
 	}
 
@@ -418,7 +436,7 @@ func Save() error {
 	if store == nil {
 		store = &jsonStore{path: cfgPath}
 	}
-	return store.Save(cfg)
+	return store.Save(sealConfig(cfg))
 }
 
 // SetPassword updates the admin password.
@@ -951,6 +969,37 @@ func GetProxyURL() string {
 	return cfg.ProxyURL
 }
 
+// PoolProxyFor returns the proxy pinned to an account from the global ProxyPool,
+// or "" when the pool is empty. Same account → same proxy (FNV-1a of the ID).
+func PoolProxyFor(accountID string) string {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil || len(cfg.ProxyPool) == 0 {
+		return ""
+	}
+	h := fnv.New32a()
+	h.Write([]byte(accountID))
+	return cfg.ProxyPool[int(h.Sum32()%uint32(len(cfg.ProxyPool)))]
+}
+
+// GetProxyPool returns a copy of the global proxy pool.
+func GetProxyPool() []string {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return nil
+	}
+	return append([]string(nil), cfg.ProxyPool...)
+}
+
+// UpdateProxyPool replaces the global proxy pool.
+func UpdateProxyPool(urls []string) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.ProxyPool = urls
+	return Save()
+}
+
 // UpdateProxySettings 更新出站代理配置
 func UpdateProxySettings(proxyURL string) error {
 	cfgLock.Lock()
@@ -1029,6 +1078,24 @@ func UpdateAllowOverUsage(allow bool) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	cfg.AllowOverUsage = allow
+	return Save()
+}
+
+// GetAccountRefreshMinutes returns the configured refresh interval (0 = unset).
+func GetAccountRefreshMinutes() int {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return 0
+	}
+	return cfg.AccountRefreshMinutes
+}
+
+// UpdateAccountRefreshMinutes persists the refresh interval (minutes, >= 1; 0 resets to default).
+func UpdateAccountRefreshMinutes(minutes int) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.AccountRefreshMinutes = minutes
 	return Save()
 }
 
