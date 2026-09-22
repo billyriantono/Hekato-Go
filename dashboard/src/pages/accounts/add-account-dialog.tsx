@@ -16,7 +16,7 @@ import { useI18n } from '@/lib/i18n'
 import { sleep } from './shared'
 import { SimpleSelect } from './simple-select'
 
-export type Method = 'builderid' | 'iam' | 'kirosso' | 'ssotoken' | 'local' | 'credentials' | 'cookie' | 'codebuddy' | 'grokDevice' | 'grokImport' | 'codexImport'
+export type Method = 'builderid' | 'iam' | 'kirosso' | 'ssotoken' | 'local' | 'credentials' | 'cookie' | 'codebuddy' | 'grokDevice' | 'grokImport' | 'codexImport' | 'clinepassImport'
 
 type Added = { id: string; email?: string }
 type FormProps = { onDone: (accounts: Added[]) => void }
@@ -33,7 +33,8 @@ const METHODS: { id: Method; provider: string; title: string; desc: string }[] =
   { id: 'grokDevice', provider: 'modal.grokProvider', title: 'grok.deviceLogin', desc: 'modal.grokProviderDesc' },
   { id: 'grokImport', provider: 'modal.grokProvider', title: 'grok.importTokens', desc: 'grok.importHint' },
   { id: 'codexImport', provider: 'modal.codexProvider', title: 'modal.codexImportTitle', desc: 'modal.codexImportDesc' },
- ]
+  { id: 'clinepassImport', provider: 'modal.clinepassProvider', title: 'modal.clinepassImportTitle', desc: 'modal.clinepassImportDesc' },
+]
 
 export function AddAccountDialog({ open, initialMethod, onClose }: { open: boolean; initialMethod: Method | null; onClose: () => void }) {
   const { t } = useI18n()
@@ -90,6 +91,8 @@ export function AddAccountDialog({ open, initialMethod, onClose }: { open: boole
           <CodeBuddyForm onDone={onDone} />
         ) : method === 'codexImport' ? (
           <CodexImportForm onDone={onDone} />
+        ) : method === 'clinepassImport' ? (
+          <ClinepassImportForm onDone={onDone} />
         ) : (
           <GrokImportForm onDone={onDone} />
         )}
@@ -106,6 +109,7 @@ function MethodPicker({ onPick }: { onPick: (m: Method) => void }) {
     'modal.codebuddyProvider': <LuKey className="size-4" />,
     'modal.grokProvider': <LuMonitor className="size-4" />,
     'modal.codexProvider': <LuKey className="size-4" />,
+    'modal.clinepassProvider': <LuKey className="size-4" />,
   }
   return (
     <div className="max-h-[60vh] space-y-4 overflow-y-auto pr-1">
@@ -818,6 +822,30 @@ function CodexImportForm({ onDone }: FormProps) {
     <>
       <Field label={t('codex.tokensLabel')} hint={t('codex.importHint')}>
         <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={8} className="font-mono text-xs" placeholder='{"access_token":"…","refresh_token":"…","email":"…"}' />
+      </Field>
+      <FileInput onText={setText} />
+      <SubmitRow busy={busy} label={t('accounts.import')} onClick={go} disabled={!text.trim()} />
+    </>
+  )
+}
+
+// ---- 4.9 ClinePass (api.cline.bot) token import -------------------------------
+
+function ClinepassImportForm({ onDone }: FormProps) {
+  const { t } = useI18n()
+  const { busy, submit } = useSubmit()
+  const [text, setText] = useState('')
+  const go = () =>
+    submit(async () => {
+      // Server accepts a single object, a JSON array, or NDJSON — pass through.
+      const r = await api<{ imported: number; accounts: Added[]; errors?: string[] }>('/auth/clinepass/import', { method: 'POST', body: text.trim() })
+      toast.success(`${t('clinepass.importSuccess')} (${r.imported})` + (r.errors?.length ? t('sso.importPartial', r.errors.length) : ''))
+      onDone(r.accounts)
+    })
+  return (
+    <>
+      <Field label={t('clinepass.tokensLabel')} hint={t('clinepass.importHint')}>
+        <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={8} className="font-mono text-xs" placeholder={'{"access_token":"workos:…","refresh_token":"…","email":"…"}'} />
       </Field>
       <FileInput onText={setText} />
       <SubmitRow busy={busy} label={t('accounts.import')} onClick={go} disabled={!text.trim()} />

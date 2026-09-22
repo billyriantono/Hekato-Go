@@ -20,6 +20,7 @@ const (
 	providerCodeBuddy = config.ProviderCodeBuddy
 	providerGrok      = config.ProviderGrok
 	providerCodex     = config.ProviderCodex
+	providerClinepass = config.ProviderClinepass
 )
 
 // providerAdapter is the one registration point for proxy capabilities. Each
