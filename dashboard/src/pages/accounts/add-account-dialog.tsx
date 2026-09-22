@@ -9,13 +9,14 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { Badge } from '@/components/ui/badge'
 import { CopyButton, errorMessage } from '@/components/common'
 import { api, post } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
 import { sleep } from './shared'
 import { SimpleSelect } from './simple-select'
 
-export type Method = 'builderid' | 'iam' | 'kirosso' | 'ssotoken' | 'local' | 'credentials' | 'cookie' | 'codebuddy' | 'grokDevice' | 'grokImport'
+export type Method = 'builderid' | 'iam' | 'kirosso' | 'ssotoken' | 'local' | 'credentials' | 'cookie' | 'codebuddy' | 'grokDevice' | 'grokImport' | 'codexImport'
 
 type Added = { id: string; email?: string }
 type FormProps = { onDone: (accounts: Added[]) => void }
@@ -31,7 +32,8 @@ const METHODS: { id: Method; provider: string; title: string; desc: string }[] =
   { id: 'codebuddy', provider: 'modal.codebuddyProvider', title: 'modal.codebuddyTitle', desc: 'modal.codebuddyDesc' },
   { id: 'grokDevice', provider: 'modal.grokProvider', title: 'grok.deviceLogin', desc: 'modal.grokProviderDesc' },
   { id: 'grokImport', provider: 'modal.grokProvider', title: 'grok.importTokens', desc: 'grok.importHint' },
-]
+  { id: 'codexImport', provider: 'modal.codexProvider', title: 'modal.codexImportTitle', desc: 'modal.codexImportDesc' },
+ ]
 
 export function AddAccountDialog({ open, initialMethod, onClose }: { open: boolean; initialMethod: Method | null; onClose: () => void }) {
   const { t } = useI18n()
@@ -86,6 +88,8 @@ export function AddAccountDialog({ open, initialMethod, onClose }: { open: boole
           <CookieForm onDone={onDone} />
         ) : method === 'codebuddy' ? (
           <CodeBuddyForm onDone={onDone} />
+        ) : method === 'codexImport' ? (
+          <CodexImportForm onDone={onDone} />
         ) : (
           <GrokImportForm onDone={onDone} />
         )}
@@ -101,6 +105,7 @@ function MethodPicker({ onPick }: { onPick: (m: Method) => void }) {
     'modal.kiroProvider': <LuShieldCheck className="size-4" />,
     'modal.codebuddyProvider': <LuKey className="size-4" />,
     'modal.grokProvider': <LuMonitor className="size-4" />,
+    'modal.codexProvider': <LuKey className="size-4" />,
   }
   return (
     <div className="max-h-[60vh] space-y-4 overflow-y-auto pr-1">
@@ -656,16 +661,46 @@ function CodeBuddyForm({ onDone }: FormProps) {
   const { busy, submit } = useSubmit()
   const [label, setLabel] = useState('')
   const [variant, setVariant] = useState('global')
-  const [apiKey, setApiKey] = useState('')
+  const [text, setText] = useState('')
+
+  // One credential per line: CodeBuddy API keys or JWT session tokens (eyJ…),
+  // mixed freely. Session tokens are used when key creation is rate-limited.
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+  const isJwt = (v: string) => v.startsWith('eyJ') && v.split('.').length === 3
+  const jwtExpiry = (v: string): number | null => {
+    try {
+      const payload = JSON.parse(atob(v.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')))
+      return typeof payload.exp === 'number' ? payload.exp : null
+    } catch {
+      return null
+    }
+  }
+  const keys = lines.filter((l) => !isJwt(l))
+  const jwts = lines.filter(isJwt)
+  const expiredJwts = jwts.filter((j) => {
+    const exp = jwtExpiry(j)
+    return exp !== null && exp * 1000 < Date.now()
+  })
+
   const go = () =>
     submit(async () => {
-      const r = await post<{ account: Added }>('/auth/codebuddy', { apiKey: apiKey.trim(), label: label.trim(), variant })
-      toast.success(t('codebuddy.importSuccess'))
-      onDone([r.account])
+      const r = await post<{ account: Added; accounts?: Added[]; errors?: string[] }>('/auth/codebuddy', {
+        apiKey: lines.join('\n'),
+        label: label.trim(),
+        variant,
+      })
+      const added = r.accounts && r.accounts.length ? r.accounts : [r.account]
+      toast.success(t('codebuddy.importCount', added.length))
+      if (r.errors?.length) toast.warning(r.errors.join('; '))
+      onDone(added)
     })
+
   return (
     <>
-      <Field label={t('codebuddy.label')}>
+      <Field label={t('codebuddy.label')} hint={t('codebuddy.labelHint')}>
         <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder={t('codebuddy.labelPlaceholder')} />
       </Field>
       <Field label={t('codebuddy.variant')}>
@@ -679,10 +714,25 @@ function CodeBuddyForm({ onDone }: FormProps) {
           ]}
         />
       </Field>
-      <Field label={t('codebuddy.apiKey')}>
-        <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} className="font-mono" autoComplete="off" />
+      <Field label={t('codebuddy.credentials')} hint={t('codebuddy.credentialsHint')}>
+        <Textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          rows={5}
+          className="font-mono text-xs"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder={'sk-…\neyJhbGciOi…'}
+        />
+        {lines.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-2 text-xs">
+            {keys.length > 0 && <Badge variant="secondary">{t('codebuddy.detectedKeys', keys.length)}</Badge>}
+            {jwts.length > 0 && <Badge variant="secondary">{t('codebuddy.detectedTokens', jwts.length)}</Badge>}
+            {expiredJwts.length > 0 && <Badge variant="destructive">{t('codebuddy.expiredTokens', expiredJwts.length)}</Badge>}
+          </div>
+        )}
       </Field>
-      <SubmitRow busy={busy} label={t('common.add')} onClick={go} disabled={!apiKey.trim()} />
+      <SubmitRow busy={busy} label={lines.length > 1 ? t('codebuddy.addMany', lines.length) : t('common.add')} onClick={go} disabled={lines.length === 0} />
     </>
   )
 }
@@ -704,6 +754,30 @@ function GrokImportForm({ onDone }: FormProps) {
     <>
       <Field label={t('grok.tokensLabel')} hint={t('grok.importHint')}>
         <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={8} className="font-mono text-xs" placeholder='{"email":"…","tokens":{"access_token":"…","refresh_token":"…"}}' />
+      </Field>
+      <FileInput onText={setText} />
+      <SubmitRow busy={busy} label={t('accounts.import')} onClick={go} disabled={!text.trim()} />
+    </>
+  )
+}
+
+// ---- 4.8 Codex (OpenAI / ChatGPT) token import -------------------------------
+
+function CodexImportForm({ onDone }: FormProps) {
+  const { t } = useI18n()
+  const { busy, submit } = useSubmit()
+  const [text, setText] = useState('')
+  const go = () =>
+    submit(async () => {
+      // Raw body: server accepts object, array or NDJSON, so do not re-encode.
+      const r = await api<{ imported: number; accounts: Added[]; errors?: string[] }>('/auth/codex/import', { method: 'POST', body: text.trim() })
+      toast.success(`${t('codex.importSuccess')} (${r.imported})` + (r.errors?.length ? t('sso.importPartial', r.errors.length) : ''))
+      onDone(r.accounts)
+    })
+  return (
+    <>
+      <Field label={t('codex.tokensLabel')} hint={t('codex.importHint')}>
+        <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={8} className="font-mono text-xs" placeholder='{"access_token":"…","refresh_token":"…","email":"…"}' />
       </Field>
       <FileInput onText={setText} />
       <SubmitRow busy={busy} label={t('accounts.import')} onClick={go} disabled={!text.trim()} />

@@ -15,6 +15,9 @@ func TestProviderForAccount(t *testing.T) {
 		{"builder id", &Account{AuthMethod: "idc", Provider: "BuilderId"}, ProviderKiro, false},
 		{"social kiro", &Account{AuthMethod: "social", Provider: "Google"}, ProviderKiro, false},
 		{"unknown fails closed", &Account{AuthMethod: "oauth", Provider: "new-provider"}, "", true},
+		{"codex auth method", &Account{AuthMethod: "codex", Provider: "codex"}, ProviderCodex, false},
+		{"codex chatgpt substring", &Account{AuthMethod: "openai", Provider: "chatgpt"}, ProviderCodex, false},
+		{"codex explicit ProviderKind", &Account{ProviderKind: "codex", AuthMethod: "social", Provider: "Google"}, ProviderCodex, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

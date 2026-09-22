@@ -7,6 +7,7 @@ import {
   LuCircleOff,
   LuDownload,
   LuEllipsis,
+  LuFlame,
   LuFlaskConical,
   LuGauge,
   LuLoader,
@@ -36,13 +37,13 @@ import { useI18n } from '@/lib/i18n'
 import { AddAccountDialog, type Method } from './add-account-dialog'
 import { AccountDetailSheet } from './detail-sheet'
 import { ExportDialog } from './export-dialog'
-import { accountStatus, countdown, pct, statusKey, statusTone, subscriptionLabel, type Account } from './shared'
+import { accountStatus, ago, countdown, pct, statusKey, statusTone, subscriptionLabel, warmupCounts, type Account, type WarmupResult } from './shared'
 import { SimpleSelect } from './simple-select'
 
 type Confirm = { title: string; description?: ReactNode; onConfirm: () => Promise<void> }
 
 export function AccountsPage() {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const qc = useQueryClient()
   const { data, isLoading } = useQuery({ queryKey: ['accounts'], queryFn: () => get<Account[]>('/accounts') })
   const accounts = useMemo(() => data ?? [], [data])
@@ -168,6 +169,13 @@ export function AccountsPage() {
       const r = await post<{ refreshed: number }>('/accounts/models/refresh')
       toast.success(t('models.refreshAllDone', r.refreshed))
     })
+  /** ids omitted = every candidate account. */
+  const warmup = (ids?: string[], key = 'warmup:all') =>
+    run(key, async () => {
+      const r = await post<{ results: WarmupResult[] }>('/warmup', ids?.length ? { ids } : {})
+      toast.success(t('accounts.warmup.result', ...warmupCounts(r.results)))
+      if (ids?.length && ids.length > 1) setSelection({})
+    })
 
   // ---- table ---------------------------------------------------------------
   const columns: ColumnDef<Account, unknown>[] = [
@@ -225,6 +233,12 @@ export function AccountsPage() {
                 {t('accounts.expiry')}: {left || t('accounts.expired')}
               </div>
             )}
+            <div className="text-[11px] text-muted-foreground" title={a.warmupStatus === 'error' ? a.warmupError : undefined}>
+              <StatusDot
+                tone={a.warmupStatus === 'ok' ? 'success' : a.warmupStatus === 'error' ? 'danger' : 'muted'}
+                label={`${t('accounts.warmup.label')}: ${ago(a.lastWarmup, lang) || t('accounts.warmup.never')}`}
+              />
+            </div>
           </div>
         )
       },
@@ -313,6 +327,9 @@ export function AccountsPage() {
                 <DropdownMenuItem onClick={() => refreshModels(a)}>
                   <LuGauge /> {t('batch.refreshModels')}
                 </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => warmup([a.id], `warmup:${a.id}`)}>
+                  <LuFlame /> {t('accounts.warmup.run')}
+                </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => copyJson(a)}>{t('accounts.copyJSON')}</DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={() => toggleEnabled(a)}>
@@ -352,6 +369,9 @@ export function AccountsPage() {
             <Button variant="outline" size="sm" onClick={refreshAllModels} disabled={!!busy || !accounts.length}>
               {busy === 'models:all' ? <LuLoader className="animate-spin" /> : <LuGauge />} {t('models.refreshAll')}
             </Button>
+            <Button variant="outline" size="sm" onClick={() => warmup()} disabled={!!busy || !accounts.length}>
+              {busy === 'warmup:all' ? <LuLoader className="animate-spin" /> : <LuFlame />} {t('accounts.warmup.run')}
+            </Button>
             <Button variant="outline" size="sm" onClick={() => setExportOpen(true)} disabled={!accounts.length}>
               <LuDownload /> {t('accounts.export')}
             </Button>
@@ -388,6 +408,9 @@ export function AccountsPage() {
           </Button>
           <Button size="sm" variant="outline" disabled={!!busy} onClick={bulkRefreshModels}>
             <LuGauge /> {t('batch.refreshModels')}
+          </Button>
+          <Button size="sm" variant="outline" disabled={!!busy} onClick={() => warmup(selectedIds, 'warmup:selected')}>
+            {busy === 'warmup:selected' ? <LuLoader className="animate-spin" /> : <LuFlame />} {t('accounts.warmup.runSelected')}
           </Button>
           <Button size="sm" variant="destructive" disabled={!!busy} onClick={bulkDelete}>
             <LuTrash2 /> {t('batch.delete')}

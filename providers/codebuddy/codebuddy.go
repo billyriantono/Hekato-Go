@@ -47,48 +47,51 @@ type codeBuddyModel struct {
 	Image   bool
 }
 
+// Static catalogs: CodeBuddy exposes no model-list endpoint (every /models
+// path answers 404), so this mirrors the IDs its web client offers. Operators
+// can add newer IDs without a rebuild via Settings → Custom model IDs.
 var codeBuddyGlobalModels = []codeBuddyModel{
-	{ID: "gemini-3.1-pro", OwnedBy: "google"},
-	{ID: "gemini-3.1-flash-lite", OwnedBy: "google"},
-	{ID: "gemini-3.0-flash", OwnedBy: "google"},
-	{ID: "gemini-2.5-pro", OwnedBy: "google"},
-	{ID: "gemini-2.5-flash", OwnedBy: "google"},
-	{ID: "gpt-5.5", OwnedBy: "openai"},
-	{ID: "gpt-5.4", OwnedBy: "openai"},
-	{ID: "gpt-5.2", OwnedBy: "openai"},
+	{ID: "claude-opus-4.8", OwnedBy: "anthropic", Image: true},
+	{ID: "claude-opus-4.8-1m", OwnedBy: "anthropic", Image: true},
+	{ID: "claude-opus-4.7", OwnedBy: "anthropic", Image: true},
+	{ID: "claude-opus-4.7-1m", OwnedBy: "anthropic", Image: true},
+	{ID: "claude-opus-4.6", OwnedBy: "anthropic", Image: true},
+	{ID: "claude-sonnet-4.6", OwnedBy: "anthropic", Image: true},
+	{ID: "gpt-5.5", OwnedBy: "openai", Image: true},
+	{ID: "gpt-5.5-xhigh", OwnedBy: "openai", Image: true},
+	{ID: "gpt-5.4", OwnedBy: "openai", Image: true},
 	{ID: "gpt-5.3-codex", OwnedBy: "openai"},
+	{ID: "gpt-5.2", OwnedBy: "openai", Image: true},
 	{ID: "gpt-5.2-codex", OwnedBy: "openai"},
-	{ID: "gpt-5.1", OwnedBy: "openai"},
+	{ID: "gpt-5.1", OwnedBy: "openai", Image: true},
 	{ID: "gpt-5.1-codex", OwnedBy: "openai"},
 	{ID: "gpt-5.1-codex-max", OwnedBy: "openai"},
 	{ID: "gpt-5.1-codex-mini", OwnedBy: "openai"},
+	{ID: "gemini-3.5-flash", OwnedBy: "google", Image: true},
+	{ID: "gemini-3.1-pro", OwnedBy: "google", Image: true},
+	{ID: "gemini-3.1-flash-lite", OwnedBy: "google", Image: true},
+	{ID: "gemini-3.0-flash", OwnedBy: "google", Image: true},
+	{ID: "gemini-2.5-pro", OwnedBy: "google", Image: true},
+	{ID: "gemini-2.5-flash", OwnedBy: "google", Image: true},
 	{ID: "deepseek-v3-2-volc", OwnedBy: "deepseek"},
-	{ID: "claude-opus-4.6", OwnedBy: "anthropic"},
-	{ID: "claude-opus-4.7-1m", OwnedBy: "anthropic"},
 	{ID: "kimi-k2.5", OwnedBy: "moonshot"},
+	{ID: "enowx-default", OwnedBy: "enowxlabs"},
 }
 
 var codeBuddyCNModels = []codeBuddyModel{
-	{ID: "auto", OwnedBy: "enowxlabs"},
-	{ID: "glm-5.2", OwnedBy: "zhipu"},
-	{ID: "glm-5.1", OwnedBy: "zhipu"},
-	{ID: "glm-5.0", OwnedBy: "zhipu"},
-	{ID: "glm-5.0-turbo", OwnedBy: "zhipu"},
-	{ID: "glm-5v-turbo", OwnedBy: "zhipu"},
-	{ID: "glm-4.7", OwnedBy: "zhipu"},
-	{ID: "glm-4.6", OwnedBy: "zhipu"},
-	{ID: "glm-4.6v", OwnedBy: "zhipu"},
-	{ID: "hunyuan-image-v3.0", OwnedBy: "tencent", Image: true},
-	{ID: "deepseek-v4-pro", OwnedBy: "deepseek"},
-	{ID: "deepseek-v4-flash", OwnedBy: "deepseek"},
-	{ID: "deepseek-r1", OwnedBy: "deepseek"},
-	{ID: "kimi-k2.7", OwnedBy: "moonshot"},
-	{ID: "kimi-k2.6", OwnedBy: "moonshot"},
-	{ID: "kimi-k2.5", OwnedBy: "moonshot"},
-	{ID: "minimax-m3", OwnedBy: "minimax"},
-	{ID: "minimax-m2.7", OwnedBy: "minimax"},
-	{ID: "hy3-preview", OwnedBy: "tencent"},
-	{ID: "claude-haiku-4.5", OwnedBy: "anthropic"},
+	{ID: "glm-5.2", OwnedBy: "zhipu", Image: true},
+	{ID: "glm-5.1", OwnedBy: "zhipu", Image: true},
+	{ID: "glm-5v-turbo", OwnedBy: "zhipu", Image: true},
+	{ID: "minimax-m3", OwnedBy: "minimax", Image: true},
+	{ID: "kimi-k2.7", OwnedBy: "moonshot", Image: true},
+	{ID: "kimi-k2.6", OwnedBy: "moonshot", Image: true},
+	{ID: "hy3", OwnedBy: "tencent", Image: true},
+	{ID: "hy4-preview", OwnedBy: "tencent", Image: true},
+	{ID: "glm-5.3", OwnedBy: "zhipu", Image: true},
+	{ID: "glm-5.3-flash", OwnedBy: "zhipu", Image: true},
+	{ID: "kimi-k3-1", OwnedBy: "moonshot", Image: true},
+	{ID: "deepseek-v4-pro", OwnedBy: "deepseek", Image: true},
+	{ID: "deepseek-v4.1-flash", OwnedBy: "deepseek", Image: true},
 }
 
 func variantForAccount(account *config.Account) codeBuddyVariant {
@@ -143,16 +146,25 @@ func applyCodeBuddyHeaders(h http.Header, v codeBuddyVariant, token string) {
 	h.Set("X-Product", "SaaS")
 	h.Set("User-Agent", codeBuddyUserAgent)
 	h.Set("Authorization", codeBuddyAuthHeader(token))
-	// API-key mode expects both Bearer auth and X-API-Key (OAuth mode uses only
-	// Authorization). Supplying both matches CodeBuddy API-key clients and is safe
-	// for the API-key accounts this proxy imports.
-	h.Set("X-API-Key", strings.TrimSpace(token))
+	// API-key mode expects both Bearer auth and X-API-Key. OAuth/session tokens
+	// are JWTs ("eyJ..."); sending one as X-API-Key makes CodeBuddy look it up as
+	// an API key and answer 401 {"message":"not_found"}, so only real keys get it.
+	if tok := strings.TrimSpace(token); !isJWT(tok) {
+		h.Set("X-API-Key", tok)
+	}
 	h.Set("b3", traceID+"-"+spanID+"-1-"+parentSpanID)
 	h.Set("X-B3-TraceId", traceID)
 	h.Set("X-B3-ParentSpanId", parentSpanID)
 	h.Set("X-B3-SpanId", spanID)
 	h.Set("X-B3-Sampled", "1")
 }
+
+// isJWT reports whether a token looks like a JSON Web Token (three dot-separated
+// base64url segments starting with the "{" header prefix "eyJ").
+func isJWT(token string) bool {
+	return strings.HasPrefix(token, "eyJ") && strings.Count(token, ".") == 2
+}
+
 func codeBuddyTraceID() string {
 	return strings.ReplaceAll(uuid.NewString(), "-", "")
 }
@@ -162,7 +174,9 @@ func ModelsForAccount(account *config.Account) []providers.ModelInfo {
 		src = codeBuddyCNModels
 	}
 	out := make([]providers.ModelInfo, 0, len(src))
+	seen := map[string]bool{}
 	for _, m := range src {
+		seen[strings.ToLower(m.ID)] = true
 		inputTypes := []string{"text"}
 		if m.Image {
 			inputTypes = append(inputTypes, "image")
@@ -172,6 +186,13 @@ func ModelsForAccount(account *config.Account) []providers.ModelInfo {
 			ModelName:  m.ID,
 			InputTypes: inputTypes,
 		})
+	}
+	for _, id := range config.GetCustomModelIDs("codebuddy") {
+		if seen[strings.ToLower(id)] {
+			continue
+		}
+		seen[strings.ToLower(id)] = true
+		out = append(out, providers.ModelInfo{ModelId: id, ModelName: id, InputTypes: []string{"text"}})
 	}
 	return out
 }

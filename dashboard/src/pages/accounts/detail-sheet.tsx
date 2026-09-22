@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { LuCloudDownload, LuFlaskConical, LuLoader, LuRefreshCw, LuTrash2, LuWand } from 'react-icons/lu'
+import { LuCloudDownload, LuFlame, LuFlaskConical, LuLoader, LuRefreshCw, LuTrash2, LuWand } from 'react-icons/lu'
 import { toast } from 'sonner'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -25,7 +25,9 @@ import {
   statusKey,
   statusTone,
   subscriptionLabel,
+  warmupCounts,
   type Account,
+  type WarmupResult,
 } from './shared'
 
 export function AccountDetailSheet({ account, onClose }: { account: Account | null; onClose: () => void }) {
@@ -86,7 +88,7 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
   const [proxyURL, setProxyURL] = useState(a.proxyURL ?? '')
   const [relayURL, setRelayURL] = useState(a.relayURL ?? '')
   const [relaySecret, setRelaySecret] = useState('')
-  const [testModel, setTestModel] = useState('')
+  const [testModel, setTestModel] = useState<string | undefined>()
   const [testResult, setTestResult] = useState<TestResult | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
@@ -95,6 +97,10 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
     queryFn: () => get<{ models: string[] }>(`/accounts/${a.id}/models/cached`),
   })
   const modelList = models.data?.models ?? []
+  const settings = useQuery({ queryKey: ['settings'], queryFn: () => get<{ testModel?: string }>('/settings') })
+  const configuredTestModel = settings.data?.testModel?.trim() ?? ''
+  const accountDefaultModel = modelList.find((model) => model.toLowerCase() === configuredTestModel.toLowerCase())
+  const selectedTestModel = testModel ?? accountDefaultModel ?? modelList[0] ?? ''
 
   const saveIdentity = () =>
     run('identity', async () => {
@@ -149,11 +155,20 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
       toast.success(t('accounts.refreshed'))
       invalidate()
     })
+  const warmup = () =>
+    run('warmup', async () => {
+      const r = await post<{ results: WarmupResult[] }>('/warmup', { ids: [a.id] })
+      toast.success(t('accounts.warmup.result', ...warmupCounts(r.results)))
+      invalidate()
+    })
   const runTest = () =>
     run('test', async () => {
       const started = Date.now()
       try {
-        const r = await post<{ reply: string; model: string }>(`/accounts/${a.id}/test`, testModel ? { model: testModel } : undefined)
+        const r = await post<{ reply: string; model: string }>(
+          `/accounts/${a.id}/test`,
+          selectedTestModel ? { model: selectedTestModel } : undefined,
+        )
         setTestResult({ ok: true, text: `${r.model}: ${r.reply}`, ms: Date.now() - started })
       } catch (e) {
         setTestResult({ ok: false, text: errorMessage(e), ms: Date.now() - started })
@@ -276,6 +291,25 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
       </Section>
 
       <Section
+        title={t('accounts.warmup.label')}
+        action={
+          <Button variant="ghost" size="sm" onClick={warmup} disabled={!!busy}>
+            {spin('warmup') ?? <LuFlame />} {t('accounts.warmup.runNow')}
+          </Button>
+        }
+      >
+        <Row label={t('accounts.warmup.last')}>{formatTime(a.lastWarmup)}</Row>
+        <Row label={t('accounts.warmup.status')}>
+          {a.warmupStatus ? (
+            <StatusDot tone={a.warmupStatus === 'ok' ? 'success' : 'danger'} label={t(a.warmupStatus === 'ok' ? 'accounts.warmup.ok' : 'accounts.warmup.failed')} />
+          ) : (
+            t('accounts.warmup.never')
+          )}
+        </Row>
+        {a.warmupError && <Row label={t('accounts.warmup.error')}>{a.warmupError}</Row>}
+      </Section>
+
+      <Section
         title={t('detail.overage')}
         action={
           <Button variant="ghost" size="sm" onClick={pullOverage} disabled={!!busy}>
@@ -377,7 +411,7 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
         <div className="flex gap-2">
           {modelList.length ? (
             <SimpleSelect
-              value={testModel || modelList[0]}
+              value={selectedTestModel}
               onChange={setTestModel}
               className="flex-1"
               options={modelList.map((m) => ({ value: m, label: m }))}

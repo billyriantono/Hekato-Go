@@ -62,6 +62,15 @@ export const en: Record<string, string> = {
   'settings.autoRoute.col.reliability': 'Reliability',
   'settings.autoRoute.col.latency': 'EWMA latency',
   'settings.autoRoute.col.outcomes': 'Success / Fail',
+  'settings.testModel': 'Default test model',
+  'settings.testModelHint': 'Used by the account Test button and inference warmup when no model is selected. If an account does not advertise it, the first Haiku model or first available model is used.',
+  'settings.testModelPlaceholder': 'Automatic per account',
+  'settings.warmup.title': 'Warmup',
+  'settings.warmup.hint': 'On every refresh cycle the gateway refreshes each account\'s token and quota (5 accounts in parallel, with retries). The options below add health checks on top.',
+  'settings.warmup.probe': 'Inference probe',
+  'settings.warmup.probeHint': 'Sends a tiny "Say OK" chat request per account each cycle to verify inference actually works. Costs a few tokens per account.',
+  'settings.warmup.recover': 'Auto-recover banned accounts',
+  'settings.warmup.recoverHint': 'Re-enables accounts that failover auto-disabled once they pass the warmup again.',
 }
 
 export const zh: Record<string, string> = {
@@ -127,4 +136,13 @@ export const zh: Record<string, string> = {
   'settings.autoRoute.col.reliability': '可靠性',
   'settings.autoRoute.col.latency': 'EWMA 延迟',
   'settings.autoRoute.col.outcomes': '成功 / 失败',
+  'settings.testModel': '默认测试模型',
+  'settings.testModelHint': '未选择模型时用于账号测试按钮与推理预热。若账号未公布该模型，则使用首个 Haiku 模型或首个可用模型。',
+  'settings.testModelPlaceholder': '按账号自动选择',
+  'settings.warmup.title': '预热',
+  'settings.warmup.hint': '每个刷新周期网关都会刷新各账号的 Token 与额度（5 个账号并行，带重试）。以下选项在此基础上增加健康检查。',
+  'settings.warmup.probe': '推理探测',
+  'settings.warmup.probeHint': '每个周期向每个账号发送一条极小的 "Say OK" 对话请求，验证推理确实可用。每个账号消耗少量 Token。',
+  'settings.warmup.recover': '自动恢复被封禁账号',
+  'settings.warmup.recoverHint': '被故障转移自动禁用的账号在再次通过预热后自动重新启用。',
 }

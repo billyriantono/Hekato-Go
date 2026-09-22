@@ -6,11 +6,13 @@ import (
 	"net/http"
 )
 
-// apiKeyView is the response payload for listing/inspecting API keys. The Key field
-// is masked so admins can identify entries without exposing the secret.
+// apiKeyView is the response payload for listing/inspecting API keys. Key is
+// populated only by the authenticated single-key detail endpoint; list and
+// mutation metadata responses expose only KeyMasked.
 type apiKeyView struct {
 	ID               string  `json:"id"`
 	Name             string  `json:"name,omitempty"`
+	Key              string  `json:"key,omitempty"`
 	KeyMasked        string  `json:"keyMasked"`
 	Enabled          bool    `json:"enabled"`
 	Migrated         bool    `json:"migrated,omitempty"`
@@ -60,7 +62,10 @@ func (h *Handler) apiGetApiKey(w http.ResponseWriter, r *http.Request, id string
 		json.NewEncoder(w).Encode(map[string]string{"error": "API key not found"})
 		return
 	}
-	json.NewEncoder(w).Encode(toApiKeyView(*entry))
+	w.Header().Set("Cache-Control", "no-store")
+	view := toApiKeyView(*entry)
+	view.Key = entry.Key
+	json.NewEncoder(w).Encode(view)
 }
 
 type apiKeyCreateRequest struct {

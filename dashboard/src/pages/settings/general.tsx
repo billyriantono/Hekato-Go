@@ -10,7 +10,15 @@ import { get, post, setPassword } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
 import { Field, SaveButton, Section, SwitchRow, useDraft } from './shared'
 
-type Settings = { requireApiKey: boolean; allowOverUsage: boolean; logLevel?: string; accountRefreshMinutes?: number }
+type Settings = {
+  requireApiKey: boolean
+  allowOverUsage: boolean
+  logLevel?: string
+  accountRefreshMinutes?: number
+  warmupProbe?: boolean
+  warmupRecover?: boolean
+  testModel?: string
+}
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error']
 
 export function GeneralSection() {
@@ -20,7 +28,15 @@ export function GeneralSection() {
   const { draft, patch, dirty } = useDraft(q.data)
 
   const save = useMutation({
-    mutationFn: () => post('/settings', { allowOverUsage: draft!.allowOverUsage, logLevel: draft!.logLevel ?? 'info', accountRefreshMinutes: draft!.accountRefreshMinutes ?? 0 }),
+    mutationFn: () =>
+      post('/settings', {
+        allowOverUsage: draft!.allowOverUsage,
+        logLevel: draft!.logLevel ?? 'info',
+        accountRefreshMinutes: draft!.accountRefreshMinutes ?? 0,
+        warmupProbe: !!draft!.warmupProbe,
+        warmupRecover: !!draft!.warmupRecover,
+        testModel: draft!.testModel ?? '',
+      }),
     onSuccess: () => {
       toast.success(t('settings.generalSaved'))
       qc.invalidateQueries({ queryKey: ['settings'] })
@@ -80,6 +96,31 @@ export function GeneralSection() {
                 onChange={(e) => patch({ accountRefreshMinutes: Math.max(0, Math.min(1440, parseInt(e.target.value, 10) || 0)) })}
               />
             </Field>
+            <Field label={t('settings.testModel')} hint={t('settings.testModelHint')} htmlFor="test-model">
+              <Input
+                id="test-model"
+                className="w-full font-mono sm:w-96"
+                value={draft.testModel ?? ''}
+                onChange={(e) => patch({ testModel: e.target.value })}
+                placeholder={t('settings.testModelPlaceholder')}
+              />
+            </Field>
+            <div className="space-y-2">
+              <div className="text-sm font-medium">{t('settings.warmup.title')}</div>
+              <p className="text-xs text-muted-foreground">{t('settings.warmup.hint')}</p>
+              <SwitchRow
+                label={t('settings.warmup.probe')}
+                hint={t('settings.warmup.probeHint')}
+                checked={!!draft.warmupProbe}
+                onChange={(v) => patch({ warmupProbe: v })}
+              />
+              <SwitchRow
+                label={t('settings.warmup.recover')}
+                hint={t('settings.warmup.recoverHint')}
+                checked={!!draft.warmupRecover}
+                onChange={(v) => patch({ warmupRecover: v })}
+              />
+            </div>
             <SwitchRow
               label={t('settings.allowOverUsage')}
               hint={t('settings.allowOverUsageHint')}

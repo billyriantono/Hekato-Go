@@ -66,10 +66,16 @@ type Handler struct {
 	limiter         *keyLimiter
 	autoRouter      *autoRouter
 	metrics         *metricsCollector
+	warmup          warmupState
 	tokenRefreshMu  sync.Mutex
 	// 请求日志 (环形缓冲区，包含成功和失败)
 	requestLogs   []RequestLog
 	requestLogsMu sync.RWMutex
+	// 请求日志持久化：appendRequestLog 把条目丢进 pendingLogs；
+	// 后台 goroutine 按 flush 周期批量写盘，停机时 drain 后再退出。
+	pendingLogs  chan config.PersistedRequestLog
+	stopLogSaver chan struct{}
+	logSaverDone chan struct{}
 }
 
 type thinkingStreamSource int
@@ -256,6 +262,9 @@ func NewHandler() *Handler {
 		startTime:       time.Now().Unix(),
 		stopRefresh:     make(chan struct{}),
 		stopStatsSaver:  make(chan struct{}),
+		pendingLogs:     make(chan config.PersistedRequestLog, requestLogPendingCapacity),
+		stopLogSaver:    make(chan struct{}),
+		logSaverDone:    make(chan struct{}),
 		promptCache:     newPromptCacheTracker(defaultPromptCacheTTL),
 		affinity:        newAccountAffinity(),
 		limiter:         newKeyLimiter(),
@@ -265,6 +274,27 @@ func NewHandler() *Handler {
 	// Restore persisted ops metrics and keep flushing them in the background.
 	h.metrics.Load(config.Metrics())
 	go h.metrics.run(h.stopStatsSaver)
+	// 从持久化存储加载最近请求日志，使重启后 /logs 与 dashboard telemetry 不再清空。
+	// 容量不足 (e.g. 历史未持久化、或后端未实现 RequestLogStore) 时静默回退到内存环。
+	if rs := config.RequestLogs(); rs != nil {
+		if entries, err := rs.LoadRecent(requestLogsMaxSize); err == nil && len(entries) > 0 {
+			// 按 Time 升序填入环形缓冲；最新 N 条保留在最尾。
+			h.requestLogs = make([]RequestLog, 0, len(entries))
+			for _, e := range entries {
+				h.requestLogs = append(h.requestLogs, RequestLog{
+					Time: e.Time, Endpoint: e.Endpoint, Model: e.Model,
+					AccountID: e.AccountID, Status: e.Status,
+					Error: e.Error, ErrorType: e.ErrorType,
+					Tokens: e.Tokens, Credits: e.Credits, Duration: e.Duration,
+				})
+			}
+			logger.Infof("[request-log] restored %d entries from storage", len(h.requestLogs))
+		}
+		go h.runRequestLogFlusher(rs)
+	} else {
+		// 后端不支持持久化 → 不启动 flusher，pendingLogs 保持 nil，appendRequestLog 走纯内存路径。
+		close(h.logSaverDone)
+	}
 	// 启动后台刷新
 	go h.backgroundRefresh()
 	// 启动后台统计保存 (每30秒保存一次)
@@ -293,6 +323,15 @@ func (h *Handler) Shutdown() {
 	close(h.stopStatsSaver)
 	h.saveStats()
 	h.metrics.Flush()
+	// Drain pending request logs to disk before exit. Non-blocking on shutdown:
+	// if no flusher was started (backend without RequestLogStore), logSaverDone
+	// was closed in NewHandler, so the select hits it immediately.
+	if h.stopLogSaver != nil {
+		close(h.stopLogSaver)
+	}
+	if h.logSaverDone != nil {
+		<-h.logSaverDone
+	}
 }
 
 // backgroundRefresh 后台定时刷新账户信息
@@ -316,47 +355,10 @@ func (h *Handler) backgroundRefresh() {
 	}
 }
 
-// refreshAllAccounts 刷新所有账户信息
+// refreshAllAccounts runs the warmup cycle (token refresh, quota, optional probe,
+// auto-recovery) over every candidate account.
 func (h *Handler) refreshAllAccounts() {
-	accounts := config.GetAccounts()
-	for i := range accounts {
-		account := &accounts[i]
-		if !account.Enabled || account.AccessToken == "" {
-			continue
-		}
-
-		// 检查 token 是否需要刷新
-		if account.ExpiresAt > 0 && time.Now().Unix() > account.ExpiresAt-tokenRefreshSkewSeconds {
-			newAccessToken, newRefreshToken, newExpiresAt, profileArn, err := auth.RefreshToken(account)
-			if err != nil {
-				logger.Warnf("[BackgroundRefresh] Token refresh failed for %s: %v", account.Email, err)
-				h.handleAccountFailure(account, err)
-				continue
-			}
-			account.AccessToken = newAccessToken
-			if newRefreshToken != "" {
-				account.RefreshToken = newRefreshToken
-			}
-			account.ExpiresAt = newExpiresAt
-			config.UpdateAccountToken(account.ID, newAccessToken, newRefreshToken, newExpiresAt)
-			h.pool.UpdateToken(account.ID, newAccessToken, newRefreshToken, newExpiresAt)
-			if profileArn != "" {
-				account.ProfileArn = profileArn
-				config.UpdateAccountProfileArn(account.ID, profileArn)
-			}
-		}
-
-		// 刷新账户信息
-		info, err := RefreshAccountInfo(account)
-		if err != nil {
-			logger.Warnf("[BackgroundRefresh] Failed to refresh %s: %v", account.Email, err)
-			continue
-		}
-
-		config.UpdateAccountInfo(account.ID, *info)
-		logger.Infof("[BackgroundRefresh] Refreshed %s: %s %.1f/%.1f", account.Email, info.SubscriptionType, info.UsageCurrent, info.UsageLimit)
-	}
-	h.pool.Reload()
+	h.runWarmup(nil)
 }
 
 // validateApiKey 验证 API Key（Bool 包装，旧签名仍被部分调用方使用）
@@ -404,7 +406,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Api-Key, anthropic-version, anthropic-beta, x-api-key, x-stainless-os, x-stainless-lang, x-stainless-package-version, x-stainless-runtime, x-stainless-runtime-version, x-stainless-arch")
-	w.Header().Set("Access-Control-Expose-Headers", "x-request-id, x-ratelimit-limit-requests, x-ratelimit-limit-tokens, x-ratelimit-remaining-requests, x-ratelimit-remaining-tokens, x-ratelimit-reset-requests, x-ratelimit-reset-tokens")
+	w.Header().Set("Access-Control-Expose-Headers", "x-request-id, x-hekato-routed-model, x-hekato-route-reason, x-ratelimit-limit-requests, x-ratelimit-limit-tokens, x-ratelimit-remaining-requests, x-ratelimit-remaining-tokens, x-ratelimit-reset-requests, x-ratelimit-reset-tokens")
 
 	if r.Method == "OPTIONS" {
 		w.WriteHeader(204)
@@ -1503,6 +1505,79 @@ func (h *Handler) appendRequestLog(entry RequestLog) {
 	}
 	h.requestLogs = append(h.requestLogs, entry)
 	h.requestLogsMu.Unlock()
+
+	// 非阻塞投递到持久化队列。队列满 = 上一批次还没刷盘，降级为丢弃本次
+	// 持久化条目（内存环照常保留，查询不丢），避免反向阻塞请求路径。
+	if h.pendingLogs != nil {
+		persisted := config.PersistedRequestLog{
+			Time: entry.Time, Endpoint: entry.Endpoint, Model: entry.Model,
+			AccountID: entry.AccountID, Status: entry.Status,
+			Error: entry.Error, ErrorType: entry.ErrorType,
+			Tokens: entry.Tokens, Credits: entry.Credits, Duration: entry.Duration,
+		}
+		select {
+		case h.pendingLogs <- persisted:
+		default:
+			// 后台正在批量写入；下一轮再补。这里不再 spin / 阻塞。
+		}
+	}
+}
+
+// requestLogFlushInterval 是批量写盘的周期。太短：每个 batch 一份 SQL 事务，
+// 开销过大；太长：崩溃丢失窗口过大。5s 与现有 metrics 刷新节奏一致。
+const requestLogFlushInterval = 5 * time.Second
+
+// requestLogBatchSize 触发立即 flush 的条目阈值，避免突发后长时间不刷盘。
+const requestLogBatchSize = 64
+
+// requestLogPendingCapacity 是 pendingLogs 通道的缓冲大小。环形 500 条 +
+// 突发，1024 给后台 5s 周期足够吸纳一次小高峰；满了就走非阻塞丢弃路径。
+const requestLogPendingCapacity = 1024
+
+// runRequestLogFlusher 从 pendingLogs 收集条目并按周期批量持久化。
+// store 为 nil 时（极少数后端未实现）直接退出，保持原内存-only 行为。
+func (h *Handler) runRequestLogFlusher(store config.RequestLogStore) {
+	defer close(h.logSaverDone)
+	ticker := time.NewTicker(requestLogFlushInterval)
+	defer ticker.Stop()
+
+	batch := make([]config.PersistedRequestLog, 0, requestLogBatchSize)
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		if err := store.Append(batch); err != nil {
+			logger.Warnf("request log flush failed: %v (lost %d entries)", err, len(batch))
+		}
+		batch = batch[:0]
+	}
+
+	for {
+		select {
+		case e, ok := <-h.pendingLogs:
+			if !ok {
+				flush()
+				return
+			}
+			batch = append(batch, e)
+			if len(batch) >= requestLogBatchSize {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		case <-h.stopLogSaver:
+			// 退出前先把通道里所有剩余条目拉空再 flush，保证 Shutdown 同步落盘。
+			for {
+				select {
+				case e := <-h.pendingLogs:
+					batch = append(batch, e)
+				default:
+					flush()
+					return
+				}
+			}
+		}
+	}
 }
 
 // classifyError categorizes an error message into a type for display.
@@ -2379,6 +2454,10 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiGetAutoRouteDecisions(w, r)
 	case path == "/metrics" && r.Method == "GET":
 		h.apiGetMetrics(w, r)
+	case path == "/warmup/status" && r.Method == "GET":
+		h.apiWarmupStatus(w, r)
+	case path == "/warmup" && r.Method == "POST":
+		h.apiRunWarmup(w, r)
 	case path == "/prompt-filter" && r.Method == "GET":
 		h.apiGetPromptFilter(w, r)
 	case path == "/prompt-filter" && r.Method == "POST":
@@ -2470,6 +2549,9 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 			"totalTokens":       stats.TotalTokens,
 			"totalCredits":      stats.TotalCredits,
 			"lastUsed":          stats.LastUsed,
+			"warmupStatus":      a.WarmupStatus,
+			"warmupError":       a.WarmupError,
+			"lastWarmup":        a.LastWarmup,
 		}
 	}
 	json.NewEncoder(w).Encode(result)
@@ -3152,6 +3234,7 @@ func (h *Handler) apiGetStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
+	warmupProbe, warmupRecover := config.GetWarmupOptions()
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"apiKey":                config.GetApiKey(),
 		"requireApiKey":         config.IsApiKeyRequired(),
@@ -3160,6 +3243,10 @@ func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
 		"allowOverUsage":        config.GetAllowOverUsage(),
 		"logLevel":              config.GetLogLevel(),
 		"accountRefreshMinutes": config.GetAccountRefreshMinutes(),
+		"warmupProbe":           warmupProbe,
+		"warmupRecover":         warmupRecover,
+		"testModel":             config.GetTestModel(),
+		"customModelIds":        map[string][]string{"codebuddy": config.GetCustomModelIDs("codebuddy")},
 	})
 }
 
@@ -3208,12 +3295,16 @@ func (h *Handler) apiUpdatePromptFilter(w http.ResponseWriter, r *http.Request) 
 
 func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ApiKey                *string `json:"apiKey,omitempty"`
-		RequireApiKey         *bool   `json:"requireApiKey,omitempty"`
-		Password              string  `json:"password,omitempty"`
-		AllowOverUsage        *bool   `json:"allowOverUsage,omitempty"`
-		LogLevel              *string `json:"logLevel,omitempty"`
-		AccountRefreshMinutes *int    `json:"accountRefreshMinutes,omitempty"`
+		ApiKey                *string              `json:"apiKey,omitempty"`
+		RequireApiKey         *bool                `json:"requireApiKey,omitempty"`
+		Password              string               `json:"password,omitempty"`
+		AllowOverUsage        *bool                `json:"allowOverUsage,omitempty"`
+		LogLevel              *string              `json:"logLevel,omitempty"`
+		AccountRefreshMinutes *int                 `json:"accountRefreshMinutes,omitempty"`
+		WarmupProbe           *bool                `json:"warmupProbe,omitempty"`
+		WarmupRecover         *bool                `json:"warmupRecover,omitempty"`
+		TestModel             *string              `json:"testModel,omitempty"`
+		CustomModelIDs        *map[string][]string `json:"customModelIds,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -3233,6 +3324,37 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		logger.SetLevel(lvl)
+	}
+	if req.TestModel != nil {
+		if err := config.UpdateTestModel(*req.TestModel); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	if req.CustomModelIDs != nil {
+		for provider, ids := range *req.CustomModelIDs {
+			if err := config.UpdateCustomModelIDs(provider, ids); err != nil {
+				w.WriteHeader(500)
+				json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				return
+			}
+		}
+		h.pool.Reload()
+	}
+	if req.WarmupProbe != nil || req.WarmupRecover != nil {
+		probe, recover := config.GetWarmupOptions()
+		if req.WarmupProbe != nil {
+			probe = *req.WarmupProbe
+		}
+		if req.WarmupRecover != nil {
+			recover = *req.WarmupRecover
+		}
+		if err := config.UpdateWarmupOptions(probe, recover); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
 	}
 	if req.AccountRefreshMinutes != nil {
 		if *req.AccountRefreshMinutes < 0 || *req.AccountRefreshMinutes > 1440 {
@@ -3300,6 +3422,14 @@ func (h *Handler) apiClearLogs(w http.ResponseWriter, r *http.Request) {
 	h.requestLogsMu.Lock()
 	h.requestLogs = h.requestLogs[:0]
 	h.requestLogsMu.Unlock()
+	if rs := config.RequestLogs(); rs != nil {
+		if err := rs.Clear(); err != nil {
+			logger.Warnf("request log clear failed: %v", err)
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
 
@@ -3337,7 +3467,7 @@ func (h *Handler) apiTestAccount(w http.ResponseWriter, r *http.Request, id stri
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.Model == "" {
-		req.Model = "claude-sonnet-4"
+		req.Model = probeModelFor(account)
 	}
 
 	// Build a minimal chat payload

@@ -97,6 +97,7 @@ var accountColumns = []string{
 	"usage_current", "usage_limit", "usage_percent", "next_reset_date", "last_refresh",
 	"trial_usage_current", "trial_usage_limit", "trial_usage_percent", "trial_status", "trial_expires_at",
 	"request_count", "error_count", "last_used", "total_tokens", "total_credits",
+	"warmup_status", "warmup_error", "last_warmup",
 }
 
 func accountValues(a *Account) []any {
@@ -112,6 +113,7 @@ func accountValues(a *Account) []any {
 		a.UsageCurrent, a.UsageLimit, a.UsagePercent, a.NextResetDate, a.LastRefresh,
 		a.TrialUsageCurrent, a.TrialUsageLimit, a.TrialUsagePercent, a.TrialStatus, a.TrialExpiresAt,
 		a.RequestCount, a.ErrorCount, a.LastUsed, a.TotalTokens, a.TotalCredits,
+		a.WarmupStatus, a.WarmupError, a.LastWarmup,
 	}
 }
 
@@ -130,6 +132,7 @@ func scanAccount(rows *sql.Rows) (Account, error) {
 		&a.UsageCurrent, &a.UsageLimit, &a.UsagePercent, &a.NextResetDate, &a.LastRefresh,
 		&a.TrialUsageCurrent, &a.TrialUsageLimit, &a.TrialUsagePercent, &a.TrialStatus, &a.TrialExpiresAt,
 		&a.RequestCount, &a.ErrorCount, &a.LastUsed, &a.TotalTokens, &a.TotalCredits,
+		&a.WarmupStatus, &a.WarmupError, &a.LastWarmup,
 	}
 	if err := rows.Scan(dest...); err != nil {
 		return Account{}, err
@@ -191,6 +194,7 @@ func (s *sqlStore) migrate() error {
 			trial_usage_current DOUBLE PRECISION, trial_usage_limit DOUBLE PRECISION,
 			trial_usage_percent DOUBLE PRECISION, trial_status TEXT, trial_expires_at BIGINT,
 			request_count BIGINT, error_count BIGINT, last_used BIGINT, total_tokens BIGINT, total_credits DOUBLE PRECISION,
+			warmup_status TEXT DEFAULT '', warmup_error TEXT DEFAULT '', last_warmup BIGINT DEFAULT 0,
 			position BIGINT
 		)`,
 		`CREATE TABLE IF NOT EXISTS api_keys (
@@ -204,6 +208,10 @@ func (s *sqlStore) migrate() error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS metrics_minutes (
 			minute BIGINT PRIMARY KEY,
+			data TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS request_logs (
+			ts BIGINT PRIMARY KEY,
 			data TEXT
 		)`,
 		`CREATE TABLE IF NOT EXISTS prompt_filter_rules (
@@ -232,6 +240,11 @@ func (s *sqlStore) migrate() error {
 	}
 	for _, col := range []string{"rpm_limit", "concurrency_limit"} {
 		if err := addColumn("api_keys", col, "BIGINT DEFAULT 0"); err != nil {
+			return err
+		}
+	}
+	for col, typ := range map[string]string{"warmup_status": "TEXT DEFAULT ''", "warmup_error": "TEXT DEFAULT ''", "last_warmup": "BIGINT DEFAULT 0"} {
+		if err := addColumn("accounts", col, typ); err != nil {
 			return err
 		}
 	}

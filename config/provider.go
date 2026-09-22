@@ -12,6 +12,7 @@ const (
 	ProviderKiro      AccountProvider = "kiro"
 	ProviderCodeBuddy AccountProvider = "codebuddy"
 	ProviderGrok      AccountProvider = "grok"
+	ProviderCodex     AccountProvider = "codex"
 )
 
 // ProviderForAccount returns the canonical provider for an account. Accounts
@@ -30,6 +31,8 @@ func ProviderForAccount(account *Account) (AccountProvider, error) {
 		return ProviderCodeBuddy, nil
 	case ProviderGrok:
 		return ProviderGrok, nil
+	case ProviderCodex:
+		return ProviderCodex, nil
 	}
 	joined := strings.ToLower(strings.TrimSpace(account.AuthMethod + " " + account.Provider))
 	switch {
@@ -37,6 +40,8 @@ func ProviderForAccount(account *Account) (AccountProvider, error) {
 		return ProviderGrok, nil
 	case strings.Contains(joined, "codebuddy"):
 		return ProviderCodeBuddy, nil
+	case strings.Contains(joined, "codex") || strings.Contains(joined, "openai") || strings.Contains(joined, "chatgpt"):
+		return ProviderCodex, nil
 	case joined == "" || strings.Contains(joined, "kiro") || strings.Contains(joined, "builderid") ||
 		strings.Contains(joined, "enterprise") || strings.Contains(joined, "azure") ||
 		strings.Contains(joined, "github") || strings.Contains(joined, "google") ||

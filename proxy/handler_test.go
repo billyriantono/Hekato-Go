@@ -480,3 +480,16 @@ func TestBuildAnthropicModelsResponseGeneratesThinkingVariants(t *testing.T) {
 		t.Fatalf("expected image capability to be preserved, got %#v", models[0]["supports_image"])
 	}
 }
+
+func TestProbeModelForUsesConfiguredModelWhenAdvertised(t *testing.T) {
+	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	if err := config.UpdateTestModel("claude-opus-4.8"); err != nil {
+		t.Fatalf("UpdateTestModel: %v", err)
+	}
+	account := &config.Account{ProviderKind: "codebuddy"}
+	if got := probeModelFor(account); got != "claude-opus-4.8" {
+		t.Fatalf("probe model = %q, want configured model", got)
+	}
+}

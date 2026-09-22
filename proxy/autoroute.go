@@ -233,14 +233,6 @@ func (r *autoRouter) candidates(p *pool.AccountPool, patterns []string, filter p
 		}
 		seen[acc.ID] = true
 		models := p.GetModelList(acc.ID)
-		if len(models) == 0 {
-			// Cold start: try tier patterns that look like full model IDs.
-			for _, pat := range patterns {
-				if strings.ContainsAny(pat, "0123456789") {
-					models = append(models, strings.ToLower(pat))
-				}
-			}
-		}
 		for _, m := range models {
 			if !matchesTier(m, patterns) {
 				continue
@@ -355,15 +347,9 @@ func (h *Handler) resolveAutoModel(w http.ResponseWriter, endpoint, model string
 	}
 	d := h.autoRouter.Resolve(h.pool, cfg, sig, capabilityFilter(cap), endpoint)
 	if d == nil {
-		// Nothing matched any tier: fall back to the first balanced pattern
-		// that looks like a model id, else leave "auto" for upstream.
-		for _, pat := range cfg.Balanced {
-			if strings.ContainsAny(pat, "0123456789") {
-				w.Header().Set("X-Hekato-Routed-Model", pat)
-				w.Header().Set("X-Hekato-Route-Reason", "no candidates; balanced default")
-				return pat
-			}
-		}
+		// Tier patterns are filters, not proof that an upstream account supports
+		// a model. Leave the virtual model untouched rather than inventing a
+		// concrete destination that no account advertised.
 		return model
 	}
 	if *affinityKey == "" {

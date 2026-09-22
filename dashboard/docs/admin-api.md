@@ -90,8 +90,8 @@ Sensitive fields are omitted; use `/accounts/{id}/full` for tokens.
 | email | string | label for CodeBuddy/grok keys |
 | userId | string | |
 | nickname | string | |
-| authMethod | string | `idc` \| `social` \| `external_idp` \| `codebuddy` \| `codebuddy-cn` \| `grok` |
-| provider | string | `BuilderId`, `Google`, `Github`, `AzureAD` (forced when authMethod=external_idp), `CodeBuddy`, `CodeBuddy CN`, `grok`, … |
+| authMethod | string | `idc` \| `social` \| `external_idp` \| `codebuddy` \| `codebuddy-cn` \| `grok` \| `codex` |
+| provider | string | `BuilderId`, `Google`, `Github`, `AzureAD` (forced when authMethod=external_idp), `CodeBuddy`, `CodeBuddy CN`, `grok`, `codex`, … |
 | region | string | e.g. `us-east-1`, `global`, `cn` |
 | enabled | bool | |
 | banStatus | string | `""`/`ACTIVE` normal; otherwise banned/suspended |
@@ -325,6 +325,7 @@ Response `{"success": true, "imported": n, "accounts": [{"id","email"}], "errors
 | id | string | |
 | name | string | omitempty |
 | keyMasked | string | e.g. `sk-ab…yz` |
+| key | string | cleartext; only present in the authenticated `GET /api-keys/{id}` response |
 | enabled | bool | |
 | migrated | bool | omitempty; legacy single key migrated from old config |
 | createdAt | int64 | unix s |
@@ -338,14 +339,14 @@ Response `{"success": true, "imported": n, "accounts": [{"id","email"}], "errors
 | requestsCount | int64 | |
 
 ### GET /api-keys
-Response `{"apiKeys": ApiKeyView[]}`.
+Response `{"apiKeys": ApiKeyView[]}`. List entries contain `keyMasked` and never the cleartext `key`.
 
 ### GET /api-keys/{id}
-Response: `ApiKeyView`; `404 {"error":"API key not found"}`.
+Response: `ApiKeyView` with the cleartext `key`; `Cache-Control: no-store`; `404 {"error":"API key not found"}`. Like all non-setup admin endpoints, this requires the configured admin password.
 
 ### POST /api-keys
 Request: `{"name"?: string, "key"?: string (auto-generated if empty), "enabled"?: bool (default true), "tokenLimit"?: int, "creditLimit"?: number, "rpmLimit"?: int, "concurrencyLimit"?: int}`
-Response: `{"success": true, "id": string, "key": "<cleartext, shown once>", "apiKey": ApiKeyView}`; `400 Invalid JSON` / `400 {"error": validation}`.
+Response: `{"success": true, "id": string, "key": "<cleartext>", "apiKey": ApiKeyView}`; `400 Invalid JSON` / `400 {"error": validation}`.
 
 ### PUT /api-keys/{id}
 Request: any subset of `name, key, enabled, tokenLimit, creditLimit, rpmLimit, concurrencyLimit` (pointer semantics: absent = unchanged).
@@ -492,7 +493,7 @@ Flat JSON, dotted keys (no nesting), `{0}`/`{count}` placeholders. Prefixes:
 - Back / Cancel navigation between steps; closing cancels in-flight kiro-sso session.
 
 **Settings tab (sections)**
-- API Keys list (`/api-keys`): cards with name, masked key, Migrated/Disabled badges, tokens/credits/requests usage, RPM/concurrency limits, unlimited labels; actions: enable toggle (`PUT enabled`), Edit, Delete (confirm), Reset Usage (confirm); Add Key modal (name, key value or auto, enabled, token limit, credit limit, RPM, max concurrent; "0 = unlimited"); New API Key modal showing cleartext once with copy. "Enable API Key Verification" toggle (`POST /settings requireApiKey`) with warning when no enabled key.
+- API Keys list (`/api-keys`): cards with name, masked key, Migrated/Disabled badges, tokens/credits/requests usage, RPM/concurrency limits, unlimited labels; actions: Copy Key (authenticated on-demand `GET /api-keys/{id}` with secret dialog), enable toggle (`PUT enabled`), Edit, Delete (confirm), Reset Usage (confirm); Add Key modal (name, key value or auto, enabled, token limit, credit limit, RPM, max concurrent; "0 = unlimited"); New API Key modal showing cleartext with copy. "Enable API Key Verification" toggle (`POST /settings requireApiKey`) with warning when no enabled key.
 - Usage Control: Allow Over-Usage toggle + Save (`POST /settings allowOverUsage`).
 - Thinking Mode: trigger suffix, OpenAI format select, Claude format select (+ "no tag" option), Save (`/thinking`).
 - Kiro Endpoint: preferred endpoint select (Auto/Kiro IDE/CodeWhisperer/AmazonQ), fallback toggle, Save (`/endpoint`).

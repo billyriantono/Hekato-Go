@@ -645,6 +645,15 @@ func ValidateExternalIdpEndpoint(rawURL string) error {
 	return externalIdpEndpointValidator(rawURL)
 }
 
+// IssuerFromAccessTokenJWT decodes an unverified access token's payload and
+// returns its iss claim. No signature verification: this is used only to
+// classify a pasted credential (e.g. telling a CodeBuddy China token from a
+// global one by its Keycloak realm), never to trust the token itself.
+// Returns "" if accessToken is not a JWT or has no iss.
+func IssuerFromAccessTokenJWT(accessToken string) string {
+	return issuerFromAccessTokenJWT(accessToken)
+}
+
 // issuerFromAccessTokenJWT decodes an unverified Azure AD access token's payload
 // and returns its iss claim (e.g. https://login.microsoftonline.com/<tenant>/v2.0).
 // No signature verification: this is used only to classify a pasted credential and

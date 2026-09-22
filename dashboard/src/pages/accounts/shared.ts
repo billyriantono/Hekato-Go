@@ -42,6 +42,36 @@ export type Account = {
   totalTokens: number
   totalCredits: number
   lastUsed: number
+  warmupStatus: '' | 'ok' | 'error'
+  warmupError: string
+  lastWarmup: number
+}
+
+export type WarmupResult = {
+  accountId: string
+  email: string
+  status: 'ok' | 'error'
+  error?: string
+  recovered?: boolean
+  probed?: boolean
+  latencyMs?: number
+}
+
+export function warmupCounts(results: WarmupResult[] | undefined) {
+  const r = results ?? []
+  return [r.filter((x) => x.status === 'ok').length, r.filter((x) => x.status === 'error').length, r.filter((x) => x.recovered).length] as const
+}
+
+/** Relative time in the past, e.g. "5m ago". Empty when unixSeconds is 0. */
+export function ago(unixSeconds: number, lang = 'en'): string {
+  if (!unixSeconds) return ''
+  const s = Math.round(unixSeconds - Date.now() / 1000)
+  const rtf = new Intl.RelativeTimeFormat(lang, { numeric: 'auto' })
+  const a = Math.abs(s)
+  if (a < 60) return rtf.format(s, 'second')
+  if (a < 3600) return rtf.format(Math.round(s / 60), 'minute')
+  if (a < 86400) return rtf.format(Math.round(s / 3600), 'hour')
+  return rtf.format(Math.round(s / 86400), 'day')
 }
 
 export type Status = 'active' | 'disabled' | 'banned' | 'noToken' | 'expired' | 'overQuota'
@@ -95,7 +125,15 @@ export function countdown(unixSeconds: number): string {
   return `${Math.floor(h / 24)}d`
 }
 
-export const pct = (v: number | undefined) => Math.max(0, Math.min(100, Math.round(v ?? 0)))
+// pct converts a usage ratio to a 0-100 integer for Progress/labels. Every
+// provider reports usagePercent as a 0-1 fraction (codebuddy 530/600 = 0.883,
+// kiro/grok/codex likewise), so the value is scaled — a raw Math.round would
+// render 88% as 1%. Values already expressed as percentages (>= 1) pass through.
+export const pct = (v: number | undefined) => {
+  const n = v ?? 0
+  const scaled = n > 0 && n <= 1 ? n * 100 : n
+  return Math.max(0, Math.min(100, Math.round(scaled)))
+}
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 

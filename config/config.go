@@ -18,6 +18,7 @@ import (
 	"hekato-go/logger"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -121,6 +122,11 @@ type Account struct {
 	LastUsed     int64   `json:"lastUsed,omitempty"`     // Last request timestamp
 	TotalTokens  int     `json:"totalTokens,omitempty"`  // Cumulative tokens processed
 	TotalCredits float64 `json:"totalCredits,omitempty"` // Cumulative credits consumed
+
+	// Warmup: last health check outcome ("ok" / "error"), its error text, and when.
+	WarmupStatus string `json:"warmupStatus,omitempty"`
+	WarmupError  string `json:"warmupError,omitempty"`
+	LastWarmup   int64  `json:"lastWarmup,omitempty"`
 }
 
 // PromptFilterRule defines a single custom prompt sanitization rule.
@@ -240,6 +246,19 @@ type Config struct {
 
 	// AutoRoute configures the virtual "auto" model router (nil = defaults, disabled).
 	AutoRoute *AutoRouteConfig `json:"autoRoute,omitempty"`
+
+	// Warmup options: WarmupProbe sends a tiny chat request to each account on
+	// every cycle (verifies inference, not just quota); WarmupRecover re-enables
+	// accounts that were auto-disabled by failover once they pass a check.
+	WarmupProbe   bool `json:"warmupProbe,omitempty"`
+	WarmupRecover bool `json:"warmupRecover,omitempty"`
+
+	// TestModel is the default model for the account Test button and the warmup
+	// probe ("" = first model the account advertises).
+	TestModel string `json:"testModel,omitempty"`
+	// CustomModelIDs adds model IDs to a provider's static catalog without a
+	// rebuild, keyed by provider kind (e.g. "codebuddy").
+	CustomModelIDs map[string][]string `json:"customModelIds,omitempty"`
 
 	// Global statistics (persisted across restarts)
 	TotalRequests   int     `json:"totalRequests,omitempty"`   // Total API requests received
@@ -1078,6 +1097,101 @@ func UpdateAllowOverUsage(allow bool) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	cfg.AllowOverUsage = allow
+	return Save()
+}
+
+// UpdateAccountWarmup records the outcome of a warmup check for an account.
+func UpdateAccountWarmup(id, status, errText string, at int64) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	for i := range cfg.Accounts {
+		if cfg.Accounts[i].ID == id {
+			cfg.Accounts[i].WarmupStatus = status
+			cfg.Accounts[i].WarmupError = errText
+			cfg.Accounts[i].LastWarmup = at
+			return Save()
+		}
+	}
+	return nil
+}
+
+// RecoverAccount clears an automatic ban and re-enables the account.
+func RecoverAccount(id string) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	for i := range cfg.Accounts {
+		if cfg.Accounts[i].ID == id {
+			cfg.Accounts[i].Enabled = true
+			cfg.Accounts[i].BanStatus = "ACTIVE"
+			cfg.Accounts[i].BanReason = ""
+			cfg.Accounts[i].BanTime = 0
+			return Save()
+		}
+	}
+	return nil
+}
+
+// GetWarmupOptions returns (probe, recover).
+func GetWarmupOptions() (bool, bool) {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return false, false
+	}
+	return cfg.WarmupProbe, cfg.WarmupRecover
+}
+
+func UpdateWarmupOptions(probe, recover bool) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.WarmupProbe = probe
+	cfg.WarmupRecover = recover
+	return Save()
+}
+
+func GetTestModel() string {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return ""
+	}
+	return cfg.TestModel
+}
+
+func UpdateTestModel(model string) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.TestModel = strings.TrimSpace(model)
+	return Save()
+}
+
+// GetCustomModelIDs returns operator-added model IDs for a provider kind.
+func GetCustomModelIDs(provider string) []string {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil || cfg.CustomModelIDs == nil {
+		return nil
+	}
+	return append([]string(nil), cfg.CustomModelIDs[provider]...)
+}
+
+func UpdateCustomModelIDs(provider string, ids []string) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	if cfg.CustomModelIDs == nil {
+		cfg.CustomModelIDs = map[string][]string{}
+	}
+	clean := ids[:0:0]
+	for _, id := range ids {
+		if id = strings.TrimSpace(id); id != "" {
+			clean = append(clean, id)
+		}
+	}
+	if len(clean) == 0 {
+		delete(cfg.CustomModelIDs, provider)
+	} else {
+		cfg.CustomModelIDs[provider] = clean
+	}
 	return Save()
 }
 

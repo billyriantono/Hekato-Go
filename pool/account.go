@@ -21,6 +21,7 @@ type AccountPool struct {
 	cooldowns     map[string]time.Time       // 账号冷却时间
 	errorCounts   map[string]int             // 连续错误计数
 	modelLists    map[string]map[string]bool // accountID → set of modelIDs (from ListAvailableModels)
+	modelDenies   map[string]map[string]bool // accountID → models upstream rejected as unknown
 }
 
 var (
@@ -35,6 +36,7 @@ func GetPool() *AccountPool {
 			cooldowns:   make(map[string]time.Time),
 			errorCounts: make(map[string]int),
 			modelLists:  make(map[string]map[string]bool),
+			modelDenies: make(map[string]map[string]bool),
 		}
 		pool.Reload()
 	})
@@ -142,6 +144,7 @@ func (p *AccountPool) GetNextExcluding(excluded map[string]bool) *config.Account
 }
 
 // SetModelList 缓存账号支持的模型集合（由 handler 在刷新后调用）
+// A fresh list also clears models learned as unsupported for the account.
 func (p *AccountPool) SetModelList(accountID string, modelIDs []string) {
 	set := make(map[string]bool, len(modelIDs))
 	for _, id := range modelIDs {
@@ -149,6 +152,23 @@ func (p *AccountPool) SetModelList(accountID string, modelIDs []string) {
 	}
 	p.mu.Lock()
 	p.modelLists[accountID] = set
+	delete(p.modelDenies, accountID)
+	p.mu.Unlock()
+}
+
+// DenyModel records that upstream rejected model for this account (e.g.
+// "model service info not found"), so routing stops sending it there until the
+// account's model list is refreshed.
+func (p *AccountPool) DenyModel(accountID, model string) {
+	key := strings.ToLower(strings.TrimSpace(model))
+	if accountID == "" || key == "" {
+		return
+	}
+	p.mu.Lock()
+	if p.modelDenies[accountID] == nil {
+		p.modelDenies[accountID] = map[string]bool{}
+	}
+	p.modelDenies[accountID][key] = true
 	p.mu.Unlock()
 }
 
@@ -183,6 +203,9 @@ func (p *AccountPool) modelKnownAnywhere(modelKey string) bool {
 // 若该账号尚无模型列表（冷启动）：仅当该模型在所有账号中都未知时才乐观放行；
 // 若已有其他账号声明支持该模型，则空列表账号视为不支持。
 func (p *AccountPool) accountHasModel(accountID, modelKey string, modelKnown bool) bool {
+	if p.modelDenies[accountID][modelKey] {
+		return false
+	}
 	list, ok := p.modelLists[accountID]
 	if !ok || len(list) == 0 {
 		return !modelKnown

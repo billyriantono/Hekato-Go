@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import { useState } from 'react'
-import { LuKeyRound, LuLoader, LuPencil, LuPlus, LuRotateCcw, LuTrash2 } from 'react-icons/lu'
+import { LuCopy, LuKeyRound, LuLoader, LuPencil, LuPlus, LuRotateCcw, LuTrash2 } from 'react-icons/lu'
 import { toast } from 'sonner'
 import { ConfirmDialog, CopyButton, EmptyState, LoadingBlock, PageHeader, errorMessage, formatNumber, formatTime } from '@/components/common'
 import { DataTable } from '@/components/data-table'
@@ -61,7 +61,8 @@ export function ApiKeysPage() {
   const onError = (e: unknown) => toast.error(errorMessage(e, t('common.unknownError')))
 
   const [editing, setEditing] = useState<ApiKey | 'new' | null>(null)
-  const [shownKey, setShownKey] = useState<string | null>(null)
+  const [shownKey, setShownKey] = useState<{ value: string; existing: boolean } | null>(null)
+  const [copyingKeyId, setCopyingKeyId] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<{ kind: 'delete' | 'reset'; key: ApiKey } | { kind: 'require' } | null>(null)
 
   const requireM = useMutation({
@@ -82,6 +83,24 @@ export function ApiKeysPage() {
   })
 
   const setRequire = (v: boolean) => (v && enabledCount === 0 ? setConfirm({ kind: 'require' }) : requireM.mutate(v))
+  const copyExistingKey = async (key: ApiKey) => {
+    setCopyingKeyId(key.id)
+    try {
+      const detail = await get<ApiKey & { key: string }>(`/api-keys/${key.id}`)
+      setShownKey({ value: detail.key, existing: true })
+      try {
+        await navigator.clipboard.writeText(detail.key)
+        toast.success(t('common.copied'))
+      } catch {
+        toast.error(t('common.failed'))
+      }
+    } catch (e) {
+      onError(e)
+    } finally {
+      setCopyingKeyId(null)
+    }
+  }
+
   const baseUrl = `${location.origin}/v1`
 
   const columns: ColumnDef<ApiKey, unknown>[] = [
@@ -135,6 +154,16 @@ export function ApiKeysPage() {
       enableSorting: false,
       cell: ({ row }) => (
         <div className="flex gap-1">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            title={t('apiKeys.actionCopy')}
+            aria-label={t('apiKeys.actionCopy')}
+            onClick={() => copyExistingKey(row.original)}
+            disabled={copyingKeyId === row.original.id}
+          >
+            {copyingKeyId === row.original.id ? <LuLoader className="animate-spin" /> : <LuCopy />}
+          </Button>
           <Button variant="ghost" size="icon-sm" title={t('apiKeys.actionEdit')} onClick={() => setEditing(row.original)}>
             <LuPencil />
           </Button>
@@ -196,7 +225,7 @@ export function ApiKeysPage() {
           onClose={() => setEditing(null)}
           onCreated={(key) => {
             setEditing(null)
-            setShownKey(key)
+            setShownKey({ value: key, existing: false })
           }}
         />
       )}
@@ -204,12 +233,14 @@ export function ApiKeysPage() {
       <Dialog open={shownKey !== null} onOpenChange={(o) => !o && setShownKey(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>{t('apiKeys.showTitle')}</DialogTitle>
-            <DialogDescription className="text-amber-600 dark:text-amber-400">{t('apiKeys.showWarning')}</DialogDescription>
+            <DialogTitle>{t(shownKey?.existing ? 'apiKeys.showExistingTitle' : 'apiKeys.showTitle')}</DialogTitle>
+            <DialogDescription className="text-amber-600 dark:text-amber-400">
+              {t(shownKey?.existing ? 'apiKeys.showExistingWarning' : 'apiKeys.showWarning')}
+            </DialogDescription>
           </DialogHeader>
           <div className="flex items-center gap-2 rounded-md border bg-muted/50 p-2">
-            <code className="flex-1 text-xs break-all">{shownKey}</code>
-            <CopyButton value={shownKey ?? ''} />
+            <code className="flex-1 text-xs break-all">{shownKey?.value}</code>
+            <CopyButton value={shownKey?.value ?? ''} />
           </div>
           <DialogFooter>
             <Button onClick={() => setShownKey(null)}>{t('apiKeys.closeBtn')}</Button>

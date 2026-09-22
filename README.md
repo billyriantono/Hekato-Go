@@ -168,6 +168,10 @@ The gateway keeps per-minute metrics (requests, errors, tokens, credits, latency
 
 Every gateway serves its own documentation at `/docs`: endpoint reference, model names and thinking mode, the `auto` model, limits, and step-by-step setup guides for Claude Code, Codex CLI, Cursor, Cline / Roo Code, Continue, Aider, the OpenAI and Anthropic SDKs, LangChain, Open WebUI / LibreChat and curl. Snippets are pre-filled with the gateway's own base URL.
 
+## Warmup (account health checks)
+
+On every account refresh cycle (Settings → General → refresh interval) the gateway warms up the pool: it refreshes expiring tokens, re-fetches quota and credits, optionally sends a tiny "Say OK" chat probe to confirm inference actually works (**Inference probe**), and re-enables accounts that failover had auto-disabled once they pass again (**Auto-recover banned accounts**). Accounts are checked 5 at a time with retries on transient errors. Results (status, error, time) are shown per account, and a warmup can be triggered on demand from the Accounts page or `POST /admin/api/warmup`.
+
 ## Self-service usage check
 
 Users can open `/usage` on the gateway, paste their own API key, and see that key's quota, limits and usage. The page calls `GET /v1/usage` with the key as `Authorization: Bearer`; no admin credentials are involved.

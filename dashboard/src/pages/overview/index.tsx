@@ -38,6 +38,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { get, post } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
 import { AutoRouteCard } from './auto-route'
+import { LiveRoutingMap } from './routing-map'
+import { WarmupCard } from './warmup'
 import { MetricsCharts, RANGES, StackedBar, short, type Metrics, type Range } from './charts'
 
 type Status = {
@@ -257,6 +259,8 @@ export function OverviewPage() {
         />
       </div>
 
+      <LiveRoutingMap />
+
       {/* KPI row: selected range */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <StatCard label={t('overview.requestsInRange', range)} value={formatNumber(mReq)} icon={<LuActivity className="size-4" />} />
@@ -272,6 +276,8 @@ export function OverviewPage() {
       </div>
 
       <MetricsCharts data={metrics.data} range={range} loading={metrics.isPending} />
+
+      <WarmupCard />
 
       <AutoRouteCard />
 
@@ -365,7 +371,6 @@ export function OverviewPage() {
           </CardContent>
         </Card>
       </div>
-
       {/* Endpoints */}
       <Card>
         <CardHeader>

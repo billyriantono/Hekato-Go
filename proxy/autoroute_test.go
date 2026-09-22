@@ -3,6 +3,7 @@ package proxy
 import (
 	"hekato-go/config"
 	accountpool "hekato-go/pool"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -70,6 +71,47 @@ func TestAutoRouterPicksTierAndLearns(t *testing.T) {
 	decisions, cands := r.Snapshot()
 	if len(decisions) == 0 || len(cands) == 0 {
 		t.Fatal("snapshot should expose decisions and candidate stats")
+	}
+}
+
+func TestAutoRouterNeverFabricatesUnadvertisedModels(t *testing.T) {
+	mustInitConfig(t)
+	if err := config.AddAccount(config.Account{ID: "only", Email: "only@x", AccessToken: "t", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	p := accountpool.GetPool()
+	p.Reload()
+	p.SetModelList("only", []string{"claude-sonnet-4.6"})
+	t.Cleanup(func() { p.SetModelList("only", nil) })
+
+	r := newAutoRouter()
+	cfg := config.DefaultAutoRouteConfig()
+	cfg.Enabled = true
+	cfg.Explore = 0
+	cfg.Fast = []string{"claude-haiku-4.5"}
+	cfg.Balanced = []string{"claude-haiku-4.5"}
+	cfg.Strong = []string{"claude-haiku-4.5"}
+	if d := r.Resolve(p, cfg, routeSignals{InputTokens: 100}, nil, "claude"); d != nil {
+		t.Fatalf("model absent from the account catalog must not be selected: %+v", d)
+	}
+
+	// An empty model list is not permission to turn an exact tier pattern into
+	// an advertised model.
+	p.SetModelList("only", nil)
+	if cands := r.candidates(p, []string{"claude-haiku-4.5"}, nil); len(cands) != 0 {
+		t.Fatalf("empty account catalog produced fabricated candidates: %+v", cands)
+	}
+	if err := config.UpdateAutoRouteConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{pool: p, affinity: newAccountAffinity(), autoRouter: r}
+	rec := httptest.NewRecorder()
+	affinityKey := ""
+	if got := h.resolveAutoModel(rec, "claude", "auto", routeSignals{InputTokens: 100}, &affinityKey, capClaudeChat); got != "auto" {
+		t.Fatalf("no candidates should leave virtual model untouched, got %q", got)
+	}
+	if got := rec.Header().Get("X-Hekato-Routed-Model"); got != "" {
+		t.Fatalf("must not announce an unvalidated concrete route, got %q", got)
 	}
 }
 

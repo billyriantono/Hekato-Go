@@ -38,9 +38,9 @@ func extractProvidedKey(r *http.Request) string {
 
 // authenticate validates an incoming request against the configured API keys.
 //
-// Master switch: config.RequireApiKey. When false, requests pass without checking
-// any keys, even if entries exist (so the admin UI can hold draft keys without
-// affecting public deployments).
+// When RequireApiKey is false, requests always pass. A supplied, configured,
+// enabled key is still returned so downstream usage can be attributed, but
+// invalid and disabled keys remain anonymous and no limits are enforced.
 //
 // When RequireApiKey is true:
 //  1. If ApiKeys is non-empty, the provided key MUST match an enabled, in-quota
@@ -50,14 +50,21 @@ func extractProvidedKey(r *http.Request) string {
 //     This prevents the prior bug where toggling auth on without keys silently
 //     left the service open.
 //
-// Returns (entry, nil) on success. entry is nil when the legacy single-key path
-// is used or when the master switch is off.
+// Returns (entry, nil) on success. entry is nil for anonymous access and the
+// legacy single-key path.
 func (h *Handler) authenticate(r *http.Request) (*config.ApiKeyEntry, error) {
-	if !config.IsApiKeyRequired() {
-		return nil, nil
-	}
-
+	required := config.IsApiKeyRequired()
 	provided := extractProvidedKey(r)
+	if !required {
+		if provided == "" || !config.HasApiKeys() {
+			return nil, nil
+		}
+		entry := config.FindApiKeyByValue(provided)
+		if entry == nil || !entry.Enabled {
+			return nil, nil
+		}
+		return entry, nil
+	}
 
 	if config.HasApiKeys() {
 		if provided == "" {
@@ -104,6 +111,9 @@ func (h *Handler) admit(r *http.Request) (*http.Request, func(), *authError) {
 	}
 	if entry == nil {
 		return r, func() {}, nil
+	}
+	if !config.IsApiKeyRequired() {
+		return withApiKeyContext(r, entry), func() {}, nil
 	}
 	if ae := h.limiter.Acquire(entry); ae != nil {
 		return nil, nil, ae
