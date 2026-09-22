@@ -164,6 +164,10 @@ Enable it under Settings → Auto Routing, then send requests with `"model": "au
 
 The gateway keeps per-minute metrics (requests, errors, tokens, credits, latency histogram, per-model / per-account / per-endpoint counters) for 7 days. They are persisted through the active storage backend (a `metrics_minutes` table on SQLite/Postgres, or `metrics.json` beside `config.json`), restored at startup, flushed every 30 seconds and on graceful shutdown (SIGINT/SIGTERM). The Overview page shows them with 1h / 6h / 24h / 7d ranges.
 
+## Documentation site
+
+Every gateway serves its own documentation at `/docs`: endpoint reference, model names and thinking mode, the `auto` model, limits, and step-by-step setup guides for Claude Code, Codex CLI, Cursor, Cline / Roo Code, Continue, Aider, the OpenAI and Anthropic SDKs, LangChain, Open WebUI / LibreChat and curl. Snippets are pre-filled with the gateway's own base URL.
+
 ## Self-service usage check
 
 Users can open `/usage` on the gateway, paste their own API key, and see that key's quota, limits and usage. The page calls `GET /v1/usage` with the key as `Authorization: Bearer`; no admin credentials are involved.

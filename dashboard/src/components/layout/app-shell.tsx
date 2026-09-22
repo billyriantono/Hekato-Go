@@ -13,6 +13,7 @@ import {
   LuMenu,
   LuLanguages,
   LuX,
+  LuBookOpen,
 } from 'react-icons/lu'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -133,6 +134,16 @@ export function AppShell() {
             <LuMenu className="size-4" />
           </Button>
           <div className="flex-1" />
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button variant="ghost" size="icon" onClick={() => window.open('/docs', '_blank')}>
+                  <LuBookOpen className="size-4" />
+                </Button>
+              }
+            />
+            <TooltipContent>{t('header.docs')}</TooltipContent>
+          </Tooltip>
           <Tooltip>
             <TooltipTrigger
               render={

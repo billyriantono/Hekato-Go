@@ -8,6 +8,7 @@ import { I18nProvider } from '@/lib/i18n'
 import { ThemeProvider } from '@/lib/theme'
 import { LoginPage, SetupPage } from '@/pages/login'
 import { UsagePage } from '@/pages/usage'
+import { DocsPage } from '@/pages/docs'
 import { router } from '@/router'
 import './index.css'
 
@@ -18,7 +19,9 @@ const queryClient = new QueryClient({
 function Gate() {
   const { status } = useAuth()
   // Public self-service page: reachable without admin login.
-  if (window.location.pathname.replace(/\/+$/, '') === '/usage') return <UsagePage />
+  const publicPath = window.location.pathname.replace(/\/+$/, '')
+  if (publicPath === '/usage') return <UsagePage />
+  if (publicPath === '/docs' || publicPath.startsWith('/docs/')) return <DocsPage />
   if (status === 'loading') return <div className="flex min-h-svh items-center justify-center text-sm text-muted-foreground">…</div>
   if (status === 'setup') return <SetupPage />
   if (status === 'anonymous') return <LoginPage />

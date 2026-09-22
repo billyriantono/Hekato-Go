@@ -444,8 +444,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleOpenAIResponses(w, ar)
 	case path == "/v1/usage":
 		h.handleKeyUsage(w, r)
-	case path == "/usage" || path == "/usage/":
-		// Public self-service usage page (same SPA bundle, no admin path exposed).
+	case path == "/usage" || path == "/usage/" || path == "/docs" || strings.HasPrefix(path, "/docs/"):
+		// Public pages (usage check, documentation): same SPA bundle, no admin path exposed.
 		h.serveAdminPage(w, r)
 	case path == "/v1/models" || path == "/models":
 		h.handleModels(w, r)
