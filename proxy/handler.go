@@ -1691,8 +1691,14 @@ func (h *Handler) recordSuccessForApiKey(apiKeyID string, inputTokens, outputTok
 	if apiKeyID == "" {
 		return
 	}
-	// Intentionally a no-op for now; the rate limiter is request-paced, not
-	// byte-paced. See proxy/ratelimit.go for the live key-level rate window.
+	// Sum prompt + completion tokens so the quota counters match the per-request
+	// bill. RecordApiKeyUsage is a no-op for non-positive token/credit deltas, so
+	// upstream callers that pass zeros (e.g. responses streaming paths before
+	// the model reports usage) don't pollute the counters.
+	totalTokens := int64(inputTokens) + int64(outputTokens)
+	if err := config.RecordApiKeyUsage(apiKeyID, totalTokens, credits); err != nil {
+		logger.Warnf("[apikey] record usage for %s failed: %v", apiKeyID, err)
+	}
 }
 
 // recordSuccessLog records a successful request in the request logs. The
