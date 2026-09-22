@@ -137,7 +137,7 @@ func (h *Handler) handleResponsesNonStream(
 	excluded := make(map[string]bool)
 	var lastErr error
 	reqStart := time.Now()
-
+	perf := newPerfTracker(reqStart)
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
 		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capResponses))
 		if account == nil {
@@ -168,7 +168,7 @@ func (h *Handler) handleResponsesNonStream(
 			h.recordSuccessForApiKey(apiKeyID, 0, 0, 0)
 			h.pool.RecordSuccess(account.ID)
 			h.pool.UpdateStats(account.ID, 0, 0)
-			h.recordSuccessLog("responses", model, account.ID, 0, 0, time.Since(reqStart).Milliseconds())
+			h.recordSuccessLog("responses", model, account.ID, 0, 0, time.Since(reqStart).Milliseconds(), perf.finalise())
 			return
 		}
 
@@ -180,14 +180,23 @@ func (h *Handler) handleResponsesNonStream(
 
 		callback := &StreamCallback{
 			OnText: func(text string, isThinking bool) {
+				perf.markFirstByte()
+				perf.addTokens(text)
 				if isThinking {
 					reasoningContent += text
 				} else {
 					content += text
 				}
 			},
-			OnToolUse:  func(tu ToolUse) { toolUses = append(toolUses, tu) },
-			OnComplete: func(inTok, outTok int) { inputTokens = inTok; outputTokens = outTok },
+			OnToolUse: func(tu ToolUse) {
+				perf.markFirstByte()
+				toolUses = append(toolUses, tu)
+			},
+			OnComplete: func(inTok, outTok int) {
+				perf.setFinalTokens(outTok)
+				inputTokens = inTok
+				outputTokens = outTok
+			},
 			OnCredits:  func(c float64) { credits = c },
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
@@ -206,7 +215,6 @@ func (h *Handler) handleResponsesNonStream(
 		if !thinking {
 			reasoningContent = ""
 		}
-
 		if realInputTokens > 0 {
 			inputTokens = realInputTokens
 		} else if inputTokens <= 0 {
@@ -217,7 +225,6 @@ func (h *Handler) handleResponsesNonStream(
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLog("responses", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
 
 		respObj := buildResponsesObject(respID, model, finalContent, toolUses, inputTokens, outputTokens, req)
 		respObj.StoredInput = storedInput
@@ -346,6 +353,7 @@ func (h *Handler) handleResponsesStream(
 	var lastErr error
 	responseStarted := false
 	reqStart := time.Now()
+	perf := newPerfTracker(reqStart)
 
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
 		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capResponses))
@@ -377,7 +385,7 @@ func (h *Handler) handleResponsesStream(
 			h.recordSuccessForApiKey(apiKeyID, 0, 0, 0)
 			h.pool.RecordSuccess(account.ID)
 			h.pool.UpdateStats(account.ID, 0, 0)
-			h.recordSuccessLog("responses", model, account.ID, 0, 0, time.Since(reqStart).Milliseconds())
+			h.recordSuccessLog("responses", model, account.ID, 0, 0, time.Since(reqStart).Milliseconds(), perf.finalise())
 			return
 		}
 
@@ -434,6 +442,8 @@ func (h *Handler) handleResponsesStream(
 				if text == "" {
 					return
 				}
+				perf.markFirstByte()
+				perf.addTokens(text)
 				if isThinking {
 					reasoningText.WriteString(text)
 					return
@@ -450,6 +460,7 @@ func (h *Handler) handleResponsesStream(
 				responseStarted = true
 			},
 			OnToolUse: func(tu ToolUse) {
+				perf.markFirstByte()
 				if messageStarted {
 					send("response.content_part.done", map[string]interface{}{
 						"type":          "response.content_part.done",
@@ -515,8 +526,12 @@ func (h *Handler) handleResponsesStream(
 				outputIndex++
 				responseStarted = true
 			},
-			OnComplete: func(inTok, outTok int) { inputTokens = inTok; outputTokens = outTok },
-			OnCredits:  func(c float64) { credits = c },
+			OnComplete: func(inTok, outTok int) {
+				inputTokens = inTok
+				outputTokens = outTok
+				perf.setFinalTokens(outTok)
+			},
+			OnCredits: func(c float64) { credits = c },
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
 			},
@@ -588,7 +603,7 @@ func (h *Handler) handleResponsesStream(
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLog("responses", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
+		h.recordSuccessLog("responses", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), perf.finalise())
 
 		respObj := buildResponsesObject(respID, model, finalContent, toolUses, inputTokens, outputTokens, req)
 		respObj.CreatedAt = createdAt

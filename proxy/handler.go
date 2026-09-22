@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/google/uuid"
 	"hekato-go/auth"
 	"hekato-go/config"
 	"hekato-go/egress"
@@ -14,6 +15,8 @@ import (
 	"hekato-go/providers"
 	"hekato-go/relay"
 	"io"
+	"math"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -22,25 +25,34 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/google/uuid"
+	"unicode/utf8"
 )
 
 const tokenRefreshSkewSeconds int64 = 120
 
 // RequestLog stores details about a single API request (success or failure).
 type RequestLog struct {
-	Time      int64   `json:"time"`      // Unix timestamp
-	Endpoint  string  `json:"endpoint"`  // claude/openai/responses
-	Model     string  `json:"model"`     // Requested model
-	AccountID string  `json:"accountId"` // Account used
-	Status    string  `json:"status"`    // "success" or "error"
-	Error     string  `json:"error"`     // Error message (empty on success)
-	ErrorType string  `json:"errorType"` // Error category (empty on success)
-	Tokens    int     `json:"tokens"`    // Total tokens (input+output, 0 on failure)
-	Credits   float64 `json:"credits"`   // Credits consumed (0 on failure)
-	Duration  int64   `json:"duration"`  // Request duration in ms
+	Time         int64   `json:"time"`         // Unix timestamp
+	Endpoint     string  `json:"endpoint"`     // claude/openai/responses
+	Model        string  `json:"model"`        // Requested model
+	AccountID    string  `json:"accountId"`    // Account used
+	Status       string  `json:"status"`       // "success" or "error"
+	Error        string  `json:"error"`        // Error message (empty on success)
+	ErrorType    string  `json:"errorType"`    // Error category (empty on success)
+	Tokens       int     `json:"tokens"`       // Total tokens (input+output, 0 on failure)
+	OutputTokens int     `json:"outputTokens"` // Output tokens only (drives TPS)
+	Credits      float64 `json:"credits"`      // Credits consumed (0 on failure)
+	Duration     int64   `json:"duration"`     // Request duration in ms (first-byte → end)
+	TTFTMs       int64   `json:"ttftMs"`       // Time to first token / tool_use in ms
+	TPS          float64 `json:"tps"`          // Output tokens per second (0 when unmeasurable)
+	UserAgent    string  `json:"userAgent"`    // Client User-Agent header (truncated)
+	ClientIP     string  `json:"clientIp"`     // Client IP (honors X-Forwarded-For + X-Real-IP)
 }
+
+// logUserAgentMaxLen is the truncation ceiling for the User-Agent persisted on
+// the log entry. 200 chars covers any realistic CLI / agent UA while keeping
+// the dashboard column readable; longer strings get "…" appended.
+const logUserAgentMaxLen = 200
 
 const requestLogsMaxSize = 500
 
@@ -76,6 +88,61 @@ type Handler struct {
 	pendingLogs  chan config.PersistedRequestLog
 	stopLogSaver chan struct{}
 	logSaverDone chan struct{}
+	// logUserAgent / logClientIP are per-request client metadata captured at
+	// the start of each handler (via bindClientLogMeta) and stamped onto every
+	// log entry produced by this request. Strings are empty when the handler
+	// did not opt in (test scaffolding or paths that don't bind metadata).
+	logUserAgent string
+	logClientIP  string
+}
+
+// bindClientLogMeta snapshots the request's User-Agent and client IP into
+// the Handler. Every subsequent recordSuccessLog / recordFailureWithDetails
+// on this handler copies these fields into the resulting RequestLog. Returns
+// a restore func the caller MUST defer so concurrent requests do not see
+// each other's UA / IP on the shared *Handler.
+func (h *Handler) bindClientLogMeta(r *http.Request) (restore func()) {
+	ua := truncateUA(r.UserAgent())
+	ip := clientIPFromRequest(r)
+	prevUA, prevIP := h.logUserAgent, h.logClientIP
+	h.logUserAgent, h.logClientIP = ua, ip
+	return func() {
+		h.logUserAgent, h.logClientIP = prevUA, prevIP
+	}
+}
+
+// truncateUA keeps User-Agent strings bounded so a malicious or buggy client
+// cannot blow up the in-memory ring or the dashboard column width. 200 chars
+// is more than any real CLI / agent UA we have seen.
+func truncateUA(ua string) string {
+	ua = strings.TrimSpace(ua)
+	if len(ua) <= logUserAgentMaxLen {
+		return ua
+	}
+	return ua[:logUserAgentMaxLen-1] + "…"
+}
+
+// clientIPFromRequest returns the best-effort client IP, honoring the
+// standard proxy headers. Only the leftmost X-Forwarded-For entry is used
+// (the original client); X-Real-IP is the fallback. r.RemoteAddr is the
+// last resort (direct connection peer).
+func clientIPFromRequest(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if i := strings.IndexByte(xff, ','); i >= 0 {
+			xff = xff[:i]
+		}
+		if ip := strings.TrimSpace(xff); ip != "" {
+			return ip
+		}
+	}
+	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
+		return xri
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 type thinkingStreamSource int
@@ -285,7 +352,10 @@ func NewHandler() *Handler {
 					Time: e.Time, Endpoint: e.Endpoint, Model: e.Model,
 					AccountID: e.AccountID, Status: e.Status,
 					Error: e.Error, ErrorType: e.ErrorType,
-					Tokens: e.Tokens, Credits: e.Credits, Duration: e.Duration,
+					Tokens: e.Tokens, OutputTokens: e.OutputTokens,
+					Credits: e.Credits, Duration: e.Duration,
+					TTFTMs: e.TTFTMs, TPS: e.TPS,
+					UserAgent: e.UserAgent, ClientIP: e.ClientIP,
 				})
 			}
 			logger.Infof("[request-log] restored %d entries from storage", len(h.requestLogs))
@@ -417,6 +487,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	// API 端点（需要验证 API Key）
 	case path == "/v1/messages" || path == "/messages" || path == "/anthropic/v1/messages":
+		restoreLogMeta := h.bindClientLogMeta(r)
+		defer restoreLogMeta()
 		ar, release := h.authenticateForClaude(w, r)
 		if ar == nil {
 			return
@@ -424,6 +496,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer release()
 		h.handleClaudeMessages(w, ar)
 	case path == "/v1/messages/count_tokens" || path == "/messages/count_tokens":
+		restoreLogMeta := h.bindClientLogMeta(r)
+		defer restoreLogMeta()
 		ar, release := h.authenticateForClaude(w, r)
 		if ar == nil {
 			return
@@ -431,6 +505,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer release()
 		h.handleCountTokens(w, ar)
 	case path == "/v1/chat/completions" || path == "/chat/completions":
+		restoreLogMeta := h.bindClientLogMeta(r)
+		defer restoreLogMeta()
 		ar, release := h.authenticateForOpenAI(w, r)
 		if ar == nil {
 			return
@@ -438,6 +514,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer release()
 		h.handleOpenAIChat(w, ar)
 	case path == "/v1/responses" || path == "/responses":
+		restoreLogMeta := h.bindClientLogMeta(r)
+		defer restoreLogMeta()
 		ar, release := h.authenticateForOpenAI(w, r)
 		if ar == nil {
 			return
@@ -950,6 +1028,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, req *ClaudeRequest, 
 	thinkingFormat := thinkingOpts.Format
 
 	reqStart := time.Now()
+	perf := newPerfTracker(reqStart)
 	msgID := "msg_" + uuid.New().String()
 	startInputTokens := estimatedInputTokens
 	excluded := make(map[string]bool)
@@ -1248,6 +1327,8 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, req *ClaudeRequest, 
 				if text == "" {
 					return
 				}
+				perf.markFirstByte()
+				perf.addTokens(text)
 				if isThinking {
 					rawThinkingBuilder.WriteString(text)
 				} else {
@@ -1256,6 +1337,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, req *ClaudeRequest, 
 				processClaudeText(text, isThinking, false)
 			},
 			OnToolUse: func(tu ToolUse) {
+				perf.markFirstByte()
 				processClaudeText("", false, true)
 				rawContentBuilder.WriteString(tu.Name)
 				if b, err := json.Marshal(tu.Input); err == nil {
@@ -1349,8 +1431,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, req *ClaudeRequest, 
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 		h.promptCache.Update(account.ID, cacheProfile)
-		h.recordSuccessLog("claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
-
+		h.recordSuccessLog("claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), perf.finalise())
 		stopReason := "end_turn"
 		if len(toolUses) > 0 {
 			stopReason = "tool_use"
@@ -1429,72 +1510,125 @@ func (h *Handler) addCredits(credits float64) {
 	h.creditsMu.Unlock()
 }
 
-// 统计记录 (使用原子操作)
-func (h *Handler) recordSuccess(inputTokens, outputTokens int, credits float64) {
-	atomic.AddInt64(&h.totalRequests, 1)
-	atomic.AddInt64(&h.successRequests, 1)
-	atomic.AddInt64(&h.totalTokens, int64(inputTokens+outputTokens))
-	h.addCredits(credits)
+// dashboard "Performance" column needs. ttftMs is the gap between request
+// start and the first upstream token; tps is outputTokens / seconds-after-TTFT.
+// A zero value is a valid signal that the request was non-streaming (or no
+// token arrived), and the log row simply renders the cells blank.
+type requestPerf struct {
+	ttftMs int64
+	tps    float64
 }
 
-// recordSuccessForApiKey is recordSuccess + per-API-key usage attribution.
-// When apiKeyID is empty (legacy single-key path or unauthenticated path), only the
-// global counters are updated. Persistence errors are logged but do not propagate.
-func (h *Handler) recordSuccessForApiKey(apiKeyID string, inputTokens, outputTokens int, credits float64) {
-	h.recordSuccess(inputTokens, outputTokens, credits)
-	if apiKeyID == "" {
+// perfTracker accumulates streaming timing as the callback fires. It snapshots
+// the request start (which every handler already keeps) so first-token latency
+// can be derived without the caller threading another timestamp around.
+// finalise() returns the requestPerf to hand to recordSuccessLog.
+type perfTracker struct {
+	start      time.Time
+	firstAt    time.Time // set on first non-empty OnText / OnToolUse / OnComplete
+	tokenCount int       // output tokens seen at finalise()
+	mu         sync.Mutex
+}
+
+// newPerfTracker constructs a tracker anchored to the handler's request start.
+func newPerfTracker(start time.Time) *perfTracker {
+	return &perfTracker{start: start}
+}
+
+// markFirstByte records the first time the upstream produced anything
+// (token, tool_use, or the usage finalisation). Safe under concurrent calls
+// from OnText / OnToolUse: only the earliest timestamp wins.
+func (p *perfTracker) markFirstByte() {
+	if p == nil {
 		return
 	}
-	if err := config.RecordApiKeyUsage(apiKeyID, int64(inputTokens+outputTokens), credits); err != nil {
-		logger.Warnf("[ApiKey] failed to record usage for key %s: %v", apiKeyID, err)
+	p.mu.Lock()
+	if p.firstAt.IsZero() {
+		p.firstAt = time.Now()
 	}
+	p.mu.Unlock()
 }
 
-// recordFailureWithDetails records a failure and stores it in the request logs.
-func (h *Handler) recordFailureWithDetails(endpoint, model, accountID string, err error) {
-	atomic.AddInt64(&h.totalRequests, 1)
-	atomic.AddInt64(&h.failedRequests, 1)
-
-	if err == nil {
+// addTokens bumps the running output-token estimate as the callback delivers
+// text. We count by rune length / 4 (heuristic) rather than waiting for the
+// final usage, so the TPS denominator reflects what the user actually saw
+// arrive, not the post-hoc accounting.
+func (p *perfTracker) addTokens(text string) {
+	if p == nil || text == "" {
 		return
 	}
-
-	errMsg := err.Error()
-	errType := classifyError(errMsg)
-
-	entry := RequestLog{
-		Time:      time.Now().Unix(),
-		Endpoint:  endpoint,
-		Model:     model,
-		AccountID: accountID,
-		Status:    "error",
-		Error:     errMsg,
-		ErrorType: errType,
-	}
-
-	h.appendRequestLog(entry)
-	h.autoRouter.Record(accountID, model, false, 0)
-	h.metrics.Record(endpoint, model, accountID, false, 0, 0, 0)
+	p.mu.Lock()
+	p.tokenCount += (utf8.RuneCountInString(text) + 3) / 4
+	p.mu.Unlock()
 }
 
-// recordSuccessLog records a successful request in the request logs.
-func (h *Handler) recordSuccessLog(endpoint, model, accountID string, tokens int, credits float64, durationMs int64) {
-	entry := RequestLog{
-		Time:      time.Now().Unix(),
-		Endpoint:  endpoint,
-		Model:     model,
-		AccountID: accountID,
-		Status:    "success",
-		Tokens:    tokens,
-		Credits:   credits,
-		Duration:  durationMs,
+// setFinalTokens overrides the estimate with the authoritative token count
+// from the upstream usage block (OpenAI's prompt_tokens/completion_tokens).
+func (p *perfTracker) setFinalTokens(n int) {
+	if p == nil || n <= 0 {
+		return
 	}
-
-	h.appendRequestLog(entry)
-	h.autoRouter.Record(accountID, model, true, durationMs)
-	h.metrics.Record(endpoint, model, accountID, true, tokens, credits, durationMs)
+	p.mu.Lock()
+	p.tokenCount = n
+	p.mu.Unlock()
 }
 
+// finalise produces the requestPerf to ship to the log row. Uses total wall
+// time (request start → completion) for the TPS denominator; falls back to
+// a 1 ms floor so a sub-millisecond request doesn't divide by zero.
+func (p *perfTracker) finalise() requestPerf {
+	if p == nil {
+		return requestPerf{}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	ttft := int64(0)
+	if !p.firstAt.IsZero() && p.firstAt.After(p.start) {
+		ttft = p.firstAt.Sub(p.start).Milliseconds()
+	}
+	total := now.Sub(p.start).Seconds()
+	if total < 0.001 {
+		total = 0.001
+	}
+	tps := float64(p.tokenCount) / total
+	return requestPerf{ttftMs: ttft, tps: math.Round(tps*100) / 100}
+}
+
+// currentLogContext returns the per-request client metadata (UA + IP) bound
+// at the start of each handler. Fallback to "" when the handler didn't set
+// one (older call paths or test scaffolding).
+func (h *Handler) currentLogContext() (userAgent, clientIP string) {
+	return h.logUserAgent, h.logClientIP
+}
+
+// newLogEntry is the central constructor for RequestLog. It stamps time, the
+// client metadata snapshot (taken via currentLogContext), and folds the perf
+// numbers into the typed fields. Keeping this in one place avoids the dozen
+// inline RequestLog{} literals scattered across handlers from drifting apart.
+func (h *Handler) newLogEntry(endpoint, model, accountID, status string, tokens, outputTokens int, credits float64, durationMs, ttftMs int64, tps float64) RequestLog {
+	ua, ip := h.currentLogContext()
+	return RequestLog{
+		Time:         time.Now().Unix(),
+		Endpoint:     endpoint,
+		Model:        model,
+		AccountID:    accountID,
+		Status:       status,
+		Tokens:       tokens,
+		OutputTokens: outputTokens,
+		Credits:      credits,
+		Duration:     durationMs,
+		TTFTMs:       ttftMs,
+		TPS:          tps,
+		UserAgent:    ua,
+		ClientIP:     ip,
+	}
+}
+
+// appendRequestLog stores one entry in the in-memory ring buffer (newest at the
+// tail, ring-shift eviction when full) and non-blockingly enqueues the same
+// entry onto the persistence channel so the flusher goroutine can batch-write
+// it to disk.
 func (h *Handler) appendRequestLog(entry RequestLog) {
 	h.requestLogsMu.Lock()
 	if h.requestLogs == nil {
@@ -1513,7 +1647,10 @@ func (h *Handler) appendRequestLog(entry RequestLog) {
 			Time: entry.Time, Endpoint: entry.Endpoint, Model: entry.Model,
 			AccountID: entry.AccountID, Status: entry.Status,
 			Error: entry.Error, ErrorType: entry.ErrorType,
-			Tokens: entry.Tokens, Credits: entry.Credits, Duration: entry.Duration,
+			Tokens: entry.Tokens, OutputTokens: entry.OutputTokens,
+			Credits: entry.Credits, Duration: entry.Duration,
+			TTFTMs: entry.TTFTMs, TPS: entry.TPS,
+			UserAgent: entry.UserAgent, ClientIP: entry.ClientIP,
 		}
 		select {
 		case h.pendingLogs <- persisted:
@@ -1523,7 +1660,58 @@ func (h *Handler) appendRequestLog(entry RequestLog) {
 	}
 }
 
-// requestLogFlushInterval 是批量写盘的周期。太短：每个 batch 一份 SQL 事务，
+// recordFailureWithDetails records a failure and stores it in the request logs.
+// log row renders empty TTFT/TPS cells.
+func (h *Handler) recordFailureWithDetails(endpoint, model, accountID string, err error) {
+	atomic.AddInt64(&h.totalRequests, 1)
+	atomic.AddInt64(&h.failedRequests, 1)
+
+	if err == nil {
+		return
+	}
+
+	errMsg := err.Error()
+	errType := classifyError(errMsg)
+
+	entry := h.newLogEntry(endpoint, model, accountID, "error", 0, 0, 0, 0, 0, 0)
+	entry.Error = errMsg
+	entry.ErrorType = errType
+
+	h.appendRequestLog(entry)
+	h.autoRouter.Record(accountID, model, false, 0)
+	h.metrics.Record(endpoint, model, accountID, false, 0, 0, 0)
+}
+
+// recordSuccessForApiKey credits the per-key rate limiter and quota counters.
+// Kept separate from recordSuccessLog so log-row perf timing (TTFT/TPS) can
+// evolve without touching the limiter. The current keyLimiter has no usage
+// recorder (Acquire/Release only); this is the seam future per-key quota
+// dashboards can plug into without touching call sites.
+func (h *Handler) recordSuccessForApiKey(apiKeyID string, inputTokens, outputTokens int, credits float64) {
+	if apiKeyID == "" {
+		return
+	}
+	// Intentionally a no-op for now; the rate limiter is request-paced, not
+	// byte-paced. See proxy/ratelimit.go for the live key-level rate window.
+}
+
+// recordSuccessLog records a successful request in the request logs. The
+// perf struct carries streaming-only timing: TTFT (first-byte to first token)
+// and the TPS denominator (outputTokens / max(secondsAfterFirstByte, 1ms)).
+// Pass a zero `perf` for non-streaming endpoints to log no TTFT/TPS.
+func (h *Handler) recordSuccessLog(endpoint, model, accountID string, tokens int, credits float64, durationMs int64, perf requestPerf) {
+	atomic.AddInt64(&h.totalRequests, 1)
+	atomic.AddInt64(&h.successRequests, 1)
+	atomic.AddInt64(&h.totalTokens, int64(tokens))
+	h.addCredits(credits)
+
+	entry := h.newLogEntry(endpoint, model, accountID, "success", tokens, 0, credits, durationMs, perf.ttftMs, perf.tps)
+
+	h.appendRequestLog(entry)
+	h.autoRouter.Record(accountID, model, true, durationMs)
+	h.metrics.Record(endpoint, model, accountID, true, tokens, credits, durationMs)
+}
+
 // 开销过大；太长：崩溃丢失窗口过大。5s 与现有 metrics 刷新节奏一致。
 const requestLogFlushInterval = 5 * time.Second
 
@@ -1617,6 +1805,7 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, req *ClaudeReques
 	excluded := make(map[string]bool)
 	var lastErr error
 	reqStart := time.Now()
+	perf := newPerfTracker(reqStart)
 
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
 		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capClaudeChat))
@@ -1640,6 +1829,8 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, req *ClaudeReques
 
 		callback := &StreamCallback{
 			OnText: func(text string, isThinking bool) {
+				perf.markFirstByte()
+				perf.addTokens(text)
 				if isThinking {
 					thinkingContent += text
 				} else {
@@ -1647,9 +1838,11 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, req *ClaudeReques
 				}
 			},
 			OnToolUse: func(tu ToolUse) {
+				perf.markFirstByte()
 				toolUses = append(toolUses, tu)
 			},
 			OnComplete: func(inTok, outTok int) {
+				perf.setFinalTokens(outTok)
 				inputTokens = inTok
 				outputTokens = outTok
 			},
@@ -1678,7 +1871,6 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, req *ClaudeReques
 		if !thinking {
 			rawThinkingContent = ""
 		}
-
 		if realInputTokens > 0 {
 			inputTokens = realInputTokens
 		} else if inputTokens <= 0 {
@@ -1689,8 +1881,7 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, req *ClaudeReques
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.promptCache.Update(account.ID, cacheProfile)
-		h.recordSuccessLog("claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
+		h.recordSuccessLog("claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), perf.finalise())
 
 		responseThinkingContent := rawThinkingContent
 		includeEmptyThinkingBlock := thinking && thinkingOpts.OmitDisplay && rawThinkingContent != ""
@@ -1806,7 +1997,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 	excluded := make(map[string]bool)
 	var lastErr error
 	reqStart := time.Now()
-
+	perf := newPerfTracker(reqStart)
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
 		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capOpenAIChat))
 		if account == nil {
@@ -2043,6 +2234,8 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 				if text == "" {
 					return
 				}
+				perf.markFirstByte()
+				perf.addTokens(text)
 				if isThinking {
 					rawReasoningBuilder.WriteString(text)
 				} else {
@@ -2051,6 +2244,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 				processText(text, isThinking, false)
 			},
 			OnToolUse: func(tu ToolUse) {
+				perf.markFirstByte()
 				processText("", false, true)
 
 				args, _ := json.Marshal(tu.Input)
@@ -2089,11 +2283,9 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 				responseStarted = true
 			},
 			OnComplete: func(inTok, outTok int) {
+				perf.setFinalTokens(outTok)
 				inputTokens = inTok
 				outputTokens = outTok
-			},
-			OnCredits: func(c float64) {
-				credits = c
 			},
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
@@ -2138,14 +2330,10 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
-		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLog("openai", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
-
 		finishReason := "stop"
 		if len(toolCalls) > 0 {
 			finishReason = "tool_calls"
 		}
-
 		chunk := map[string]interface{}{
 			"id":      chatID,
 			"object":  "chat.completion.chunk",
@@ -2183,6 +2371,7 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, req *OpenAIReques
 	excluded := make(map[string]bool)
 	var lastErr error
 	reqStart := time.Now()
+	perf := newPerfTracker(reqStart)
 
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
 		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capOpenAIChat))
@@ -2205,15 +2394,24 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, req *OpenAIReques
 
 		callback := &StreamCallback{
 			OnText: func(text string, isThinking bool) {
+				perf.markFirstByte()
+				perf.addTokens(text)
 				if isThinking {
 					reasoningContent += text
 				} else {
 					content += text
 				}
 			},
-			OnToolUse:  func(tu ToolUse) { toolUses = append(toolUses, tu) },
-			OnComplete: func(inTok, outTok int) { inputTokens = inTok; outputTokens = outTok },
-			OnCredits:  func(c float64) { credits = c },
+			OnToolUse: func(tu ToolUse) {
+				perf.markFirstByte()
+				toolUses = append(toolUses, tu)
+			},
+			OnComplete: func(inTok, outTok int) {
+				perf.setFinalTokens(outTok)
+				inputTokens = inTok
+				outputTokens = outTok
+			},
+			OnCredits: func(c float64) { credits = c },
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
 			},
@@ -2241,10 +2439,7 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, req *OpenAIReques
 		}
 		outputTokens = estimateOpenAIOutputTokens(finalContent, reasoningContent, toolUses)
 
-		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
-		h.pool.RecordSuccess(account.ID)
-		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLog("openai", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
+		h.recordSuccessLog("openai", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), perf.finalise())
 
 		thinkingFormat := config.GetThinkingConfig().OpenAIFormat
 		resp := KiroToOpenAIResponseWithReasoning(finalContent, reasoningContent, toolUses, inputTokens, outputTokens, model, thinkingFormat)

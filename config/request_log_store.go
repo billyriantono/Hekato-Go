@@ -29,16 +29,21 @@ type RequestLogStore interface {
 // proxy's RequestLog exactly so JSON round-trips byte-for-byte and the SQL TEXT
 // column can hold the verbatim JSON of an entry produced by the proxy.
 type PersistedRequestLog struct {
-	Time      int64   `json:"time"`
-	Endpoint  string  `json:"endpoint"`
-	Model     string  `json:"model"`
-	AccountID string  `json:"accountId"`
-	Status    string  `json:"status"`
-	Error     string  `json:"error"`
-	ErrorType string  `json:"errorType"`
-	Tokens    int     `json:"tokens"`
-	Credits   float64 `json:"credits"`
-	Duration  int64   `json:"duration"`
+	Time         int64   `json:"time"`
+	Endpoint     string  `json:"endpoint"`
+	Model        string  `json:"model"`
+	AccountID    string  `json:"accountId"`
+	Status       string  `json:"status"`
+	Error        string  `json:"error"`
+	ErrorType    string  `json:"errorType"`
+	Tokens       int     `json:"tokens"`
+	OutputTokens int     `json:"outputTokens"`
+	Credits      float64 `json:"credits"`
+	Duration     int64   `json:"duration"`
+	TTFTMs       int64   `json:"ttftMs"`
+	TPS          float64 `json:"tps"`
+	UserAgent    string  `json:"userAgent"`
+	ClientIP     string  `json:"clientIp"`
 }
 
 // RequestLogs returns the request-log persistence for the active backend, or
