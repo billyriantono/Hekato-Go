@@ -113,3 +113,87 @@ func TestRequestLogsSQLBackend(t *testing.T) {
 		t.Fatalf("error fields not preserved: %+v", got[1])
 	}
 }
+
+// TestRequestLogsNewFieldsRoundTrip guards the JSON store against schema
+// drift: every field added to PersistedRequestLog (OutputTokens, TTFTMs, TPS,
+// UserAgent, ClientIP) must survive Append -> LoadRecent byte-for-byte.
+func TestRequestLogsNewFieldsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	resetGlobals(t)
+	t.Cleanup(func() { resetGlobals(t) })
+	if err := Init(cfgPath); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	rs := RequestLogs()
+	if rs == nil {
+		t.Fatal("expected RequestLogs() to be non-nil for json backend")
+	}
+	in := []PersistedRequestLog{{
+		Time: 5000, Endpoint: "claude", Model: "claude-sonnet-4", AccountID: "acc-1",
+		Status: "success", Tokens: 1284, OutputTokens: 318,
+		Credits: 0.52, Duration: 1820,
+		TTFTMs: 245, TPS: 47.6,
+		UserAgent: "claude-cli/1.0", ClientIP: "203.0.113.42",
+	}}
+	if err := rs.Append(in); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	got, err := rs.LoadRecent(10)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(got))
+	}
+	g := got[0]
+	if g.OutputTokens != 318 || g.TTFTMs != 245 || g.TPS != 47.6 {
+		t.Fatalf("perf fields lost: %+v", g)
+	}
+	if g.UserAgent != "claude-cli/1.0" || g.ClientIP != "203.0.113.42" {
+		t.Fatalf("client meta lost: %+v", g)
+	}
+}
+
+// TestRequestLogsSQLNewFieldsRoundTrip is the SQLite mirror of the JSON test
+// above. The SQL store keeps entries in a TEXT column, so the same JSON shape
+// is exercised; this catches any future drift to typed columns.
+func TestRequestLogsSQLNewFieldsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	resetGlobals(t)
+	t.Cleanup(func() { resetGlobals(t) })
+	t.Setenv("DB_DRIVER", "sqlite")
+	t.Setenv("DATABASE_URL", filepath.Join(dir, "hekato.db"))
+	if err := Init(cfgPath); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	rs := RequestLogs()
+	if rs == nil {
+		t.Fatal("expected RequestLogs() to be non-nil for sqlite backend")
+	}
+	in := []PersistedRequestLog{{
+		Time: 6000, Endpoint: "openai", Model: "gpt-5", AccountID: "codex-acc-1",
+		Status: "success", Tokens: 920, OutputTokens: 412,
+		Credits: 0.31, Duration: 3140,
+		TTFTMs: 380, TPS: 28.1,
+		UserAgent: "openai-python/1.50.0", ClientIP: "198.51.100.7",
+	}}
+	if err := rs.Append(in); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	got, err := rs.LoadRecent(10)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(got))
+	}
+	g := got[0]
+	if g.OutputTokens != 412 || g.TTFTMs != 380 || g.TPS != 28.1 {
+		t.Fatalf("perf fields lost: %+v", g)
+	}
+	if g.UserAgent != "openai-python/1.50.0" || g.ClientIP != "198.51.100.7" {
+		t.Fatalf("client meta lost: %+v", g)
+	}
+}
