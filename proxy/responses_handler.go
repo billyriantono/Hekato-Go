@@ -168,7 +168,7 @@ func (h *Handler) handleResponsesNonStream(
 			h.recordSuccessForApiKey(apiKeyID, 0, 0, 0)
 			h.pool.RecordSuccess(account.ID)
 			h.pool.UpdateStats(account.ID, 0, 0)
-			h.recordSuccessLog("responses", model, account.ID, 0, 0, time.Since(reqStart).Milliseconds(), perf.finalise())
+			h.recordSuccessLog(w, "responses", model, account.ID, 0, 0, time.Since(reqStart).Milliseconds(), perf.finalise())
 			return
 		}
 
@@ -197,7 +197,7 @@ func (h *Handler) handleResponsesNonStream(
 				inputTokens = inTok
 				outputTokens = outTok
 			},
-			OnCredits:  func(c float64) { credits = c },
+			OnCredits: func(c float64) { credits = c },
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
 			},
@@ -245,7 +245,7 @@ func (h *Handler) handleResponsesNonStream(
 		h.sendOpenAIError(w, 503, "server_error", "No available accounts")
 		return
 	}
-	h.recordFailureWithDetails("responses", model, "", lastErr)
+	h.recordFailureWithDetails(w, "responses", model, "", lastErr)
 	h.sendOpenAIError(w, 500, "server_error", lastErr.Error())
 }
 
@@ -385,7 +385,7 @@ func (h *Handler) handleResponsesStream(
 			h.recordSuccessForApiKey(apiKeyID, 0, 0, 0)
 			h.pool.RecordSuccess(account.ID)
 			h.pool.UpdateStats(account.ID, 0, 0)
-			h.recordSuccessLog("responses", model, account.ID, 0, 0, time.Since(reqStart).Milliseconds(), perf.finalise())
+			h.recordSuccessLog(w, "responses", model, account.ID, 0, 0, time.Since(reqStart).Milliseconds(), perf.finalise())
 			return
 		}
 
@@ -556,7 +556,7 @@ func (h *Handler) handleResponsesStream(
 					},
 				},
 			})
-			h.recordFailureWithDetails("responses", model, account.ID, err)
+			h.recordFailureWithDetails(w, "responses", model, account.ID, err)
 			return
 		}
 
@@ -603,7 +603,7 @@ func (h *Handler) handleResponsesStream(
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLog("responses", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), perf.finalise())
+		h.recordSuccessLog(w, "responses", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), perf.finalise())
 
 		respObj := buildResponsesObject(respID, model, finalContent, toolUses, inputTokens, outputTokens, req)
 		respObj.CreatedAt = createdAt
@@ -639,7 +639,7 @@ func (h *Handler) handleResponsesStream(
 		})
 		return
 	}
-	h.recordFailureWithDetails("responses", model, "", lastErr)
+	h.recordFailureWithDetails(w, "responses", model, "", lastErr)
 	send("response.failed", map[string]interface{}{
 		"type": "response.failed",
 		"response": map[string]interface{}{

@@ -88,27 +88,46 @@ type Handler struct {
 	pendingLogs  chan config.PersistedRequestLog
 	stopLogSaver chan struct{}
 	logSaverDone chan struct{}
-	// logUserAgent / logClientIP are per-request client metadata captured at
-	// the start of each handler (via bindClientLogMeta) and stamped onto every
-	// log entry produced by this request. Strings are empty when the handler
-	// did not opt in (test scaffolding or paths that don't bind metadata).
-	logUserAgent string
-	logClientIP  string
 }
 
-// bindClientLogMeta snapshots the request's User-Agent and client IP into
-// the Handler. Every subsequent recordSuccessLog / recordFailureWithDetails
-// on this handler copies these fields into the resulting RequestLog. Returns
-// a restore func the caller MUST defer so concurrent requests do not see
-// each other's UA / IP on the shared *Handler.
-func (h *Handler) bindClientLogMeta(r *http.Request) (restore func()) {
-	ua := truncateUA(r.UserAgent())
-	ip := clientIPFromRequest(r)
-	prevUA, prevIP := h.logUserAgent, h.logClientIP
-	h.logUserAgent, h.logClientIP = ua, ip
-	return func() {
-		h.logUserAgent, h.logClientIP = prevUA, prevIP
+// logMetaWriter wraps the ResponseWriter for one request with the client
+// metadata (User-Agent, IP) that every log entry of that request should carry.
+// Carrying it on the writer (which every handler already threads through)
+// keeps concurrent requests isolated; shared Handler fields raced.
+type logMetaWriter struct {
+	http.ResponseWriter
+	userAgent string
+	clientIP  string
+}
+
+func (m *logMetaWriter) Flush() {
+	if f, ok := m.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
 	}
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer.
+func (m *logMetaWriter) Unwrap() http.ResponseWriter { return m.ResponseWriter }
+
+// withClientLogMeta returns the writer to use for the request's handler.
+func withClientLogMeta(w http.ResponseWriter, r *http.Request) http.ResponseWriter {
+	return &logMetaWriter{ResponseWriter: w, userAgent: truncateUA(r.UserAgent()), clientIP: clientIPFromRequest(r)}
+}
+
+// clientLogMeta extracts the metadata bound by withClientLogMeta ("" when the
+// writer was not wrapped, e.g. tests or internal calls).
+func clientLogMeta(w http.ResponseWriter) (userAgent, clientIP string) {
+	for w != nil {
+		if m, ok := w.(*logMetaWriter); ok {
+			return m.userAgent, m.clientIP
+		}
+		u, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return "", ""
+		}
+		w = u.Unwrap()
+	}
+	return "", ""
 }
 
 // truncateUA keeps User-Agent strings bounded so a malicious or buggy client
@@ -487,8 +506,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	// API 端点（需要验证 API Key）
 	case path == "/v1/messages" || path == "/messages" || path == "/anthropic/v1/messages":
-		restoreLogMeta := h.bindClientLogMeta(r)
-		defer restoreLogMeta()
+		w = withClientLogMeta(w, r)
 		ar, release := h.authenticateForClaude(w, r)
 		if ar == nil {
 			return
@@ -496,8 +514,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer release()
 		h.handleClaudeMessages(w, ar)
 	case path == "/v1/messages/count_tokens" || path == "/messages/count_tokens":
-		restoreLogMeta := h.bindClientLogMeta(r)
-		defer restoreLogMeta()
+		w = withClientLogMeta(w, r)
 		ar, release := h.authenticateForClaude(w, r)
 		if ar == nil {
 			return
@@ -505,8 +522,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer release()
 		h.handleCountTokens(w, ar)
 	case path == "/v1/chat/completions" || path == "/chat/completions":
-		restoreLogMeta := h.bindClientLogMeta(r)
-		defer restoreLogMeta()
+		w = withClientLogMeta(w, r)
 		ar, release := h.authenticateForOpenAI(w, r)
 		if ar == nil {
 			return
@@ -514,8 +530,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer release()
 		h.handleOpenAIChat(w, ar)
 	case path == "/v1/responses" || path == "/responses":
-		restoreLogMeta := h.bindClientLogMeta(r)
-		defer restoreLogMeta()
+		w = withClientLogMeta(w, r)
 		ar, release := h.authenticateForOpenAI(w, r)
 		if ar == nil {
 			return
@@ -1398,7 +1413,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, req *ClaudeRequest, 
 			if !messageStarted {
 				continue
 			}
-			h.recordFailureWithDetails("claude", model, account.ID, err)
+			h.recordFailureWithDetails(w, "claude", model, account.ID, err)
 			h.sendSSE(w, flusher, "error", map[string]interface{}{
 				"type":  "error",
 				"error": map[string]string{"type": "api_error", "message": err.Error()},
@@ -1431,7 +1446,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, req *ClaudeRequest, 
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 		h.promptCache.Update(account.ID, cacheProfile)
-		h.recordSuccessLog("claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), perf.finalise())
+		h.recordSuccessLog(w, "claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), perf.finalise())
 		stopReason := "end_turn"
 		if len(toolUses) > 0 {
 			stopReason = "tool_use"
@@ -1459,7 +1474,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, req *ClaudeRequest, 
 		return
 	}
 
-	h.recordFailureWithDetails("claude", model, "", lastErr)
+	h.recordFailureWithDetails(w, "claude", model, "", lastErr)
 	h.sendClaudeError(w, 500, "api_error", lastErr.Error())
 }
 
@@ -1595,19 +1610,12 @@ func (p *perfTracker) finalise() requestPerf {
 	return requestPerf{ttftMs: ttft, tps: math.Round(tps*100) / 100}
 }
 
-// currentLogContext returns the per-request client metadata (UA + IP) bound
-// at the start of each handler. Fallback to "" when the handler didn't set
-// one (older call paths or test scaffolding).
-func (h *Handler) currentLogContext() (userAgent, clientIP string) {
-	return h.logUserAgent, h.logClientIP
-}
-
 // newLogEntry is the central constructor for RequestLog. It stamps time, the
 // client metadata snapshot (taken via currentLogContext), and folds the perf
 // numbers into the typed fields. Keeping this in one place avoids the dozen
 // inline RequestLog{} literals scattered across handlers from drifting apart.
-func (h *Handler) newLogEntry(endpoint, model, accountID, status string, tokens, outputTokens int, credits float64, durationMs, ttftMs int64, tps float64) RequestLog {
-	ua, ip := h.currentLogContext()
+func (h *Handler) newLogEntry(w http.ResponseWriter, endpoint, model, accountID, status string, tokens, outputTokens int, credits float64, durationMs, ttftMs int64, tps float64) RequestLog {
+	ua, ip := clientLogMeta(w)
 	return RequestLog{
 		Time:         time.Now().Unix(),
 		Endpoint:     endpoint,
@@ -1662,7 +1670,7 @@ func (h *Handler) appendRequestLog(entry RequestLog) {
 
 // recordFailureWithDetails records a failure and stores it in the request logs.
 // log row renders empty TTFT/TPS cells.
-func (h *Handler) recordFailureWithDetails(endpoint, model, accountID string, err error) {
+func (h *Handler) recordFailureWithDetails(w http.ResponseWriter, endpoint, model, accountID string, err error) {
 	atomic.AddInt64(&h.totalRequests, 1)
 	atomic.AddInt64(&h.failedRequests, 1)
 
@@ -1673,7 +1681,7 @@ func (h *Handler) recordFailureWithDetails(endpoint, model, accountID string, er
 	errMsg := err.Error()
 	errType := classifyError(errMsg)
 
-	entry := h.newLogEntry(endpoint, model, accountID, "error", 0, 0, 0, 0, 0, 0)
+	entry := h.newLogEntry(w, endpoint, model, accountID, "error", 0, 0, 0, 0, 0, 0)
 	entry.Error = errMsg
 	entry.ErrorType = errType
 
@@ -1705,13 +1713,13 @@ func (h *Handler) recordSuccessForApiKey(apiKeyID string, inputTokens, outputTok
 // perf struct carries streaming-only timing: TTFT (first-byte to first token)
 // and the TPS denominator (outputTokens / max(secondsAfterFirstByte, 1ms)).
 // Pass a zero `perf` for non-streaming endpoints to log no TTFT/TPS.
-func (h *Handler) recordSuccessLog(endpoint, model, accountID string, tokens int, credits float64, durationMs int64, perf requestPerf) {
+func (h *Handler) recordSuccessLog(w http.ResponseWriter, endpoint, model, accountID string, tokens int, credits float64, durationMs int64, perf requestPerf) {
 	atomic.AddInt64(&h.totalRequests, 1)
 	atomic.AddInt64(&h.successRequests, 1)
 	atomic.AddInt64(&h.totalTokens, int64(tokens))
 	h.addCredits(credits)
 
-	entry := h.newLogEntry(endpoint, model, accountID, "success", tokens, 0, credits, durationMs, perf.ttftMs, perf.tps)
+	entry := h.newLogEntry(w, endpoint, model, accountID, "success", tokens, 0, credits, durationMs, perf.ttftMs, perf.tps)
 
 	h.appendRequestLog(entry)
 	h.autoRouter.Record(accountID, model, true, durationMs)
@@ -1887,7 +1895,7 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, req *ClaudeReques
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLog("claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), perf.finalise())
+		h.recordSuccessLog(w, "claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), perf.finalise())
 
 		responseThinkingContent := rawThinkingContent
 		includeEmptyThinkingBlock := thinking && thinkingOpts.OmitDisplay && rawThinkingContent != ""
@@ -1927,7 +1935,7 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, req *ClaudeReques
 		return
 	}
 
-	h.recordFailureWithDetails("claude", model, "", lastErr)
+	h.recordFailureWithDetails(w, "claude", model, "", lastErr)
 	h.sendClaudeError(w, 500, "api_error", lastErr.Error())
 }
 
@@ -2306,7 +2314,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 			if !responseStarted {
 				continue
 			}
-			h.recordFailureWithDetails("openai", model, account.ID, err)
+			h.recordFailureWithDetails(w, "openai", model, account.ID, err)
 			return
 		}
 
@@ -2336,6 +2344,8 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
+		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
+		h.recordSuccessLog(w, "openai", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), perf.finalise())
 		finishReason := "stop"
 		if len(toolCalls) > 0 {
 			finishReason = "tool_calls"
@@ -2368,7 +2378,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 		return
 	}
 
-	h.recordFailureWithDetails("openai", model, "", lastErr)
+	h.recordFailureWithDetails(w, "openai", model, "", lastErr)
 	h.sendOpenAIError(w, 500, "server_error", lastErr.Error())
 }
 
@@ -2445,7 +2455,10 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, req *OpenAIReques
 		}
 		outputTokens = estimateOpenAIOutputTokens(finalContent, reasoningContent, toolUses)
 
-		h.recordSuccessLog("openai", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), perf.finalise())
+		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
+		h.pool.RecordSuccess(account.ID)
+		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
+		h.recordSuccessLog(w, "openai", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), perf.finalise())
 
 		thinkingFormat := config.GetThinkingConfig().OpenAIFormat
 		resp := KiroToOpenAIResponseWithReasoning(finalContent, reasoningContent, toolUses, inputTokens, outputTokens, model, thinkingFormat)
@@ -2459,7 +2472,7 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, req *OpenAIReques
 		return
 	}
 
-	h.recordFailureWithDetails("openai", model, "", lastErr)
+	h.recordFailureWithDetails(w, "openai", model, "", lastErr)
 	h.sendOpenAIError(w, 500, "server_error", lastErr.Error())
 }
 
