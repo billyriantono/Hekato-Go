@@ -124,8 +124,9 @@ func (h *Handler) warmupOne(account *config.Account, probe, recover bool) warmup
 		return err
 	}
 
-	// 1) token refresh when expiring.
-	if account.ExpiresAt > 0 && time.Now().Unix() > account.ExpiresAt-tokenRefreshSkewSeconds {
+	// 1) token refresh when expiring (skipped for credentials with no refresh flow).
+	refreshable := !isCodeBuddyAccount(account) || auth.CodeBuddyRefreshable(account)
+	if refreshable && account.ExpiresAt > 0 && time.Now().Unix() > account.ExpiresAt-tokenRefreshSkewSeconds {
 		if err := step("token", func() error {
 			newAccess, newRefresh, newExp, profileArn, err := auth.RefreshToken(account)
 			if err != nil {

@@ -26,7 +26,7 @@ If this project helps you, a Star would mean a lot.
 - Multi-account pool with round-robin load balancing
 - Auto token refresh, SSE streaming, Web admin panel
 - Multiple Kiro auth methods: AWS Builder ID, IAM Identity Center (Enterprise SSO), SSO Token, local cache, credentials JSON
-- CodeBuddy API-key account onboarding
+- CodeBuddy onboarding with API keys, JWT session tokens, or token JSON (`access_token` / `refresh_token` / `uid`), pasted or uploaded, many at once; sessions with a refresh token are renewed automatically
 - Usage tracking, account import/export, i18n (CN / EN)
 - Support configuring outbound proxy (SOCKS5 / HTTP), plus a proxy pool that pins each account to a stable egress IP
 - Per-API-key limits: token / credit quotas, requests per minute, max concurrent requests

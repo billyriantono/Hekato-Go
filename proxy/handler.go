@@ -2275,7 +2275,9 @@ func (h *Handler) sendOpenAIError(w http.ResponseWriter, status int, errType, me
 
 // ensureValidToken 确保 token 有效
 func (h *Handler) ensureValidToken(account *config.Account) error {
-	if isCodeBuddyAccount(account) {
+	// API-key and access-token-only CodeBuddy accounts cannot be refreshed;
+	// Keycloak offline-token imports can.
+	if isCodeBuddyAccount(account) && !auth.CodeBuddyRefreshable(account) {
 		return nil
 	}
 	if account.ExpiresAt == 0 || time.Now().Unix() < account.ExpiresAt-tokenRefreshSkewSeconds {
@@ -3550,8 +3552,13 @@ func (h *Handler) apiRefreshAccount(w http.ResponseWriter, r *http.Request, id s
 		return nil
 	}
 
-	// 检查 token 是否快过期，先刷新
-	if account.ExpiresAt > 0 && time.Now().Unix() > account.ExpiresAt-tokenRefreshSkewSeconds {
+	var opts struct {
+		ForceToken bool `json:"forceToken"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&opts)
+
+	// 检查 token 是否快过期，先刷新（或操作者要求强制刷新）
+	if opts.ForceToken || (account.ExpiresAt > 0 && time.Now().Unix() > account.ExpiresAt-tokenRefreshSkewSeconds) {
 		if err := refreshTokenIfNeeded(); err != nil {
 			w.WriteHeader(500)
 			json.NewEncoder(w).Encode(map[string]string{"error": "Token refresh failed: " + err.Error()})

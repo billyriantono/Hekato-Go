@@ -663,12 +663,9 @@ function CodeBuddyForm({ onDone }: FormProps) {
   const [variant, setVariant] = useState('global')
   const [text, setText] = useState('')
 
-  // One credential per line: CodeBuddy API keys or JWT session tokens (eyJ…),
-  // mixed freely. Session tokens are used when key creation is rate-limited.
-  const lines = text
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean)
+  // Accepted, mixed freely: CodeBuddy API keys (sk-…), JWT session tokens
+  // (eyJ…), and token JSON ({"access_token","refresh_token","uid"}) as one
+  // object, an array, or one object per line. Files are read into the box.
   const isJwt = (v: string) => v.startsWith('eyJ') && v.split('.').length === 3
   const jwtExpiry = (v: string): number | null => {
     try {
@@ -678,17 +675,56 @@ function CodeBuddyForm({ onDone }: FormProps) {
       return null
     }
   }
-  const keys = lines.filter((l) => !isJwt(l))
-  const jwts = lines.filter(isJwt)
-  const expiredJwts = jwts.filter((j) => {
-    const exp = jwtExpiry(j)
+  type Cred = { access: string; refresh?: string }
+  const fromObj = (o: unknown): Cred | null => {
+    if (!o || typeof o !== 'object') return null
+    const m = o as Record<string, unknown>
+    const pick = (...ks: string[]) => ks.map((k) => m[k]).find((v): v is string => typeof v === 'string' && v.trim() !== '')?.trim()
+    const access = pick('access_token', 'accessToken', 'token', 'api_key', 'apiKey')
+    return access ? { access, refresh: pick('refresh_token', 'refreshToken') } : null
+  }
+  const creds: Cred[] = (() => {
+    const trimmed = text.trim()
+    if (!trimmed) return []
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed)
+        const list = (Array.isArray(parsed) ? parsed : [parsed]).map(fromObj).filter((c): c is Cred => !!c)
+        if (list.length) return list
+      } catch {
+        /* fall through to line parsing */
+      }
+    }
+    const out: Cred[] = []
+    for (const raw of trimmed.split(/\r?\n/)) {
+      const line = raw.trim().replace(/,$/, '')
+      if (!line) continue
+      if (line.startsWith('{')) {
+        try {
+          const c = fromObj(JSON.parse(line))
+          if (c) out.push(c)
+        } catch {
+          /* skip unparsable line */
+        }
+        continue
+      }
+      out.push({ access: line })
+    }
+    return out
+  })()
+  const lines = creds.map((c) => c.access)
+  const keys = creds.filter((c) => !isJwt(c.access))
+  const jwts = creds.filter((c) => isJwt(c.access))
+  const refreshable = creds.filter((c) => c.refresh && isJwt(c.refresh))
+  const expiredJwts = jwts.filter((c) => {
+    const exp = jwtExpiry(c.access)
     return exp !== null && exp * 1000 < Date.now()
   })
 
   const go = () =>
     submit(async () => {
       const r = await post<{ account: Added; accounts?: Added[]; errors?: string[] }>('/auth/codebuddy', {
-        apiKey: lines.join('\n'),
+        apiKey: text,
         label: label.trim(),
         variant,
       })
@@ -722,12 +758,16 @@ function CodeBuddyForm({ onDone }: FormProps) {
           className="font-mono text-xs"
           autoComplete="off"
           spellCheck={false}
-          placeholder={'sk-…\neyJhbGciOi…'}
+          placeholder={'sk-…\neyJhbGciOi…\n{"access_token":"eyJ…","refresh_token":"eyJ…","uid":"…"}'}
         />
+        <div className="mt-2">
+          <FileInput onText={(s) => setText((prev) => (prev.trim() ? prev.trimEnd() + '\n' + s : s))} />
+        </div>
         {lines.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-2 text-xs">
             {keys.length > 0 && <Badge variant="secondary">{t('codebuddy.detectedKeys', keys.length)}</Badge>}
             {jwts.length > 0 && <Badge variant="secondary">{t('codebuddy.detectedTokens', jwts.length)}</Badge>}
+            {refreshable.length > 0 && <Badge variant="secondary">{t('codebuddy.detectedRefresh', refreshable.length)}</Badge>}
             {expiredJwts.length > 0 && <Badge variant="destructive">{t('codebuddy.expiredTokens', expiredJwts.length)}</Badge>}
           </div>
         )}

@@ -43,6 +43,13 @@ func RefreshToken(account *config.Account) (string, string, int64, string, error
 		}
 		return accessToken, refreshToken, time.Now().Unix() + int64(expiresIn), "", nil
 	}
+	if provider == config.ProviderCodeBuddy {
+		accessToken, refreshToken, expiresIn, err := RefreshCodeBuddyToken(account)
+		if err != nil {
+			return "", "", 0, "", err
+		}
+		return accessToken, refreshToken, time.Now().Unix() + int64(expiresIn), "", nil
+	}
 	if provider != config.ProviderKiro {
 		return "", "", 0, "", fmt.Errorf("provider %s has no OAuth refresh flow", provider)
 	}

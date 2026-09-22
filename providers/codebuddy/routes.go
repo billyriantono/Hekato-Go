@@ -45,11 +45,10 @@ func importCodeBuddy(host providers.Host, w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	creds := parseCodeBuddyCredentials(req.APIKey)
 	var tokens []string
-	for _, line := range strings.Split(req.APIKey, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			tokens = append(tokens, line)
-		}
+	for _, c := range creds {
+		tokens = append(tokens, c.Access)
 	}
 	if len(tokens) == 0 {
 		w.WriteHeader(400)
@@ -64,7 +63,8 @@ func importCodeBuddy(host providers.Host, w http.ResponseWriter, r *http.Request
 	label := strings.TrimSpace(req.Label)
 	var imported []map[string]interface{}
 	var errs []string
-	for i, tok := range tokens {
+	for i, c := range creds {
+		tok := c.Access
 		// A CodeBuddy China credential is only valid against the CN gateway; sent
 		// to the global endpoint it answers 401 from the APISIX edge. CN and
 		// global tokens are otherwise indistinguishable (both are Keycloak JWTs),
@@ -81,17 +81,27 @@ func importCodeBuddy(host providers.Host, w http.ResponseWriter, r *http.Request
 
 		name := label
 		if name == "" {
+			name = c.UID
+		}
+		if name == "" {
 			name = provider + " " + credentialKind(tok)
 		}
-		if len(tokens) > 1 {
+		if len(creds) > 1 && (label != "" || c.UID == "") {
 			name = fmt.Sprintf("%s #%d", name, i+1)
+		}
+		// Token JSON carries a Keycloak offline refresh token; bare credentials
+		// store the access token twice (no refresh flow).
+		refresh := c.Refresh
+		if refresh == "" {
+			refresh = tok
 		}
 		account := config.Account{
 			ID:           auth.GenerateAccountID(),
 			Email:        name,
 			Nickname:     name,
+			UserId:       c.UID,
 			AccessToken:  tok,
-			RefreshToken: tok,
+			RefreshToken: refresh,
 			AuthMethod:   authMethod,
 			Provider:     provider,
 			Region:       region,
@@ -109,7 +119,7 @@ func importCodeBuddy(host providers.Host, w http.ResponseWriter, r *http.Request
 		}
 		imported = append(imported, map[string]interface{}{
 			"id": account.ID, "email": account.Email, "authMethod": account.AuthMethod, "provider": account.Provider,
-			"kind": credentialKind(tok), "expiresAt": account.ExpiresAt,
+			"kind": credentialKind(tok), "expiresAt": account.ExpiresAt, "refreshable": auth.CodeBuddyRefreshable(&account),
 		})
 	}
 	if len(imported) == 0 {
@@ -124,6 +134,79 @@ func importCodeBuddy(host providers.Host, w http.ResponseWriter, r *http.Request
 		"accounts": imported,
 		"errors":   errs,
 	})
+}
+
+// codeBuddyCredential is one parsed credential: an API key, a bare session
+// token, or a token JSON ({"access_token","refresh_token","uid"}).
+type codeBuddyCredential struct {
+	Access  string
+	Refresh string
+	UID     string
+}
+
+// parseCodeBuddyCredentials accepts, in one text blob: a JSON object, a JSON
+// array of objects, one JSON object per line, and/or bare keys / tokens one
+// per line. Objects may use access_token/refresh_token/uid or camelCase names.
+func parseCodeBuddyCredentials(text string) []codeBuddyCredential {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	var out []codeBuddyCredential
+	addObj := func(m map[string]interface{}) bool {
+		get := func(keys ...string) string {
+			for _, k := range keys {
+				if v, ok := m[k].(string); ok && strings.TrimSpace(v) != "" {
+					return strings.TrimSpace(v)
+				}
+			}
+			return ""
+		}
+		access := get("access_token", "accessToken", "token", "api_key", "apiKey")
+		if access == "" {
+			return false
+		}
+		out = append(out, codeBuddyCredential{
+			Access:  access,
+			Refresh: get("refresh_token", "refreshToken"),
+			UID:     get("uid", "user_id", "userId", "email", "username"),
+		})
+		return true
+	}
+	// Whole blob as one JSON document (pretty-printed object or array).
+	if strings.HasPrefix(text, "{") || strings.HasPrefix(text, "[") {
+		var one map[string]interface{}
+		if json.Unmarshal([]byte(text), &one) == nil {
+			if addObj(one) {
+				return out
+			}
+		}
+		var many []map[string]interface{}
+		if json.Unmarshal([]byte(text), &many) == nil {
+			for _, m := range many {
+				addObj(m)
+			}
+			if len(out) > 0 {
+				return out
+			}
+		}
+	}
+	// Line by line: JSON objects or bare credentials.
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(line), ","))
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "{") {
+			var m map[string]interface{}
+			if json.Unmarshal([]byte(line), &m) == nil && addObj(m) {
+				continue
+			}
+			continue // unparsable JSON line: skip rather than store garbage
+		}
+		out = append(out, codeBuddyCredential{Access: line})
+	}
+	return out
 }
 
 // credentialKind labels a CodeBuddy credential for display.
