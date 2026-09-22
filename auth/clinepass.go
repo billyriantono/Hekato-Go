@@ -13,9 +13,11 @@ import (
 // ClinePass (Cline) OAuth refresh flow.
 //
 // ClinePass fronts Cline's openai-compatible proxy at api.cline.bot. Accounts
-// authenticate with either an API key (clp_…) or a WorkOS JWT issued by the
-// Cline browser OAuth flow. The WorkOS JWT must be sent with the literal
-// "workos:" prefix; raw JWTs without it are rejected by the upstream.
+// authenticate with either an API key (issued from app.cline.bot/settings/api-keys,
+// historically clp_… but the upstream has since switched to sk_… and other opaque
+// bearer shapes) or a WorkOS JWT issued by the Cline browser OAuth flow. The
+// WorkOS JWT must be sent with the literal "workos:" prefix; raw JWTs without
+// it are rejected by the upstream.
 //
 // We only implement refresh here: the user obtains the initial token pair (or
 // the API key) out-of-band and imports it via the admin /auth/clinepass/import
@@ -47,7 +49,8 @@ func ClinepassExpiresAt(expiresIn int) int64 {
 }
 
 // NormalizeClinepassToken returns the access token in the exact form the
-// upstream expects: a raw clp_… key, or a WorkOS JWT prefixed with "workos:".
+// upstream expects: a raw API key (clp_…, sk_…, or any opaque bearer issued
+// by app.cline.bot/settings/api-keys), or a WorkOS JWT prefixed with "workos:".
 // Empty / whitespace input is returned unchanged so the import route can use
 // it as a validator (empty → invalid).
 func NormalizeClinepassToken(raw string) string {
@@ -55,36 +58,43 @@ func NormalizeClinepassToken(raw string) string {
 	if t == "" {
 		return ""
 	}
-	// API keys go through verbatim.
-	if strings.HasPrefix(t, "clp_") {
-		return t
-	}
 	// Already prefixed: keep as-is. ClinePass also accepts the prefix on
 	// refresh responses, so this is the canonical form on the wire.
 	if strings.HasPrefix(t, clinepassWorkOSPrefix) {
 		return t
 	}
 	// Raw WorkOS JWT (three base64url segments separated by dots): prefix it.
-	if looksLikeJWT(t) {
+	if LooksLikeJWT(t) {
 		return clinepassWorkOSPrefix + t
 	}
-	// Unknown shape — return untouched; the upstream will reject with 401
-	// and the operator sees a clear error instead of a silent rewrite.
+	// Anything else (clp_…, sk_…, or any opaque bearer from app.cline.bot)
+	// is an API key: pass through verbatim.
 	return t
 }
 
 // IsClinepassAPIKey reports whether the supplied token looks like a ClinePass
-// API key (clp_ prefix). Used by the import route to decide between API-key
-// and OAuth refresh paths.
+// API key (any opaque bearer that isn't a JWT) versus a WorkOS OAuth JWT.
+// Used by the import route to decide between API-key (no refresh) and OAuth
+// (refreshable) flows. The historical clp_… prefix is just one of many shapes
+// app.cline.bot/settings/api-keys has issued over time; we treat every
+// non-JWT, non-workos-prefixed token as an API key.
 func IsClinepassAPIKey(raw string) bool {
 	t := strings.TrimSpace(raw)
-	return strings.HasPrefix(t, "clp_")
+	if t == "" {
+		return false
+	}
+	if strings.HasPrefix(t, clinepassWorkOSPrefix) {
+		return false
+	}
+	return !LooksLikeJWT(t)
 }
 
-// looksLikeJWT is a coarse structural check: three base64url segments joined
+// LooksLikeJWT is a coarse structural check: three base64url segments joined
 // by dots. It does NOT verify the signature — the upstream rejects bad JWTs
 // with 401 and the import flow already runs the operator's token against it.
-func looksLikeJWT(s string) bool {
+// Exported because the import route uses it to distinguish bare-token lines
+// that need OAuth-style refresh from ones that are bare API keys.
+func LooksLikeJWT(s string) bool {
 	if strings.Count(s, ".") != 2 {
 		return false
 	}

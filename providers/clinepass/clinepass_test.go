@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
+	"hekato-go/auth"
 	"hekato-go/config"
 	"hekato-go/providers"
 )
@@ -53,6 +53,87 @@ func TestParseClinepassImportEntries(t *testing.T) {
 
 	if _, err := parseClinepassImportEntries([]byte("   ")); err == nil {
 		t.Fatal("expected error on empty body")
+	}
+}
+
+// Bare-token import: a list of consumer-subscription API keys pasted with one
+// per line (no JSON wrapping). Each line becomes a single-field account.
+// Covers the post-2026 sk_… format from app.cline.bot/settings/api-keys,
+// legacy clp_… keys, workos:-prefixed OAuth JWTs, and raw JWTs.
+func TestParseClinepassImportEntries_BareTokens(t *testing.T) {
+	const sampleBareTokens = "sk_aa6aad4121b13b66d88f76f64a210f30336850fe89102c7683f65af8fce3ff2e9\n" +
+		"clp_legacykey123\n" +
+		"workos:eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.signature\n"
+	entries, err := parseClinepassImportEntries([]byte(sampleBareTokens))
+	if err != nil {
+		t.Fatalf("bare-token parse: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("bare-token: got %d entries, want 3", len(entries))
+	}
+	want := []string{
+		"sk_aa6aad4121b13b66d88f76f64a210f30336850fe89102c7683f65af8fce3ff2e9",
+		"clp_legacykey123",
+		"workos:eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.signature",
+	}
+	for i, w := range want {
+		if entries[i].AccessToken != w {
+			t.Fatalf("bare[%d] = %q, want %q", i, entries[i].AccessToken, w)
+		}
+	}
+	// Blank lines must be skipped, not turned into empty AccessTokens.
+entries, err = parseClinepassImportEntries([]byte("\nsk_x\n\n\nclp_y\n"))
+	if err != nil {
+		t.Fatalf("blank-line parse: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("blank-line: got %d, want 2", len(entries))
+	}
+	if entries[0].AccessToken != "sk_x" || entries[1].AccessToken != "clp_y" {
+		t.Fatalf("blank-line order: %+v", entries)
+	}
+	// Mixed JSON+bare-token bodies must reject rather than silently misclassify
+	// either entry: the user pastes in one shape at a time on the dashboard.
+	mixed := "{\"access_token\":\"json1\",\"email\":\"j@x.test\"}\nsk_onlykey\n"
+	if _, err := parseClinepassImportEntries([]byte(mixed)); err == nil {
+		t.Fatal("mixed JSON+bare-token body must be rejected")
+	}
+}
+
+// IsClinepassAPIKey broadened: recognises any opaque bearer (not just clp_…)
+// while still rejecting OAuth JWTs and workos-prefixed tokens. Keeps the
+// refresh-dispatch path correct for API-key accounts.
+func TestIsClinepassAPIKey_Broadened(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want bool
+	}{
+		{"clp_legacykey", true},
+		{"sk_aa6aad4121b13b66d88f76f64a210f30336850fe89102c7683f65af8fce3ff2e9", true},
+		{"  sk_padded  ", true},
+		{"workos:eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.signature", false},
+		{"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.signature", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := auth.IsClinepassAPIKey(c.raw); got != c.want {
+			t.Errorf("IsClinepassAPIKey(%q) = %v, want %v", c.raw, got, c.want)
+		}
+	}
+}
+
+// NormalizeClinepassToken unchanged contract for the new shapes: sk_… passes
+// through verbatim; raw JWT gets the workos: prefix.
+func TestNormalizeClinepassToken_SkAndJWT(t *testing.T) {
+	if got := auth.NormalizeClinepassToken("sk_aa6aad4121b13b66d88f76f64a210f30336850fe89102c7683f65af8fce3ff2e9"); got != "sk_aa6aad4121b13b66d88f76f64a210f30336850fe89102c7683f65af8fce3ff2e9" {
+		t.Errorf("sk_ key should pass through verbatim, got %q", got)
+	}
+	jwt := "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.signature"
+	if got := auth.NormalizeClinepassToken(jwt); got != "workos:"+jwt {
+		t.Errorf("raw JWT should get workos: prefix, got %q", got)
+	}
+	if got := auth.NormalizeClinepassToken(""); got != "" {
+		t.Errorf("empty should stay empty, got %q", got)
 	}
 }
 

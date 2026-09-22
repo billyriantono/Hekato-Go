@@ -837,7 +837,8 @@ function ClinepassImportForm({ onDone }: FormProps) {
   const [text, setText] = useState('')
   const go = () =>
     submit(async () => {
-      // Server accepts a single object, a JSON array, or NDJSON — pass through.
+      // Server accepts a single JSON object, a JSON array, NDJSON, OR bare-token
+      // lines (one clp_… / sk_… / workos:… token per line). Mixed bodies fail.
       const r = await api<{ imported: number; accounts: Added[]; errors?: string[] }>('/auth/clinepass/import', { method: 'POST', body: text.trim() })
       toast.success(`${t('clinepass.importSuccess')} (${r.imported})` + (r.errors?.length ? t('sso.importPartial', r.errors.length) : ''))
       onDone(r.accounts)
@@ -845,7 +846,7 @@ function ClinepassImportForm({ onDone }: FormProps) {
   return (
     <>
       <Field label={t('clinepass.tokensLabel')} hint={t('clinepass.importHint')}>
-        <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={8} className="font-mono text-xs" placeholder={'{"access_token":"workos:…","refresh_token":"…","email":"…"}'} />
+        <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={8} className="font-mono text-xs" placeholder={'{"access_token":"workos:…","refresh_token":"…","email":"…"}\n# or one token per line: sk_… / clp_…'} />
       </Field>
       <FileInput onText={setText} />
       <SubmitRow busy={busy} label={t('accounts.import')} onClick={go} disabled={!text.trim()} />

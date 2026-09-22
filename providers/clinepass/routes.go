@@ -141,10 +141,16 @@ func importClinepass(host providers.Host, w http.ResponseWriter, r *http.Request
 	})
 }
 
-// parseClinepassImportEntries accepts a single JSON object, a JSON array, or
-// newline-delimited JSON objects (one per line, blank lines skipped). This
-// mirrors the grok/codex importers so the admin dashboard can paste a 9router
-// export as-is.
+// parseClinepassImportEntries accepts any of:
+//   - a single JSON object
+//   - a JSON array
+//   - newline-delimited JSON objects (one per line, blank lines skipped)
+//   - bare token lines, one per line (clp_…, sk_…, workos:… JWTs, raw JWTs) —
+//     each line becomes an account with just AccessToken set
+//
+// The bare-token fallback lets an operator paste a list of consumer-subscription
+// keys without wrapping each one in JSON. A line that doesn't decode as JSON
+// and looks like a ClinePass bearer (non-empty, not whitespace) is wrapped.
 func parseClinepassImportEntries(raw []byte) ([]clinepassImportAccount, error) {
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" {
@@ -190,7 +196,10 @@ func parseClinepassImportEntries(raw []byte) ([]clinepassImportAccount, error) {
 		}
 		return []clinepassImportAccount{single}, nil
 	}
-	// Newline-delimited JSON with no leading brace (unusual).
+	// No leading '{' / '[': treat each non-empty line as either an NDJSON object
+	// or a bare bearer token (clp_…, sk_…, workos:… JWT, raw JWT). Lines that
+	// don't decode as JSON but look like a ClinePass token are wrapped as a
+	// minimal {access_token: …} entry so the import flow treats them uniformly.
 	var out []clinepassImportAccount
 	for _, line := range strings.Split(trimmed, "\n") {
 		line = strings.TrimSpace(line)
@@ -198,10 +207,16 @@ func parseClinepassImportEntries(raw []byte) ([]clinepassImportAccount, error) {
 			continue
 		}
 		var entry clinepassImportAccount
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			return nil, fmt.Errorf("decode ndjson line: %w", err)
+		if err := json.Unmarshal([]byte(line), &entry); err == nil && entry.AccessToken != "" {
+			out = append(out, entry)
+			continue
 		}
-		out = append(out, entry)
+		// Bare token line. Wrap as a single-field entry; Normalize/IsAPIKey
+		// downstream decide whether it's an API key or an OAuth JWT.
+		out = append(out, clinepassImportAccount{AccessToken: line})
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no importable tokens found")
 	}
 	return out, nil
 }
