@@ -1,6 +1,6 @@
 // Public self-service usage check: paste an API key, see its quota and usage.
 // Served at /admin/usage without admin login; the key itself is the credential.
-import { useState } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { LuLoader, LuSearch, LuMoon, LuSun, LuLanguages } from 'react-icons/lu'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge'
 import { formatNumber, formatTime } from '@/components/common'
 import { useI18n } from '@/lib/i18n'
 import { useTheme } from '@/lib/theme'
+import { LiveRoutingMap, type RequestLog } from '@/pages/overview/routing-map'
 
 type Usage = {
   name: string
@@ -54,6 +55,8 @@ export function UsagePage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [data, setData] = useState<Usage | null>(null)
+  const [logs, setLogs] = useState<RequestLog[] | null>(null)
+  const activeKeyRef = useRef('')
 
   const lookup = async (e: React.SyntheticEvent) => {
     e.preventDefault()
@@ -61,17 +64,42 @@ export function UsagePage() {
     setBusy(true)
     setError('')
     setData(null)
+    setLogs(null)
     try {
       const res = await fetch('/v1/usage', { headers: { Authorization: 'Bearer ' + key.trim(), Accept: 'application/json' } })
       const body = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(body.error || res.statusText)
       setData(body as Usage)
+      // Fire-and-forget: fetch this key's own logs for the routing map.
+      activeKeyRef.current = key.trim()
+      fetchLogs(key.trim())
     } catch (err) {
       setError(err instanceof Error ? err.message : t('common.unknownError'))
     } finally {
       setBusy(false)
     }
   }
+
+  const fetchLogs = useCallback(async (apiKey: string) => {
+    try {
+      const res = await fetch('/v1/usage/logs', { headers: { Authorization: 'Bearer ' + apiKey, Accept: 'application/json' } })
+      if (!res.ok) return
+      const body = await res.json()
+      // Only apply if the key hasn't changed since we started
+      if (activeKeyRef.current === apiKey) {
+        setLogs(body.logs ?? [])
+      }
+    } catch {
+      // Routing map is optional; swallow errors
+    }
+  }, [])
+
+  // Periodically refresh the routing map logs while we have a valid key
+  useEffect(() => {
+    if (!data || !activeKeyRef.current) return
+    const id = setInterval(() => fetchLogs(activeKeyRef.current), 5000)
+    return () => clearInterval(id)
+  }, [data, fetchLogs])
 
   return (
     <div className="flex min-h-svh flex-col bg-muted/40">
@@ -91,6 +119,7 @@ export function UsagePage() {
       </header>
       <main className="flex flex-1 items-start justify-center p-4 pt-10">
         <div className="w-full max-w-lg space-y-4">
+
           <Card className="shadow-lg">
             <CardHeader>
               <CardTitle>{t('usage.title')}</CardTitle>
@@ -141,6 +170,9 @@ export function UsagePage() {
                 </dl>
               </CardContent>
             </Card>
+          )}
+          {logs && logs.length > 0 && (
+            <LiveRoutingMap logs={logs} />
           )}
           <p className="text-center text-xs text-muted-foreground">{t('usage.privacy')}</p>
         </div>

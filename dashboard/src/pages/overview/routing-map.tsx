@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { get } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
 
-type RequestLog = {
+export type RequestLog = {
   time: number
   endpoint: string
   model: string
@@ -77,14 +77,16 @@ function tone(node: RouteNode) {
   return '#fbbf24'
 }
 
-export function LiveRoutingMap() {
+export function LiveRoutingMap({ logs: externalLogs }: { logs?: RequestLog[] } = {}) {
   const { t } = useI18n()
   const query = useQuery({
     queryKey: ['logs'],
     queryFn: () => get<{ logs: RequestLog[] }>('/logs'),
     refetchInterval: REFETCH_MS,
+    enabled: !externalLogs,
   })
-  const routes = useMemo(() => aggregate(query.data?.logs ?? []), [query.data])
+  const rawLogs = externalLogs ?? query.data?.logs ?? []
+  const routes = useMemo(() => aggregate(rawLogs), [rawLogs])
   const displayedModels = useMemo(() => compactModels(routes.models), [routes.models])
   const height = Math.max(360, Math.max(routes.sources.length, displayedModels.length) * 78 + 90)
   const totalFailures = routes.recent.reduce((sum, log) => sum + (log.status === 'error' ? 1 : 0), 0)
@@ -104,15 +106,17 @@ export function LiveRoutingMap() {
           <CardTitle>{t('overview.routing.title')}</CardTitle>
           <CardDescription>{t('overview.routing.hint')}</CardDescription>
         </div>
-        <div className="shrink-0 text-right font-mono text-[10px] leading-5 text-muted-foreground">
-          <div>{t('overview.routing.refresh')}</div>
-          {query.dataUpdatedAt > 0 && <div>{new Date(query.dataUpdatedAt).toLocaleTimeString()}</div>}
-        </div>
+        {!externalLogs && (
+          <div className="shrink-0 text-right font-mono text-[10px] leading-5 text-muted-foreground">
+            <div>{t('overview.routing.refresh')}</div>
+            {query.dataUpdatedAt > 0 && <div>{new Date(query.dataUpdatedAt).toLocaleTimeString()}</div>}
+          </div>
+        )}
       </CardHeader>
       <CardContent className="p-0">
-        {query.isPending ? (
+        {!externalLogs && query.isPending ? (
           <div className="p-6"><LoadingBlock /></div>
-        ) : query.isError ? (
+        ) : !externalLogs && query.isError ? (
           <div className="p-6"><EmptyState title={t('overview.routing.loadFailed', errorMessage(query.error))} /></div>
         ) : routes.recent.length === 0 ? (
           <div className="p-6"><EmptyState title={t('overview.routing.empty')} /></div>

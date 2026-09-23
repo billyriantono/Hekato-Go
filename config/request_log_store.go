@@ -44,6 +44,7 @@ type PersistedRequestLog struct {
 	TPS          float64 `json:"tps"`
 	UserAgent    string  `json:"userAgent"`
 	ClientIP     string  `json:"clientIp"`
+	ApiKeyID     string  `json:"apiKeyId,omitempty"`
 }
 
 // RequestLogs returns the request-log persistence for the active backend, or

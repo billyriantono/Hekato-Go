@@ -51,6 +51,10 @@ type RequestLog struct {
 	// RequestedModel is what the client asked for when it differs from Model
 	// (currently "auto"); the live routing map uses it to show auto traffic only.
 	RequestedModel string `json:"requestedModel,omitempty"`
+	// ApiKeyID is the caller's API-key row id (empty when the request had no
+	// key, e.g. the admin-panel probes). The public /v1/usage/logs endpoint
+	// filters on this so a key holder only sees their own routing.
+	ApiKeyID string `json:"apiKeyId,omitempty"`
 }
 
 // logUserAgentMaxLen is the truncation ceiling for the User-Agent persisted on
@@ -103,6 +107,7 @@ type logMetaWriter struct {
 	userAgent string
 	clientIP  string
 	requested string // client-requested model when it was rewritten (e.g. "auto")
+	apiKeyID  string // caller's API-key ID; empty when the request had no key
 }
 
 // findLogMeta unwraps to the logMetaWriter bound by withClientLogMeta (nil if none).
@@ -125,6 +130,15 @@ func findLogMeta(w http.ResponseWriter) *logMetaWriter {
 func markRequestedModel(w http.ResponseWriter, model string) {
 	if m := findLogMeta(w); m != nil {
 		m.requested = model
+	}
+}
+
+// markApiKeyID records the caller's API-key row ID on the log metadata.
+// Called from admit() after authentication succeeds so every log entry
+// produced by this request carries the key identity.
+func markApiKeyID(w http.ResponseWriter, id string) {
+	if m := findLogMeta(w); m != nil {
+		m.apiKeyID = id
 	}
 }
 
@@ -398,6 +412,7 @@ func NewHandler() *Handler {
 					Credits: e.Credits, Duration: e.Duration,
 					TTFTMs: e.TTFTMs, TPS: e.TPS,
 					UserAgent: e.UserAgent, ClientIP: e.ClientIP,
+					ApiKeyID: e.ApiKeyID,
 				})
 			}
 			logger.Infof("[request-log] restored %d entries from storage", len(h.requestLogs))
@@ -539,10 +554,10 @@ func (h *Handler) authenticateForClaude(w http.ResponseWriter, r *http.Request) 
 		h.sendClaudeError(w, ae.status, ae.code, ae.message)
 		return nil, nil
 	}
+	markApiKeyID(w, apiKeyIDFromContext(ar.Context()))
 	return ar, release
 }
 
-// authenticateForOpenAI runs authenticate + rate limiting and writes an OpenAI-style error on failure.
 func (h *Handler) authenticateForOpenAI(w http.ResponseWriter, r *http.Request) (*http.Request, func()) {
 	ar, release, ae := h.admit(r)
 	if ae != nil {
@@ -552,6 +567,7 @@ func (h *Handler) authenticateForOpenAI(w http.ResponseWriter, r *http.Request) 
 		h.sendOpenAIError(w, ae.status, ae.code, ae.message)
 		return nil, nil
 	}
+	markApiKeyID(w, apiKeyIDFromContext(ar.Context()))
 	return ar, release
 }
 
@@ -610,6 +626,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleOpenAIResponses(w, ar)
 	case path == "/v1/usage":
 		h.handleKeyUsage(w, r)
+	case path == "/v1/usage/logs":
+		h.handleKeyUsageLogs(w, r)
 	case path == "/usage" || path == "/usage/" || path == "/docs" || strings.HasPrefix(path, "/docs/"):
 		// Public pages (usage check, documentation): same SPA bundle, no admin path exposed.
 		h.serveAdminPage(w, r)
@@ -680,6 +698,30 @@ func (h *Handler) handleKeyUsage(w http.ResponseWriter, r *http.Request) {
 		"creditPercent":    pct(entry.CreditsUsed, entry.CreditLimit),
 		"rpmLimit":         entry.RPMLimit,
 		"concurrencyLimit": entry.ConcurrencyLimit,
+	})
+}
+
+// handleKeyUsageLogs returns the caller's own request logs (filtered by API key ID).
+// The client authenticates with its own API key (Bearer / X-Api-Key) — no admin
+// credentials involved. Returns the subset of in-memory logs that belong to the key.
+func (h *Handler) handleKeyUsageLogs(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	provided := extractProvidedKey(r)
+	entry := config.FindApiKeyByValue(provided)
+	if provided == "" || entry == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid or missing API key"})
+		return
+	}
+	all := h.getRequestLogs() // newest-first
+	filtered := make([]RequestLog, 0, len(all))
+	for _, log := range all {
+		if log.ApiKeyID == entry.ID {
+			filtered = append(filtered, log)
+		}
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"logs": filtered,
 	})
 }
 
@@ -1731,8 +1773,10 @@ func (p *perfTracker) finalise() requestPerf {
 func (h *Handler) newLogEntry(w http.ResponseWriter, endpoint, model, accountID, status string, tokens, outputTokens int, credits float64, durationMs, ttftMs int64, tps float64) RequestLog {
 	ua, ip := clientLogMeta(w)
 	requested := ""
+	apiKeyID := ""
 	if m := findLogMeta(w); m != nil {
 		requested = m.requested
+		apiKeyID = m.apiKeyID
 	}
 	return RequestLog{
 		RequestedModel: requested,
@@ -1749,6 +1793,7 @@ func (h *Handler) newLogEntry(w http.ResponseWriter, endpoint, model, accountID,
 		TPS:            tps,
 		UserAgent:      ua,
 		ClientIP:       ip,
+		ApiKeyID:       apiKeyID,
 	}
 }
 
@@ -1778,6 +1823,7 @@ func (h *Handler) appendRequestLog(entry RequestLog) {
 			Credits: entry.Credits, Duration: entry.Duration,
 			TTFTMs: entry.TTFTMs, TPS: entry.TPS,
 			UserAgent: entry.UserAgent, ClientIP: entry.ClientIP,
+			ApiKeyID: entry.ApiKeyID,
 		}
 		select {
 		case h.pendingLogs <- persisted:
