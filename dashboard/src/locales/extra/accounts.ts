@@ -47,9 +47,17 @@ export const en: Record<string, string> = {
   'detail.addModelPlaceholder': 'model id, e.g. glm-5.4',
   'detail.addModelHint': 'Manually added models are routed to this account alongside the catalog / cached list. Use it for models the provider serves but the gateway does not know yet.',
   'detail.removeModel': 'Remove manual model',
+  'detail.setAsDefault': 'Set as test / warmup model',
+  'detail.probeModelCurrent': 'Current test / warmup model: {0}',
+  'detail.probeModelUnset': 'No test / warmup model pinned (automatic).',
+  'detail.probeModelSaved': 'Test / warmup model set to {0}',
 }
 
 export const zh: Record<string, string> = {
+  'detail.setAsDefault': '设为测试 / 预热模型',
+  'detail.probeModelCurrent': '当前测试 / 预热模型：{0}',
+  'detail.probeModelUnset': '未指定测试 / 预热模型（自动）。',
+  'detail.probeModelSaved': '测试 / 预热模型已设为 {0}',
   'detail.addModel': '添加',
   'detail.addModelPlaceholder': '模型 ID，例如 glm-5.4',
   'detail.addModelHint': '手动添加的模型会与目录 / 缓存列表一起用于此账号的路由。适用于上游已支持但网关尚未收录的模型。',

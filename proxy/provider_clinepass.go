@@ -21,7 +21,7 @@ func init() {
 		chatFromClaude: callUpstreamClinepassFromClaude,
 		chatFromOpenAI: callUpstreamClinepassFromOpenAI,
 		listModels:     listModelsClinepass,
-		fetchUsage:     nil, // ClinePass exposes no usage endpoint yet
+		fetchUsage:     clinepass.FetchUsage,
 	})
 }
 

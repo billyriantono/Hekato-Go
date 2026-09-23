@@ -489,6 +489,26 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
             {spin('test') ?? <LuFlaskConical />} {t('accounts.test')}
           </Button>
         </div>
+        <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+          <span>
+            {a.probeModel ? t('detail.probeModelCurrent', a.probeModel) : t('detail.probeModelUnset')}
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!!busy || !selectedTestModel || selectedTestModel === (a.probeModel ?? '')}
+            onClick={() =>
+              run('probe', async () => {
+                await put(`/accounts/${a.id}`, { probeModel: selectedTestModel })
+                setProbeModel(selectedTestModel)
+                toast.success(t('detail.probeModelSaved', selectedTestModel))
+                invalidate()
+              })
+            }
+          >
+            {spin('probe')} {t('detail.setAsDefault')}
+          </Button>
+        </div>
         {testResult && (
           <Alert variant={testResult.ok ? 'default' : 'destructive'}>
             <AlertTitle>
