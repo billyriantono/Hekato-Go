@@ -894,7 +894,7 @@ function ClinepassImportForm({ onDone }: FormProps) {
 
 // ---- OpenCode Zen / Go token import ----
 
-function OpenCodeTokenImportForm({ provider, route, successKey, tokenLabel, hintKey, optional, onDone }: FormProps & {
+function OpenCodeTokenImportForm({ route, successKey, tokenLabel, hintKey, optional, onDone }: FormProps & {
   provider: string; route: string; successKey: string; tokenLabel: string; hintKey: string; optional?: boolean
 }) {
   const { t } = useI18n()

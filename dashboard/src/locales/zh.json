@@ -314,6 +314,7 @@
   "opencodego.importHint": "必填：OpenCode Go 订阅 API 密钥。每行一个密钥可批量导入。",
   "opencodego.importSuccess": "OpenCode Go 账号已添加",
   "modal.enterpriseSsoDesc": "通过 Kiro 托管 SSO 添加 Microsoft 365 / Entra ID（Azure AD）租户账号",
+  "modal.enterpriseSsoTitle": "Microsoft 365 / Entra ID（Kiro SSO）",
   "kirosso.hostNote": "在运行代理的本机打开登录链接可全自动完成。浏览器在其他机器上也可以：当 localhost 跳转无法打开时，把完整 URL 粘贴到下一步的中继输入框即可。",
   "kirosso.openInstruction": "已打开浏览器标签页。请使用 Microsoft 365 工作/学校账号登录，然后返回此处。建议使用访客/无痕窗口以避免缓存会话干扰。",
   "kirosso.relayLabel": "浏览器在其他机器上？",
@@ -625,5 +626,12 @@
   "table.next": "下一页",
   "models.searchPlaceholder": "搜索模型…",
   "models.useCustom": "使用 \"{0}\"",
-  "models.moreResults": "还有 {0} 个，继续输入以缩小范围"
+  "models.moreResults": "还有 {0} 个，继续输入以缩小范围",
+  "modal.commandCodeProvider": "Command Code (commandcode.ai)",
+  "modal.commandCodeProviderDesc": "使用 CLI API 密钥（以 user_ 开头）添加 Command Code 账号",
+  "modal.commandCodeImportTitle": "导入 Command Code API 密钥",
+  "modal.commandCodeImportDesc": "粘贴 ~/.commandcode/auth.json 或 commandcode.ai/studio 中的 Command Code CLI API 密钥。",
+  "commandcode.tokensLabel": "API 密钥",
+  "commandcode.importHint": "必填：Command Code API 密钥（以 user_ 开头）。批量导入时每行一个。",
+  "commandcode.importSuccess": "已添加 Command Code 账号"
 }
