@@ -7,7 +7,7 @@ type ResponsesRequest struct {
 	Input              json.RawMessage   `json:"input"`
 	Instructions       string            `json:"instructions,omitempty"`
 	Stream             bool              `json:"stream,omitempty"`
-	Tools              []OpenAITool      `json:"tools,omitempty"`
+	Tools              []ResponsesTool   `json:"tools,omitempty"`
 	ToolChoice         json.RawMessage   `json:"tool_choice,omitempty"`
 	PreviousResponseID string            `json:"previous_response_id,omitempty"`
 	Store              *bool             `json:"store,omitempty"`
@@ -28,6 +28,72 @@ type ResponsesRequest struct {
 	// Codex. A nil pointer omits the field; a false pointer forces sequential
 	// tool use even when tools are present.
 	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
+}
+
+// ResponsesTool is a tool in Responses-API wire shape: flat, with name /
+// description / parameters at the top level (Chat Completions nests them
+// under "function"). Codex rejects the nested form with
+// "Missing required parameter: 'tools[0].name'".
+type ResponsesTool struct {
+	Type        string      `json:"type"`
+	Name        string      `json:"name,omitempty"`
+	Description string      `json:"description,omitempty"`
+	Parameters  interface{} `json:"parameters,omitempty"`
+	Strict      *bool       `json:"strict,omitempty"`
+}
+
+// UnmarshalJSON accepts both the flat Responses shape and the nested Chat
+// Completions shape, so a client that sends either to /v1/responses works.
+func (t *ResponsesTool) UnmarshalJSON(b []byte) error {
+	type flat ResponsesTool
+	var f flat
+	if err := json.Unmarshal(b, &f); err != nil {
+		return err
+	}
+	var nested struct {
+		Function *struct {
+			Name        string      `json:"name"`
+			Description string      `json:"description"`
+			Parameters  interface{} `json:"parameters"`
+			Strict      *bool       `json:"strict"`
+		} `json:"function"`
+	}
+	if f.Name == "" && json.Unmarshal(b, &nested) == nil && nested.Function != nil {
+		f.Name, f.Description, f.Parameters, f.Strict = nested.Function.Name, nested.Function.Description, nested.Function.Parameters, nested.Function.Strict
+	}
+	*t = ResponsesTool(f)
+	return nil
+}
+
+// ToolsFromOpenAI converts Chat Completions tools to the flat Responses shape.
+func ToolsFromOpenAI(in []OpenAITool) []ResponsesTool {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]ResponsesTool, 0, len(in))
+	for _, t := range in {
+		typ := t.Type
+		if typ == "" {
+			typ = "function"
+		}
+		out = append(out, ResponsesTool{Type: typ, Name: t.Function.Name, Description: t.Function.Description, Parameters: t.Function.Parameters})
+	}
+	return out
+}
+
+// ToolsToOpenAI converts flat Responses tools to the nested Chat Completions shape.
+func ToolsToOpenAI(in []ResponsesTool) []OpenAITool {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]OpenAITool, 0, len(in))
+	for _, t := range in {
+		var ot OpenAITool
+		ot.Type = "function"
+		ot.Function.Name, ot.Function.Description, ot.Function.Parameters = t.Name, t.Description, t.Parameters
+		out = append(out, ot)
+	}
+	return out
 }
 
 // ResponsesReasoning is the reasoning-config block. `effort` is one of

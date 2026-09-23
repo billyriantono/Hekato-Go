@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hekato-go/config"
+	"hekato-go/providers"
 	"io"
 	"net/http"
 	"strings"
@@ -94,7 +95,7 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 		Model:    req.Model,
 		Messages: finalMessages,
 		Stream:   req.Stream,
-		Tools:    req.Tools,
+		Tools:    providers.ToolsToOpenAI(req.Tools),
 	}
 	if req.Temperature != nil {
 		openaiReq.Temperature = *req.Temperature

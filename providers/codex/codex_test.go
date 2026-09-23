@@ -322,7 +322,7 @@ func TestSanitizeCodexRequest(t *testing.T) {
 		Temperature:        &temp,
 		MaxOutputTokens:    &maxTok,
 		PreviousResponseID: "resp_abc",
-		Tools:              []providers.OpenAITool{{Type: "function"}},
+		Tools:              []providers.ResponsesTool{{Type: "function", Name: "t"}},
 	}
 
 	got := sanitizeCodexRequest(in)

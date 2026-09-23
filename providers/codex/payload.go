@@ -97,7 +97,7 @@ func buildCodexPayload(req *providers.OpenAIRequest, opts reasoningOptions) *pro
 		Model:        resolveCodexModel(req.Model),
 		Input:        input,
 		Instructions: instructions,
-		Tools:        req.Tools,
+		Tools:        providers.ToolsFromOpenAI(req.Tools),
 		Include:      []string{},
 	}
 
