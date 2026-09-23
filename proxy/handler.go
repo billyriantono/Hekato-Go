@@ -386,9 +386,10 @@ func NewHandler() *Handler {
 		close(h.logSaverDone)
 	}
 	// 启动后台刷新
-	// Seed static model catalogs before serving so the router has candidates
-	// from the first request; live lists (Kiro, Codex, Grok) arrive from the
-	// background refresh a few seconds later.
+	// Routing needs per-account model lists from the first request: restore
+	// the last known live lists from storage, overlay static catalogs, then
+	// fetch fresh lists in the background immediately.
+	h.pool.RestoreModelLists(config.Blobs())
 	h.seedStaticModelLists()
 	go h.backgroundRefresh()
 	// 启动后台统计保存 (每30秒保存一次)
@@ -469,9 +470,12 @@ func (h *Handler) seedStaticModelLists() {
 
 // backgroundRefresh 后台定时刷新账户信息
 func (h *Handler) backgroundRefresh() {
-	// 启动时延迟 10 秒后执行一次
-	time.Sleep(10 * time.Second)
+	// Fetch live model lists right away (the pool was restored from the last
+	// known lists + static catalogs, so routing works meanwhile); give the
+	// upstreams a short grace period before the first full warmup.
 	h.refreshModelsCache()
+	h.pool.PersistModelLists(config.Blobs())
+	time.Sleep(10 * time.Second)
 	h.refreshAllAccounts()
 
 	// Timer is re-armed every cycle so a changed interval applies without restart.
@@ -480,6 +484,7 @@ func (h *Handler) backgroundRefresh() {
 		select {
 		case <-timer.C:
 			h.refreshModelsCache()
+			h.pool.PersistModelLists(config.Blobs())
 			h.refreshAllAccounts()
 		case <-h.stopRefresh:
 			timer.Stop()

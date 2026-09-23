@@ -3,7 +3,10 @@
 package pool
 
 import (
+	"encoding/json"
 	"hekato-go/config"
+	"hekato-go/logger"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -154,6 +157,79 @@ func (p *AccountPool) SetModelList(accountID string, modelIDs []string) {
 	p.modelLists[accountID] = set
 	delete(p.modelDenies, accountID)
 	p.mu.Unlock()
+}
+
+// modelListsBlobKey stores the last known per-account model lists so a
+// restart routes correctly before the first live fetch completes.
+const modelListsBlobKey = "model-lists"
+
+// PersistModelLists saves the current per-account model lists (no-op when
+// store is nil or nothing is cached).
+func (p *AccountPool) PersistModelLists(store config.BlobStore) {
+	if store == nil {
+		return
+	}
+	p.mu.RLock()
+	out := make(map[string][]string, len(p.modelLists))
+	for id, set := range p.modelLists {
+		if len(set) == 0 {
+			continue
+		}
+		ids := make([]string, 0, len(set))
+		for m := range set {
+			ids = append(ids, m)
+		}
+		sort.Strings(ids)
+		out[id] = ids
+	}
+	p.mu.RUnlock()
+	if len(out) == 0 {
+		return
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		return
+	}
+	if err := store.SaveBlob(modelListsBlobKey, string(data)); err != nil {
+		logger.Warnf("[Pool] persist model lists: %v", err)
+	}
+}
+
+// RestoreModelLists loads persisted lists for accounts that still exist and
+// have no list yet.
+func (p *AccountPool) RestoreModelLists(store config.BlobStore) {
+	if store == nil {
+		return
+	}
+	data, err := store.LoadBlob(modelListsBlobKey)
+	if err != nil || data == "" {
+		return
+	}
+	var saved map[string][]string
+	if json.Unmarshal([]byte(data), &saved) != nil {
+		return
+	}
+	known := map[string]bool{}
+	for _, a := range config.GetAccounts() {
+		known[a.ID] = true
+	}
+	restored := 0
+	for id, ids := range saved {
+		if !known[id] || len(ids) == 0 {
+			continue
+		}
+		p.mu.RLock()
+		_, has := p.modelLists[id]
+		p.mu.RUnlock()
+		if has {
+			continue
+		}
+		p.SetModelList(id, ids)
+		restored++
+	}
+	if restored > 0 {
+		logger.Infof("[Pool] restored model lists for %d accounts", restored)
+	}
 }
 
 // DenyModel records that upstream rejected model for this account (e.g.
