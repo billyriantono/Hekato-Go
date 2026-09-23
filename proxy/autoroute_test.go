@@ -5,6 +5,7 @@ import (
 	"hekato-go/config"
 	accountpool "hekato-go/pool"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -257,5 +258,19 @@ func TestNormalizeCompatAccount(t *testing.T) {
 	}
 	if !hasCredential(&config.Account{CompatAPIKey: "k"}) || hasCredential(&config.Account{}) {
 		t.Fatal("hasCredential wrong")
+	}
+}
+
+func TestSystemOneRouteNeedsZenAccount(t *testing.T) {
+	mustInitConfig(t)
+	h := &Handler{pool: accountpool.GetPool(), autoRouter: newAutoRouter(), metrics: newMetricsCollector()}
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/v1/systemone", strings.NewReader(`{"model":"jev-1.13-free","state":"x","questions":{}}`))
+	h.handleSystemOne(withClientLogMeta(rec, r), r)
+	if rec.Code != 503 || !strings.Contains(rec.Body.String(), "No available OpenCode Zen accounts") {
+		t.Fatalf("want 503 without zen accounts, got %d %s", rec.Code, rec.Body.String())
+	}
+	if h.pickProviderAccount(config.ProviderOpenCodeZen, nil) != nil {
+		t.Fatal("no zen accounts configured")
 	}
 }

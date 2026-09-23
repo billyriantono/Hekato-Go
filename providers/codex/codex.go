@@ -295,7 +295,7 @@ func consumeCodexSSE(r io.Reader, callback *providers.StreamCallback) error {
 				_ = json.Unmarshal([]byte(item.Arguments), &input)
 				callback.OnToolUse(providers.ToolUse{ToolUseID: item.CallID, Name: item.Name, Input: input})
 			}
-		case "response.completed", "response.done":
+		case "response.completed", "response.done", "response.incomplete":
 			var r struct {
 				Response struct {
 					Usage providers.ResponsesUsage `json:"usage"`

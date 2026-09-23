@@ -22,6 +22,7 @@ const (
 	zenChatURL       = "https://opencode.ai/zen/v1/chat/completions"
 	zenResponsesURL  = "https://opencode.ai/zen/v1/responses"
 	zenModelsURL     = "https://opencode.ai/zen/v1/models"
+	zenSystemOneURL  = "https://opencode.ai/zen/v1/systemone"
 	zenUsageURL      = "https://opencode.ai/zen/v1/usage"
 	opencodeUA       = "opencode/1.18.32"
 	anthropicVersion = "2023-06-01"
@@ -178,6 +179,12 @@ func usesResponsesTransport(model string) bool {
 func callResponsesForChat(account *config.Account, req *providers.OpenAIRequest, hadCallerTools bool, callback *providers.StreamCallback) error {
 	rr := codex.ConvertChatToResponses(req)
 	rr.Stream = true
+	// muse-spark reasons at effort "high" and max_output_tokens covers the
+	// hidden reasoning too: an 80-token cap came back empty (77 reasoning
+	// tokens, status incomplete). Drop small caps; Zen also rejects < 16.
+	if rr.MaxOutputTokens != nil && *rr.MaxOutputTokens < 1024 {
+		rr.MaxOutputTokens = nil
+	}
 	rr.Tools = InjectFingerprintResponsesTools(rr.Tools)
 	body, err := marshalResponsesRequest(rr, !hadCallerTools)
 	if err != nil {
@@ -379,4 +386,29 @@ func truncate(s string) string {
 		return s
 	}
 	return s[:max] + "..."
+}
+
+// CallSystemOne forwards a Jev "System One" decision request verbatim
+// (model + state + questions) and returns the upstream status and JSON body.
+// Jev is not a chat model, so it bypasses the chat/Responses translators.
+func CallSystemOne(account *config.Account, body []byte) (int, []byte, error) {
+	if account == nil {
+		return 0, nil, fmt.Errorf("opencodezen: nil account")
+	}
+	httpReq, err := http.NewRequest(http.MethodPost, zenSystemOneURL, bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, err
+	}
+	setHeaders(httpReq, account)
+	httpReq.Header.Set("Accept", "application/json")
+	resp, err := providers.GetRestClientForAccount(account).Do(httpReq)
+	if err != nil {
+		return 0, nil, fmt.Errorf("opencodezen systemone upstream: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return resp.StatusCode, raw, providers.Errorf(resp.StatusCode, "opencodezen systemone HTTP %d: %s", resp.StatusCode, truncate(string(raw)))
+	}
+	return resp.StatusCode, raw, nil
 }

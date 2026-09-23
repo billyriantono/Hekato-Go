@@ -13,6 +13,7 @@ import (
 	"hekato-go/logger"
 	"hekato-go/pool"
 	"hekato-go/providers"
+	"hekato-go/providers/opencodezen"
 	"hekato-go/relay"
 	"io"
 	"math"
@@ -624,6 +625,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		defer release()
 		h.handleOpenAIResponses(w, ar)
+	case path == "/v1/systemone" || path == "/zen/v1/systemone":
+		w = withClientLogMeta(w, r)
+		ar, release := h.authenticateForOpenAI(w, r)
+		if ar == nil {
+			return
+		}
+		defer release()
+		h.handleSystemOne(w, ar)
 	case path == "/v1/usage":
 		h.handleKeyUsage(w, r)
 	case path == "/v1/usage/logs":
@@ -4788,4 +4797,97 @@ func normalizeCompatAccount(a *config.Account) string {
 		a.Provider = string(kind)
 	}
 	return ""
+}
+
+// handleSystemOne proxies Jev "System One" decision requests
+// ({model, state, questions}) to an OpenCode Zen account. Jev is not a chat
+// model, so it has its own passthrough instead of the chat translators.
+func (h *Handler) handleSystemOne(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method Not Allowed", 405)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		h.sendOpenAIError(w, 400, "invalid_request_error", "Failed to read request body")
+		return
+	}
+	var req struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(body, &req) != nil {
+		h.sendOpenAIError(w, 400, "invalid_request_error", "Invalid JSON")
+		return
+	}
+	if req.Model == "" {
+		req.Model = "jev-1.13-free"
+	}
+	if !keyAllowsModel(apiKeyIDFromContext(r.Context()), req.Model) {
+		h.sendOpenAIError(w, 403, "permission_error", "model "+req.Model+" is not enabled for this API key")
+		return
+	}
+	start := time.Now()
+	excluded := map[string]bool{}
+	var lastErr error
+	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
+		account := h.pickProviderAccount(config.ProviderOpenCodeZen, excluded)
+		if account == nil {
+			break
+		}
+		status, resp, err := opencodezen.CallSystemOne(account, body)
+		if err != nil {
+			lastErr = err
+			excluded[account.ID] = true
+			h.handleModelFailure(account, req.Model, err)
+			if status == 400 || status == 422 {
+				// Client-side problem (bad questions/state): no point rotating.
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				w.WriteHeader(status)
+				w.Write(resp)
+				h.recordFailureWithDetails(w, "systemone", req.Model, account.ID, err)
+				return
+			}
+			continue
+		}
+		var usage struct {
+			Usage struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+		}
+		_ = json.Unmarshal(resp, &usage)
+		tokens := usage.Usage.InputTokens + usage.Usage.OutputTokens
+		h.recordSuccessForApiKey(apiKeyIDFromContext(r.Context()), usage.Usage.InputTokens, usage.Usage.OutputTokens, 0)
+		h.pool.RecordSuccess(account.ID)
+		h.pool.UpdateStats(account.ID, tokens, 0)
+		h.recordSuccessLog(w, "systemone", req.Model, account.ID, tokens, 0, time.Since(start).Milliseconds(), requestPerf{})
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Write(resp)
+		return
+	}
+	if lastErr == nil {
+		h.sendOpenAIError(w, 503, "server_error", "No available OpenCode Zen accounts")
+		return
+	}
+	h.recordFailureWithDetails(w, "systemone", req.Model, "", lastErr)
+	h.sendOpenAIError(w, 502, "server_error", lastErr.Error())
+}
+
+// pickProviderAccount returns a usable account of the given provider,
+// rotating by request count so several accounts share the load.
+func (h *Handler) pickProviderAccount(kind config.AccountProvider, excluded map[string]bool) *config.Account {
+	var best *config.Account
+	for _, a := range h.pool.GetAllAccounts() {
+		a := a
+		if excluded[a.ID] || !a.Enabled || !hasCredential(&a) || (a.BanStatus != "" && a.BanStatus != "ACTIVE") {
+			continue
+		}
+		if p, err := config.ProviderForAccount(&a); err != nil || p != kind {
+			continue
+		}
+		if best == nil || a.RequestCount < best.RequestCount {
+			best = &a
+		}
+	}
+	return best
 }
