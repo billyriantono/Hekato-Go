@@ -48,6 +48,9 @@ type RequestLog struct {
 	TPS          float64 `json:"tps"`          // Output tokens per second (0 when unmeasurable)
 	UserAgent    string  `json:"userAgent"`    // Client User-Agent header (truncated)
 	ClientIP     string  `json:"clientIp"`     // Client IP (honors X-Forwarded-For + X-Real-IP)
+	// RequestedModel is what the client asked for when it differs from Model
+	// (currently "auto"); the live routing map uses it to show auto traffic only.
+	RequestedModel string `json:"requestedModel,omitempty"`
 }
 
 // logUserAgentMaxLen is the truncation ceiling for the User-Agent persisted on
@@ -99,6 +102,30 @@ type logMetaWriter struct {
 	http.ResponseWriter
 	userAgent string
 	clientIP  string
+	requested string // client-requested model when it was rewritten (e.g. "auto")
+}
+
+// findLogMeta unwraps to the logMetaWriter bound by withClientLogMeta (nil if none).
+func findLogMeta(w http.ResponseWriter) *logMetaWriter {
+	for w != nil {
+		if m, ok := w.(*logMetaWriter); ok {
+			return m
+		}
+		u, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return nil
+		}
+		w = u.Unwrap()
+	}
+	return nil
+}
+
+// markRequestedModel records the client-requested model on the log metadata
+// so log rows can tell "auto" traffic from explicit model requests.
+func markRequestedModel(w http.ResponseWriter, model string) {
+	if m := findLogMeta(w); m != nil {
+		m.requested = model
+	}
 }
 
 func (m *logMetaWriter) Flush() {
@@ -118,15 +145,8 @@ func withClientLogMeta(w http.ResponseWriter, r *http.Request) http.ResponseWrit
 // clientLogMeta extracts the metadata bound by withClientLogMeta ("" when the
 // writer was not wrapped, e.g. tests or internal calls).
 func clientLogMeta(w http.ResponseWriter) (userAgent, clientIP string) {
-	for w != nil {
-		if m, ok := w.(*logMetaWriter); ok {
-			return m.userAgent, m.clientIP
-		}
-		u, ok := w.(interface{ Unwrap() http.ResponseWriter })
-		if !ok {
-			return "", ""
-		}
-		w = u.Unwrap()
+	if m := findLogMeta(w); m != nil {
+		return m.userAgent, m.clientIP
 	}
 	return "", ""
 }
@@ -715,6 +735,19 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 		buildModelInfo("gpt-4o", "kiro-proxy", true),
 		buildModelInfo("gpt-4", "kiro-proxy", true),
 	)
+	// A key with a model allowlist only sees what it may call (thinking
+	// variants follow their base ID).
+	if entry, err := h.authenticate(r); err == nil && entry != nil && len(entry.AllowedModels) > 0 {
+		kept := models[:0]
+		for _, m := range models {
+			id, _ := m["id"].(string)
+			base, _ := ParseModelAndThinking(id, thinkingSuffix)
+			if entry.AllowsModel(base) {
+				kept = append(kept, m)
+			}
+		}
+		models = kept
+	}
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -1065,8 +1098,13 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 	// Stream or non-stream. Provider-specific conversion happens after account
 	// selection inside the upstream routing layer.
 	apiKeyID := apiKeyIDFromContext(r.Context())
+	if !keyAllowsModel(apiKeyID, req.Model) {
+		h.sendClaudeError(w, 403, "permission_error", "model "+req.Model+" is not enabled for this API key")
+		return
+	}
 	affinityKey := claudeAffinityKey(&req)
 	if isAutoModel(req.Model) {
+		markRequestedModel(w, req.Model)
 		req.Model = h.resolveAutoModel(w, "claude", req.Model, claudeRouteSignals(&req, estimatedInputTokens, thinking), &affinityKey, capClaudeChat)
 		effectiveReq.Model = req.Model
 		cacheProfile = h.promptCache.BuildClaudeProfile(effectiveReq, estimatedInputTokens)
@@ -1667,20 +1705,25 @@ func (p *perfTracker) finalise() requestPerf {
 // inline RequestLog{} literals scattered across handlers from drifting apart.
 func (h *Handler) newLogEntry(w http.ResponseWriter, endpoint, model, accountID, status string, tokens, outputTokens int, credits float64, durationMs, ttftMs int64, tps float64) RequestLog {
 	ua, ip := clientLogMeta(w)
+	requested := ""
+	if m := findLogMeta(w); m != nil {
+		requested = m.requested
+	}
 	return RequestLog{
-		Time:         time.Now().Unix(),
-		Endpoint:     endpoint,
-		Model:        model,
-		AccountID:    accountID,
-		Status:       status,
-		Tokens:       tokens,
-		OutputTokens: outputTokens,
-		Credits:      credits,
-		Duration:     durationMs,
-		TTFTMs:       ttftMs,
-		TPS:          tps,
-		UserAgent:    ua,
-		ClientIP:     ip,
+		RequestedModel: requested,
+		Time:           time.Now().Unix(),
+		Endpoint:       endpoint,
+		Model:          model,
+		AccountID:      accountID,
+		Status:         status,
+		Tokens:         tokens,
+		OutputTokens:   outputTokens,
+		Credits:        credits,
+		Duration:       durationMs,
+		TTFTMs:         ttftMs,
+		TPS:            tps,
+		UserAgent:      ua,
+		ClientIP:       ip,
 	}
 }
 
@@ -2032,8 +2075,13 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	estimatedInputTokens := estimateOpenAIRequestInputTokens(&req)
 
 	apiKeyID := apiKeyIDFromContext(r.Context())
+	if !keyAllowsModel(apiKeyID, req.Model) {
+		h.sendOpenAIError(w, 403, "permission_error", "model "+req.Model+" is not enabled for this API key")
+		return
+	}
 	affinityKey := openAIAffinityKey(&req)
 	if isAutoModel(req.Model) {
+		markRequestedModel(w, req.Model)
 		req.Model = h.resolveAutoModel(w, "openai", req.Model, openAIRouteSignals(&req, estimatedInputTokens, thinking), &affinityKey, capOpenAIChat)
 	}
 	if req.Stream {
@@ -4597,4 +4645,13 @@ func clampInt(v, min, max int) int {
 		return max
 	}
 	return v
+}
+
+// keyAllowsModel applies the API key's model allowlist. Unknown / absent keys
+// (auth disabled) are unrestricted.
+func keyAllowsModel(apiKeyID, model string) bool {
+	if apiKeyID == "" {
+		return true
+	}
+	return config.GetApiKeyEntry(apiKeyID).AllowsModel(model)
 }

@@ -148,29 +148,33 @@ func scanAccount(rows *sql.Rows) (Account, error) {
 var apiKeyColumns = []string{
 	"id", "name", "key", "enabled", "migrated", "created_at", "last_used_at",
 	"token_limit", "credit_limit", "tokens_used", "credits_used", "requests_count",
-	"rpm_limit", "concurrency_limit",
+	"rpm_limit", "concurrency_limit", "allowed_models",
 }
 
 func apiKeyValues(k *ApiKeyEntry) []any {
 	return []any{
 		k.ID, k.Name, k.Key, boolToInt(k.Enabled), boolToInt(k.Migrated), k.CreatedAt, k.LastUsedAt,
 		k.TokenLimit, k.CreditLimit, k.TokensUsed, k.CreditsUsed, k.RequestsCount,
-		k.RPMLimit, k.ConcurrencyLimit,
+		k.RPMLimit, k.ConcurrencyLimit, strings.Join(k.AllowedModels, "\n"),
 	}
 }
 
 func scanApiKey(rows *sql.Rows) (ApiKeyEntry, error) {
 	var k ApiKeyEntry
 	var enabled, migrated int
+	var allowed sql.NullString
 	if err := rows.Scan(
 		&k.ID, &k.Name, &k.Key, &enabled, &migrated, &k.CreatedAt, &k.LastUsedAt,
 		&k.TokenLimit, &k.CreditLimit, &k.TokensUsed, &k.CreditsUsed, &k.RequestsCount,
-		&k.RPMLimit, &k.ConcurrencyLimit,
+		&k.RPMLimit, &k.ConcurrencyLimit, &allowed,
 	); err != nil {
 		return ApiKeyEntry{}, err
 	}
 	k.Enabled = enabled != 0
 	k.Migrated = migrated != 0
+	if allowed.String != "" {
+		k.AllowedModels = strings.Split(allowed.String, "\n")
+	}
 	return k, nil
 }
 
@@ -209,6 +213,7 @@ func (s *sqlStore) migrate() error {
 			token_limit BIGINT, credit_limit DOUBLE PRECISION,
 			tokens_used BIGINT, credits_used DOUBLE PRECISION, requests_count BIGINT,
 			rpm_limit BIGINT DEFAULT 0, concurrency_limit BIGINT DEFAULT 0,
+			allowed_models TEXT DEFAULT '',
 			position BIGINT
 		)`,
 		`CREATE TABLE IF NOT EXISTS runtime_blobs (
@@ -251,6 +256,9 @@ func (s *sqlStore) migrate() error {
 		if err := addColumn("api_keys", col, "BIGINT DEFAULT 0"); err != nil {
 			return err
 		}
+	}
+	if err := addColumn("api_keys", "allowed_models", "TEXT DEFAULT ''"); err != nil {
+		return err
 	}
 	for col, typ := range map[string]string{"warmup_status": "TEXT DEFAULT ''", "warmup_error": "TEXT DEFAULT ''", "last_warmup": "BIGINT DEFAULT 0", "probe_model": "TEXT DEFAULT ''", "extra_models": "TEXT DEFAULT ''"} {
 		if err := addColumn("accounts", col, typ); err != nil {

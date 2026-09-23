@@ -165,6 +165,10 @@ type ApiKeyEntry struct {
 	// Rate limits (0 = unlimited): max requests per rolling minute, max in-flight requests.
 	RPMLimit         int64 `json:"rpmLimit,omitempty"`
 	ConcurrencyLimit int64 `json:"concurrencyLimit,omitempty"`
+	// AllowedModels restricts which model IDs this key may request (empty =
+	// every model). Entries match case-insensitively; a trailing "*" is a
+	// prefix wildcard ("claude-*"). "auto" allows the virtual auto model.
+	AllowedModels []string `json:"allowedModels,omitempty"`
 
 	// Cumulative usage (never auto-reset)
 	TokensUsed    int64   `json:"tokensUsed,omitempty"`

@@ -28,13 +28,15 @@ type ApiKey = {
   creditLimit?: number
   rpmLimit?: number
   concurrencyLimit?: number
+  allowedModels?: string[]
   tokensUsed: number
   creditsUsed: number
   requestsCount: number
 }
 
-type Form = { name: string; key: string; enabled: boolean; tokenLimit: string; creditLimit: string; rpmLimit: string; concurrencyLimit: string }
-const emptyForm: Form = { name: '', key: '', enabled: true, tokenLimit: '0', creditLimit: '0', rpmLimit: '0', concurrencyLimit: '0' }
+type Form = { name: string; key: string; enabled: boolean; tokenLimit: string; creditLimit: string; rpmLimit: string; concurrencyLimit: string; allowedModels: string }
+const emptyForm: Form = { name: '', key: '', enabled: true, tokenLimit: '0', creditLimit: '0', rpmLimit: '0', concurrencyLimit: '0', allowedModels: '' }
+const splitModels = (s: string) => s.split(/[,\n]/).map((m) => m.trim()).filter(Boolean)
 const toForm = (k: ApiKey): Form => ({
   name: k.name ?? '',
   key: '',
@@ -43,6 +45,7 @@ const toForm = (k: ApiKey): Form => ({
   creditLimit: String(k.creditLimit ?? 0),
   rpmLimit: String(k.rpmLimit ?? 0),
   concurrencyLimit: String(k.concurrencyLimit ?? 0),
+  allowedModels: (k.allowedModels ?? []).join(', '),
 })
 
 const validNumber = (s: string, integer: boolean) => {
@@ -136,6 +139,9 @@ export function ApiKeysPage() {
             </div>
             <div>
               {lim(k.rpmLimit, t('apiKeys.rpm'))} · {lim(k.concurrencyLimit, t('apiKeys.concurrency'))}
+            </div>
+            <div className="font-mono" title={(k.allowedModels ?? []).join(', ')}>
+              {k.allowedModels?.length ? t('apiKeys.modelsAllowed', k.allowedModels.length) + ': ' + k.allowedModels.slice(0, 3).join(', ') + (k.allowedModels.length > 3 ? '…' : '') : t('apiKeys.modelsAll')}
             </div>
           </div>
         )
@@ -339,6 +345,7 @@ function KeyDialog({ initial, onClose, onCreated }: { initial: ApiKey | null; on
         creditLimit: Number(form.creditLimit),
         rpmLimit: Number(form.rpmLimit),
         concurrencyLimit: Number(form.concurrencyLimit),
+        allowedModels: splitModels(form.allowedModels),
       }
       if (initial) return put<{ success: boolean }>(`/api-keys/${initial.id}`, body)
       return post<{ key: string }>('/api-keys', { ...body, key: form.key.trim() || undefined })
@@ -400,6 +407,11 @@ function KeyDialog({ initial, onClose, onCreated }: { initial: ApiKey | null; on
                 <p className={errors[field] ? 'text-xs text-destructive' : 'text-xs text-muted-foreground'}>{errors[field] || t('apiKeys.limitHint')}</p>
               </div>
             ))}
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="k-models">{t('apiKeys.allowedModels')}</Label>
+            <Input id="k-models" value={form.allowedModels} onChange={(e) => set({ allowedModels: e.target.value })} placeholder={t('apiKeys.allowedModelsPlaceholder')} className="font-mono text-xs" />
+            <p className="text-xs text-muted-foreground">{t('apiKeys.allowedModelsHint')}</p>
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose} disabled={saveM.isPending}>

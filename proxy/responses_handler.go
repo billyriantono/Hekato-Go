@@ -110,9 +110,14 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 	estimatedInputTokens := estimateOpenAIRequestInputTokens(openaiReq)
 
 	apiKeyID := apiKeyIDFromContext(r.Context())
+	if !keyAllowsModel(apiKeyID, actualModel) {
+		h.sendOpenAIError(w, 403, "permission_error", "model "+actualModel+" is not enabled for this API key")
+		return
+	}
 	respID := generateResponseID()
 	affinityKey := openAIAffinityKey(openaiReq)
 	if isAutoModel(actualModel) {
+		markRequestedModel(w, actualModel)
 		actualModel = h.resolveAutoModel(w, "responses", actualModel, openAIRouteSignals(openaiReq, estimatedInputTokens, thinking), &affinityKey, capResponses)
 		openaiReq.Model = actualModel
 	}

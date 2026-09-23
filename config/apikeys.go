@@ -232,3 +232,26 @@ func ApiKeyOverLimit(e ApiKeyEntry) (overToken bool, overCredit bool) {
 	}
 	return
 }
+
+// AllowsModel reports whether the key may request model. Thinking-suffix
+// variants are matched on the base ID by the caller. Empty list = allow all.
+func (k *ApiKeyEntry) AllowsModel(model string) bool {
+	if k == nil || len(k.AllowedModels) == 0 {
+		return true
+	}
+	m := strings.ToLower(strings.TrimSpace(model))
+	for _, a := range k.AllowedModels {
+		a = strings.ToLower(strings.TrimSpace(a))
+		switch {
+		case a == "":
+			continue
+		case strings.HasSuffix(a, "*"):
+			if strings.HasPrefix(m, strings.TrimSuffix(a, "*")) {
+				return true
+			}
+		case a == m:
+			return true
+		}
+	}
+	return false
+}

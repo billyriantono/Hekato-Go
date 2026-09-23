@@ -10,6 +10,7 @@ type RequestLog = {
   endpoint: string
   model: string
   status: 'success' | 'error'
+  requestedModel?: string
 }
 
 type RouteNode = {
@@ -26,7 +27,9 @@ const MAX_MODEL_NODES = 8
 
 function aggregate(logs: RequestLog[]) {
   const cutoff = Date.now() / 1000 - WINDOW_SECONDS
-  const recent = logs.filter((log) => log.time >= cutoff)
+  // Only traffic that asked for the virtual "auto" model: the map explains
+  // where the router sent it, explicit model requests are just pass-through.
+  const recent = logs.filter((log) => log.time >= cutoff && log.requestedModel === 'auto')
   const group = (key: (log: RequestLog) => string) => {
     const rows = new Map<string, RouteNode>()
     for (const log of recent) {
