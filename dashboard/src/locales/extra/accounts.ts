@@ -43,9 +43,17 @@ export const en: Record<string, string> = {
   'detail.probeModel': 'Test / warmup model',
   'detail.probeModelDefault': '(automatic: global default, else cheapest advertised)',
   'detail.probeModelHint': 'Used by the Test button and the warmup probe for this account. Pick a cheap model so health checks do not burn credits.',
+  'detail.addModel': 'Add',
+  'detail.addModelPlaceholder': 'model id, e.g. glm-5.4',
+  'detail.addModelHint': 'Manually added models are routed to this account alongside the catalog / cached list. Use it for models the provider serves but the gateway does not know yet.',
+  'detail.removeModel': 'Remove manual model',
 }
 
 export const zh: Record<string, string> = {
+  'detail.addModel': '添加',
+  'detail.addModelPlaceholder': '模型 ID，例如 glm-5.4',
+  'detail.addModelHint': '手动添加的模型会与目录 / 缓存列表一起用于此账号的路由。适用于上游已支持但网关尚未收录的模型。',
+  'detail.removeModel': '移除手动模型',
   'detail.probeModel': '测试 / 预热模型',
   'detail.probeModelDefault': '（自动：全局默认，否则选最便宜的可用模型）',
   'detail.probeModelHint': '此账号的“测试”按钮和预热探测使用该模型。请选择便宜的模型以免消耗额度。',

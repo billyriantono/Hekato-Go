@@ -51,12 +51,16 @@ type codeBuddyModel struct {
 // path answers 404), so this mirrors the IDs its web client offers. Operators
 // can add newer IDs without a rebuild via Settings → Custom model IDs.
 var codeBuddyGlobalModels = []codeBuddyModel{
+	// Anthropic / OpenAI / Google lineup (etteum-pool catalog, 2026-09) plus the
+	// shared CN lineup 9router's intl registry lists. gemini-3.1-flash-lite was
+	// removed: upstream answers "model service info not found" (code 11102).
 	{ID: "claude-opus-4.8", OwnedBy: "anthropic", Image: true},
 	{ID: "claude-opus-4.8-1m", OwnedBy: "anthropic", Image: true},
 	{ID: "claude-opus-4.7", OwnedBy: "anthropic", Image: true},
 	{ID: "claude-opus-4.7-1m", OwnedBy: "anthropic", Image: true},
 	{ID: "claude-opus-4.6", OwnedBy: "anthropic", Image: true},
 	{ID: "claude-sonnet-4.6", OwnedBy: "anthropic", Image: true},
+	{ID: "claude-haiku-4.5", OwnedBy: "anthropic", Image: true},
 	{ID: "gpt-5.5", OwnedBy: "openai", Image: true},
 	{ID: "gpt-5.5-xhigh", OwnedBy: "openai", Image: true},
 	{ID: "gpt-5.4", OwnedBy: "openai", Image: true},
@@ -69,29 +73,48 @@ var codeBuddyGlobalModels = []codeBuddyModel{
 	{ID: "gpt-5.1-codex-mini", OwnedBy: "openai"},
 	{ID: "gemini-3.5-flash", OwnedBy: "google", Image: true},
 	{ID: "gemini-3.1-pro", OwnedBy: "google", Image: true},
-	{ID: "gemini-3.1-flash-lite", OwnedBy: "google", Image: true},
 	{ID: "gemini-3.0-flash", OwnedBy: "google", Image: true},
 	{ID: "gemini-2.5-pro", OwnedBy: "google", Image: true},
 	{ID: "gemini-2.5-flash", OwnedBy: "google", Image: true},
-	{ID: "deepseek-v3-2-volc", OwnedBy: "deepseek"},
+	{ID: "glm-5.2", OwnedBy: "zhipu"},
+	{ID: "glm-5.1", OwnedBy: "zhipu"},
+	{ID: "glm-5.0-turbo", OwnedBy: "zhipu"},
+	{ID: "glm-5v-turbo", OwnedBy: "zhipu", Image: true},
+	{ID: "minimax-m3", OwnedBy: "minimax"},
+	{ID: "minimax-m2.7", OwnedBy: "minimax"},
+	{ID: "kimi-k2.7", OwnedBy: "moonshot"},
+	{ID: "kimi-k2.6", OwnedBy: "moonshot"},
 	{ID: "kimi-k2.5", OwnedBy: "moonshot"},
-	{ID: "enowx-default", OwnedBy: "enowxlabs"},
+	{ID: "hy3-preview", OwnedBy: "tencent"},
+	{ID: "deepseek-v4-pro", OwnedBy: "deepseek"},
+	{ID: "deepseek-v4.1-flash", OwnedBy: "deepseek"},
+	{ID: "deepseek-v3-2-volc", OwnedBy: "deepseek"},
 }
 
 var codeBuddyCNModels = []codeBuddyModel{
-	{ID: "glm-5.2", OwnedBy: "zhipu", Image: true},
-	{ID: "glm-5.1", OwnedBy: "zhipu", Image: true},
+	// Verified 2026-09-23 by probing www.codebuddy.cn: every ID below answers
+	// the chat endpoint; glm-4.x, glm-5.0, hunyuan-image and all Claude / GPT /
+	// Gemini IDs return "service info not found" and were dropped.
+	{ID: "auto", OwnedBy: "enowxlabs"},
+	{ID: "glm-5.3", OwnedBy: "zhipu"},
+	{ID: "glm-5.3-flash", OwnedBy: "zhipu"},
+	{ID: "glm-5.2", OwnedBy: "zhipu"},
+	{ID: "glm-5.1", OwnedBy: "zhipu"},
+	{ID: "glm-5.0-turbo", OwnedBy: "zhipu"},
 	{ID: "glm-5v-turbo", OwnedBy: "zhipu", Image: true},
-	{ID: "minimax-m3", OwnedBy: "minimax", Image: true},
-	{ID: "kimi-k2.7", OwnedBy: "moonshot", Image: true},
-	{ID: "kimi-k2.6", OwnedBy: "moonshot", Image: true},
-	{ID: "hy3", OwnedBy: "tencent", Image: true},
-	{ID: "hy4-preview", OwnedBy: "tencent", Image: true},
-	{ID: "glm-5.3", OwnedBy: "zhipu", Image: true},
-	{ID: "glm-5.3-flash", OwnedBy: "zhipu", Image: true},
-	{ID: "kimi-k3-1", OwnedBy: "moonshot", Image: true},
-	{ID: "deepseek-v4-pro", OwnedBy: "deepseek", Image: true},
-	{ID: "deepseek-v4.1-flash", OwnedBy: "deepseek", Image: true},
+	{ID: "kimi-k3-1", OwnedBy: "moonshot"},
+	{ID: "kimi-k2.7", OwnedBy: "moonshot"},
+	{ID: "kimi-k2.6", OwnedBy: "moonshot"},
+	{ID: "kimi-k2.5", OwnedBy: "moonshot"},
+	{ID: "minimax-m3", OwnedBy: "minimax"},
+	{ID: "minimax-m2.7", OwnedBy: "minimax"},
+	{ID: "deepseek-v4-pro", OwnedBy: "deepseek"},
+	{ID: "deepseek-v4.1-flash", OwnedBy: "deepseek"},
+	{ID: "deepseek-v3-2-volc", OwnedBy: "deepseek"},
+	{ID: "deepseek-r1", OwnedBy: "deepseek"},
+	{ID: "hy4-preview", OwnedBy: "tencent"},
+	{ID: "hy3", OwnedBy: "tencent"},
+	{ID: "hy3-preview", OwnedBy: "tencent"},
 }
 
 func variantForAccount(account *config.Account) codeBuddyVariant {

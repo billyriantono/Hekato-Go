@@ -9,6 +9,7 @@ import (
 	"hekato-go/pool"
 	"hekato-go/providers"
 	"net/http"
+	"strings"
 )
 
 // Local aliases keep provider code compact while config.ProviderForAccount is
@@ -117,7 +118,26 @@ func ListAvailableModels(account *config.Account) ([]ModelInfo, error) {
 	if adapter.listModels == nil {
 		return nil, unsupportedProviderCapability(adapter.kind, "model discovery")
 	}
-	return adapter.listModels(account)
+	models, err := adapter.listModels(account)
+	if err != nil {
+		return nil, err
+	}
+	// Operator-added models for this account (catalog gaps, new releases).
+	if account != nil && len(account.ExtraModels) > 0 {
+		seen := make(map[string]bool, len(models))
+		for _, m := range models {
+			seen[strings.ToLower(m.ModelId)] = true
+		}
+		for _, id := range account.ExtraModels {
+			id = strings.TrimSpace(id)
+			if id == "" || seen[strings.ToLower(id)] {
+				continue
+			}
+			seen[strings.ToLower(id)] = true
+			models = append(models, ModelInfo{ModelId: id, ModelName: id, InputTypes: []string{"text"}})
+		}
+	}
+	return models, nil
 }
 
 // RefreshAccountInfo dispatches usage refresh through the provider adapter.

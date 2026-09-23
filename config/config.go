@@ -76,6 +76,9 @@ type Account struct {
 	// ProbeModel is the model used for this account's Test button and warmup
 	// probe ("" = global default test model, else a cheap advertised model).
 	ProbeModel string `json:"probeModel,omitempty"`
+	// ExtraModels are operator-added model IDs for this account, merged into the
+	// provider's advertised list (for models a catalog does not know yet).
+	ExtraModels []string `json:"extraModels,omitempty"`
 
 	// Upstream Overages state (mirrored from AWS Q `setUserPreference` / `getUsageLimits`).
 	// OverageStatus is the only switch that decides whether to keep dispatching once UsageLimit is reached.

@@ -891,6 +891,7 @@ func (h *Handler) apiRefreshAccountModels(w http.ResponseWriter, r *http.Request
 		account.ExpiresAt = latest.ExpiresAt
 		account.ProfileArn = latest.ProfileArn
 	}
+	h.pool.ClearModelDenies(id) // operator asked for a fresh view: forget learned rejections
 	if err := h.fetchAndCacheAccountModels(account); err != nil {
 		w.WriteHeader(500)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -2789,6 +2790,7 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 			"machineId":         a.MachineId,
 			"weight":            a.Weight,
 			"probeModel":        a.ProbeModel,
+			"extraModels":       a.ExtraModels,
 			"overageStatus":     a.OverageStatus,
 			"overageCapability": a.OverageCapability,
 			"overageCap":        a.OverageCap,
@@ -2906,6 +2908,14 @@ func (h *Handler) apiUpdateAccount(w http.ResponseWriter, r *http.Request, id st
 	}
 	if v, ok := updates["probeModel"].(string); ok {
 		existing.ProbeModel = strings.TrimSpace(v)
+	}
+	if v, ok := updates["extraModels"].([]interface{}); ok {
+		existing.ExtraModels = existing.ExtraModels[:0:0]
+		for _, item := range v {
+			if id, ok := item.(string); ok && strings.TrimSpace(id) != "" {
+				existing.ExtraModels = append(existing.ExtraModels, strings.TrimSpace(id))
+			}
+		}
 	}
 	if v, ok := updates["proxyURL"].(string); ok {
 		if v != "" && !strings.HasPrefix(v, "http://") && !strings.HasPrefix(v, "https://") && !strings.HasPrefix(v, "socks5://") && !strings.HasPrefix(v, "socks5h://") {

@@ -6,6 +6,7 @@ export type Account = {
   nickname: string
   authMethod: string
   probeModel?: string
+  extraModels?: string[]
   provider: string
   region: string
   enabled: boolean

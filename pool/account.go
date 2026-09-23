@@ -147,7 +147,9 @@ func (p *AccountPool) GetNextExcluding(excluded map[string]bool) *config.Account
 }
 
 // SetModelList 缓存账号支持的模型集合（由 handler 在刷新后调用）
-// A fresh list also clears models learned as unsupported for the account.
+// Learned rejections (DenyModel) survive periodic refreshes so a static
+// catalog entry upstream no longer serves is not retried every cycle; an
+// operator-triggered refresh clears them via ClearModelDenies.
 func (p *AccountPool) SetModelList(accountID string, modelIDs []string) {
 	set := make(map[string]bool, len(modelIDs))
 	for _, id := range modelIDs {
@@ -155,6 +157,15 @@ func (p *AccountPool) SetModelList(accountID string, modelIDs []string) {
 	}
 	p.mu.Lock()
 	p.modelLists[accountID] = set
+	if len(modelIDs) == 0 {
+		delete(p.modelDenies, accountID)
+	}
+	p.mu.Unlock()
+}
+
+// ClearModelDenies forgets models learned as unsupported for the account.
+func (p *AccountPool) ClearModelDenies(accountID string) {
+	p.mu.Lock()
 	delete(p.modelDenies, accountID)
 	p.mu.Unlock()
 }

@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { LuCloudDownload, LuFlame, LuFlaskConical, LuLoader, LuRefreshCw, LuTrash2, LuWand } from 'react-icons/lu'
+import { LuCloudDownload, LuFlame, LuFlaskConical, LuLoader, LuPlus, LuRefreshCw, LuTrash2, LuWand, LuX } from 'react-icons/lu'
 import { toast } from 'sonner'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -85,6 +85,23 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
   const [nickname, setNickname] = useState(a.nickname ?? '')
   const [weight, setWeight] = useState(String(a.weight ?? 0))
   const [probeModel, setProbeModel] = useState(a.probeModel ?? '')
+  const [newModel, setNewModel] = useState('')
+  const extraModels = a.extraModels ?? []
+  const saveExtraModels = (list: string[]) =>
+    run('extra', async () => {
+      await put(`/accounts/${a.id}`, { extraModels: list })
+      await post(`/accounts/${a.id}/models/refresh`).catch(() => undefined)
+      toast.success(t('detail.saved'))
+      invalidate()
+      qc.invalidateQueries({ queryKey: ['account-models', a.id] })
+    })
+  const addModel = () => {
+    const id = newModel.trim()
+    if (!id) return
+    if (extraModels.some((m) => m.toLowerCase() === id.toLowerCase())) return
+    setNewModel('')
+    void saveExtraModels([...extraModels, id])
+  }
   const [machineId, setMachineId] = useState(a.machineId ?? '')
   const [egress, setEgress] = useState<'inherit' | 'proxy' | 'relay'>(a.relayURL ? 'relay' : a.proxyURL ? 'proxy' : 'inherit')
   const [proxyURL, setProxyURL] = useState(a.proxyURL ?? '')
@@ -421,13 +438,39 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
           <p className="text-xs text-muted-foreground">{t('detail.noModels')}</p>
         ) : (
           <div className="flex flex-wrap gap-1">
-            {modelList.map((m) => (
-              <Badge key={m} variant="outline" className="font-mono">
-                {m}
-              </Badge>
-            ))}
+            {modelList.map((m) => {
+              const manual = extraModels.some((x) => x.toLowerCase() === m.toLowerCase())
+              return (
+                <Badge key={m} variant={manual ? 'secondary' : 'outline'} className="font-mono">
+                  {m}
+                  {manual && (
+                    <button
+                      type="button"
+                      className="ml-1 opacity-60 hover:opacity-100"
+                      title={t('detail.removeModel')}
+                      onClick={() => void saveExtraModels(extraModels.filter((x) => x.toLowerCase() !== m.toLowerCase()))}
+                    >
+                      <LuX className="size-3" />
+                    </button>
+                  )}
+                </Badge>
+              )
+            })}
           </div>
         )}
+        <div className="flex gap-2 pt-1">
+          <Input
+            value={newModel}
+            onChange={(e) => setNewModel(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && addModel()}
+            placeholder={t('detail.addModelPlaceholder')}
+            className="flex-1 font-mono text-xs"
+          />
+          <Button size="sm" variant="outline" onClick={addModel} disabled={!!busy || !newModel.trim()}>
+            {spin('extra') ?? <LuPlus />} {t('detail.addModel')}
+          </Button>
+        </div>
+        <p className="text-[11px] text-muted-foreground">{t('detail.addModelHint')}</p>
       </Section>
 
       <Section title={t('accounts.testModalTitle')}>
