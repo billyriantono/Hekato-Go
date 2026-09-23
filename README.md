@@ -17,7 +17,37 @@ Hekato-Go is a multi-provider OpenAI / Anthropic compatible AI gateway: one endp
 
 If this project helps you, a Star would mean a lot.
 
+## Dashboard Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/01-login.png" alt="Admin login" width="48%">
+  &nbsp;
+  <img src="docs/screenshots/02-overview.png" alt="Overview — live traffic, success rate, latency, tokens, accounts and routing map" width="48%">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/03-accounts.png" alt="Accounts — upstream account pool, quotas and warmup status" width="48%">
+  &nbsp;
+  <img src="docs/screenshots/04-api-keys.png" alt="API Keys — gateway keys with per-key limits and usage" width="48%">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/05-request-logs.png" alt="Request Logs — last 500 requests with model, account, tokens, duration, TTFT/TPS" width="48%">
+  &nbsp;
+  <img src="docs/screenshots/06-settings.png" alt="Settings — general, admin password, thinking, endpoints, routing tiers, prompt filter, proxy, retry" width="48%">
+</p>
+
+| Page | What it shows |
+|---|---|
+| **Login** | Password + remember-me; first-run setup screen when no password is configured. |
+| **Overview** | Live traffic tiles, live routing map, throughput / latency / tokens charts (1h / 6h / 24h / 7d), warmup status, account pool health and recent activity. |
+| **Accounts** | Upstream account pool — Kiro, CodeBuddy, Grok, OpenCode Zen, OpenCode Go — with provider, status, weight, request count, tokens, credits and warmup. Import/export and batch add. |
+| **API Keys** | Gateway API keys with per-key token / credit / RPM / concurrency limits and live usage. |
+| **Request Logs** | Last 500 requests — model, account, tokens, credits, latency, TTFT, TPS, user-agent, client IP. |
+| **Settings** | General, admin password, thinking mode, endpoints, auto-routing tiers, prompt filter, outbound proxy, retry policy and danger zone. |
+
 ## Features
+
 
 - Anthropic `/v1/messages` & OpenAI `/v1/chat/completions`
 - Multi-provider upstream routing: Kiro, CodeBuddy Global / China, Grok (xAI), OpenCode Zen (free), OpenCode Go (subscription)
