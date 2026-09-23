@@ -603,5 +603,10 @@
   "common.edit": "编辑",
   "common.yes": "是",
   "common.no": "否",
-  "common.version": "版本"
+  "common.version": "版本",
+  "table.range": "显示 {0}–{1}，共 {2}",
+  "table.pageSize": "每页行数",
+  "table.perPage": "{0} / 页",
+  "table.prev": "上一页",
+  "table.next": "下一页"
 }

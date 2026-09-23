@@ -603,5 +603,10 @@
   "common.edit": "Edit",
   "common.yes": "Yes",
   "common.no": "No",
-  "common.version": "Version"
+  "common.version": "Version",
+  "table.range": "Showing {0}–{1} of {2}",
+  "table.pageSize": "Rows per page",
+  "table.perPage": "{0} / page",
+  "table.prev": "Previous page",
+  "table.next": "Next page"
 }

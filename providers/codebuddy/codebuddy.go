@@ -60,7 +60,6 @@ var codeBuddyGlobalModels = []codeBuddyModel{
 	{ID: "claude-opus-4.7-1m", OwnedBy: "anthropic", Image: true},
 	{ID: "claude-opus-4.6", OwnedBy: "anthropic", Image: true},
 	{ID: "claude-sonnet-4.6", OwnedBy: "anthropic", Image: true},
-	{ID: "claude-haiku-4.5", OwnedBy: "anthropic", Image: true},
 	{ID: "gpt-5.5", OwnedBy: "openai", Image: true},
 	{ID: "gpt-5.5-xhigh", OwnedBy: "openai", Image: true},
 	{ID: "gpt-5.4", OwnedBy: "openai", Image: true},
