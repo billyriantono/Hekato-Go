@@ -2911,7 +2911,10 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 			"banReason":         a.BanReason,
 			"banTime":           a.BanTime,
 			"expiresAt":         a.ExpiresAt,
-			"hasToken":          a.AccessToken != "",
+			"hasToken":          hasCredential(&a),
+			"baseUrl":           a.BaseURL,
+			"compatProtocol":    a.CompatProtocol,
+			"hasCompatKey":      a.CompatAPIKey != "",
 			"machineId":         a.MachineId,
 			"weight":            a.Weight,
 			"probeModel":        a.ProbeModel,
@@ -2965,6 +2968,11 @@ func (h *Handler) apiAddAccount(w http.ResponseWriter, r *http.Request) {
 	if account.Region == "" {
 		account.Region = "us-east-1"
 	}
+	if msg := normalizeCompatAccount(&account); msg != "" {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": msg})
+		return
+	}
 
 	if err := config.AddAccount(account); err != nil {
 		w.WriteHeader(500)
@@ -2974,7 +2982,7 @@ func (h *Handler) apiAddAccount(w http.ResponseWriter, r *http.Request) {
 
 	h.pool.Reload()
 	// 新账号若已启用且有 token，立即拉取并缓存模型列表
-	if account.Enabled && account.AccessToken != "" {
+	if account.Enabled && hasCredential(&account) {
 		go func(acc config.Account) {
 			if err := h.fetchAndCacheAccountModels(&acc); err != nil {
 				logger.Warnf("[ModelsCache] Auto-refresh failed for new account %s: %v", acc.Email, err)
@@ -3068,6 +3076,17 @@ func (h *Handler) apiUpdateAccount(w http.ResponseWriter, r *http.Request, id st
 	if v, ok := updates["relaySecret"].(string); ok && v != "" {
 		existing.RelaySecret = v
 	}
+	if v, ok := updates["baseUrl"].(string); ok {
+		existing.BaseURL = strings.TrimRight(strings.TrimSpace(v), "/")
+	}
+	if v, ok := updates["compatApiKey"].(string); ok && strings.TrimSpace(v) != "" {
+		existing.CompatAPIKey = strings.TrimSpace(v)
+	}
+	if msg := normalizeCompatAccount(existing); msg != "" {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": msg})
+		return
+	}
 
 	if err := config.UpdateAccount(id, *existing); err != nil {
 		w.WriteHeader(500)
@@ -3077,7 +3096,7 @@ func (h *Handler) apiUpdateAccount(w http.ResponseWriter, r *http.Request, id st
 
 	h.pool.Reload()
 	// 账号从禁用→启用时，自动拉取并缓存模型列表
-	if !oldEnabled && existing.Enabled && existing.AccessToken != "" {
+	if !oldEnabled && existing.Enabled && hasCredential(existing) {
 		go func(acc config.Account) {
 			if err := h.fetchAndCacheAccountModels(&acc); err != nil {
 				logger.Warnf("[ModelsCache] Auto-refresh failed for re-enabled account %s: %v", acc.Email, err)
@@ -3205,7 +3224,7 @@ func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 		for _, a := range accounts {
 			if idSet[a.ID] {
 				// 记录本次从禁用→启用、且有 token 的账号
-				if enabled && !a.Enabled && a.AccessToken != "" {
+				if enabled && !a.Enabled && hasCredential(&a) {
 					toRefreshModels = append(toRefreshModels, a)
 				}
 				a.Enabled = enabled
@@ -4727,4 +4746,43 @@ func keyAllowsModel(apiKeyID, model string) bool {
 		return true
 	}
 	return config.GetApiKeyEntry(apiKeyID).AllowsModel(model)
+}
+
+// hasCredential reports whether the account can talk to its upstream at all:
+// an OAuth/API access token for the built-in providers, or a vendor API key
+// for the OpenAI/Anthropic-compatible ones.
+func hasCredential(a *config.Account) bool {
+	return a != nil && (a.AccessToken != "" || a.CompatAPIKey != "")
+}
+
+// normalizeCompatAccount validates and tidies an OpenAI/Anthropic-compatible
+// account. Returns a user-facing error message, or "" when the account is
+// not a compat account or is valid.
+func normalizeCompatAccount(a *config.Account) string {
+	kind, err := config.ProviderForAccount(a)
+	if err != nil || (kind != config.ProviderOpenAICompat && kind != config.ProviderAnthropicCompat) {
+		return ""
+	}
+	a.ProviderKind = string(kind)
+	a.CompatProtocol = string(kind)
+	a.BaseURL = strings.TrimRight(strings.TrimSpace(a.BaseURL), "/")
+	a.CompatAPIKey = strings.TrimSpace(a.CompatAPIKey)
+	if !strings.HasPrefix(a.BaseURL, "http://") && !strings.HasPrefix(a.BaseURL, "https://") {
+		return "baseUrl must start with http:// or https://"
+	}
+	if a.CompatAPIKey == "" {
+		return "compatApiKey is required"
+	}
+	if strings.TrimSpace(a.Email) == "" {
+		// Email is the display identity everywhere; derive one from the host.
+		host := strings.TrimPrefix(strings.TrimPrefix(a.BaseURL, "https://"), "http://")
+		if i := strings.IndexAny(host, "/:"); i >= 0 {
+			host = host[:i]
+		}
+		a.Email = host
+	}
+	if strings.TrimSpace(a.Provider) == "" {
+		a.Provider = string(kind)
+	}
+	return ""
 }

@@ -240,3 +240,22 @@ func TestVisionTierPrefersImageCapableNeighbour(t *testing.T) {
 		t.Fatalf("expected the vision-capable neighbour tier, got %+v", d)
 	}
 }
+
+func TestNormalizeCompatAccount(t *testing.T) {
+	a := &config.Account{ProviderKind: "openai_compat", BaseURL: " https://ai-gateway.vercel.sh/v1/ ", CompatAPIKey: " vck_1 "}
+	if msg := normalizeCompatAccount(a); msg != "" {
+		t.Fatal(msg)
+	}
+	if a.BaseURL != "https://ai-gateway.vercel.sh/v1" || a.CompatAPIKey != "vck_1" || a.Email != "ai-gateway.vercel.sh" || a.CompatProtocol != "openai_compat" {
+		t.Fatalf("not normalised: %+v", a)
+	}
+	if msg := normalizeCompatAccount(&config.Account{ProviderKind: "anthropic_compat", BaseURL: "api.anthropic.com", CompatAPIKey: "k"}); msg == "" {
+		t.Fatal("scheme-less base URL must be rejected")
+	}
+	if msg := normalizeCompatAccount(&config.Account{ProviderKind: "kiro", AccessToken: "t"}); msg != "" {
+		t.Fatal("non-compat accounts untouched")
+	}
+	if !hasCredential(&config.Account{CompatAPIKey: "k"}) || hasCredential(&config.Account{}) {
+		t.Fatal("hasCredential wrong")
+	}
+}

@@ -119,6 +119,9 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
     })
   }
   const [machineId, setMachineId] = useState(a.machineId ?? '')
+  const isCompat = !!a.compatProtocol
+  const [baseUrl, setBaseUrl] = useState(a.baseUrl ?? '')
+  const [compatKey, setCompatKey] = useState('')
   const [egress, setEgress] = useState<'inherit' | 'proxy' | 'relay'>(a.relayURL ? 'relay' : a.proxyURL ? 'proxy' : 'inherit')
   const [proxyURL, setProxyURL] = useState(a.proxyURL ?? '')
   const [relayURL, setRelayURL] = useState(a.relayURL ?? '')
@@ -142,7 +145,14 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
   const saveIdentity = () =>
     run('identity', async () => {
       if (machineId && !isMachineId(machineId)) throw new Error(t('detail.machineIdError'))
-      await put(`/accounts/${a.id}`, { nickname, weight: Number(weight) || 0, machineId, probeModel })
+      await put(`/accounts/${a.id}`, {
+        nickname,
+        weight: Number(weight) || 0,
+        machineId,
+        probeModel,
+        ...(isCompat ? { baseUrl, ...(compatKey.trim() ? { compatApiKey: compatKey.trim() } : {}) } : {}),
+      })
+      setCompatKey('')
       toast.success(t('detail.saved'))
       invalidate()
     })
@@ -250,9 +260,23 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
         <Row label={t('detail.userId')}>{a.userId || '—'}</Row>
         <Row label={t('detail.authMethod')}>{a.authMethod || '—'}</Row>
         <Row label={t('detail.region')}>{a.region || '—'}</Row>
-        <Row label={t('detail.tokenExpiry')}>
-          {a.expiresAt ? `${formatTime(a.expiresAt)} ${countdown(a.expiresAt) ? `(${countdown(a.expiresAt)})` : `(${t('accounts.expired')})`}` : t('accounts.noToken')}
-        </Row>
+        {isCompat ? (
+          <>
+            <Row label={t('compat.protocol')}>{a.compatProtocol === 'anthropic_compat' ? 'Anthropic Messages' : 'OpenAI Chat Completions'}</Row>
+            <div className="space-y-1">
+              <Label htmlFor="c-base">{t('compat.baseUrl')}</Label>
+              <Input id="c-base" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} className="font-mono text-xs" />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="c-key">{t('compat.key')}</Label>
+              <Input id="c-key" type="password" value={compatKey} onChange={(e) => setCompatKey(e.target.value)} className="font-mono text-xs" placeholder={a.hasCompatKey ? t('compat.keyStored') : t('compat.keyMissing')} autoComplete="new-password" />
+            </div>
+          </>
+        ) : (
+          <Row label={t('detail.tokenExpiry')}>
+            {a.expiresAt ? `${formatTime(a.expiresAt)} ${countdown(a.expiresAt) ? `(${countdown(a.expiresAt)})` : `(${t('accounts.expired')})`}` : t('accounts.noToken')}
+          </Row>
+        )}
         {a.banStatus && a.banStatus !== 'ACTIVE' && (
           <Alert variant="destructive">
             <AlertTitle>{a.banStatus}</AlertTitle>

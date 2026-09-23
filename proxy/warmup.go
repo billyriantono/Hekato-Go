@@ -59,7 +59,7 @@ func warmupCandidates(ids []string, recover bool) []config.Account {
 		if len(want) > 0 && !want[a.ID] {
 			continue
 		}
-		if a.AccessToken == "" && a.RefreshToken == "" {
+		if a.AccessToken == "" && a.RefreshToken == "" && a.CompatAPIKey == "" {
 			continue
 		}
 		if a.Enabled || (recover && autoBanned(&a)) || len(want) > 0 {

@@ -47,6 +47,9 @@ export type Account = {
   warmupStatus: '' | 'ok' | 'error'
   warmupError: string
   lastWarmup: number
+  baseUrl?: string
+  compatProtocol?: '' | 'openai_compat' | 'anthropic_compat'
+  hasCompatKey?: boolean
 }
 
 export type WarmupResult = {

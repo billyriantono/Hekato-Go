@@ -25,8 +25,7 @@ func ListModels(account *config.Account) ([]providers.ModelInfo, error) {
 	if account == nil || account.BaseURL == "" {
 		return nil, fmt.Errorf("openaicompat: account %s missing base URL", accountID(account))
 	}
-	baseURL = account.BaseURL
-	req, err := http.NewRequest(http.MethodGet, modelsURL(), nil)
+	req, err := http.NewRequest(http.MethodGet, modelsURL(account.BaseURL), nil)
 	if err != nil {
 		return nil, fmt.Errorf("build models request: %w", err)
 	}

@@ -67,7 +67,7 @@ func secretFields(c *Config) []*string {
 	fields := []*string{&c.Password, &c.RelaySecret, &c.ApiKey}
 	for i := range c.Accounts {
 		a := &c.Accounts[i]
-		fields = append(fields, &a.AccessToken, &a.RefreshToken, &a.ClientSecret, &a.RelaySecret)
+		fields = append(fields, &a.AccessToken, &a.RefreshToken, &a.ClientSecret, &a.RelaySecret, &a.CompatAPIKey)
 	}
 	for i := range c.ApiKeys {
 		fields = append(fields, &c.ApiKeys[i].Key)

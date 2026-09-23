@@ -98,6 +98,7 @@ var accountColumns = []string{
 	"trial_usage_current", "trial_usage_limit", "trial_usage_percent", "trial_status", "trial_expires_at",
 	"request_count", "error_count", "last_used", "total_tokens", "total_credits",
 	"warmup_status", "warmup_error", "last_warmup", "probe_model", "extra_models",
+	"base_url", "compat_api_key", "compat_protocol",
 }
 
 func accountValues(a *Account) []any {
@@ -114,6 +115,7 @@ func accountValues(a *Account) []any {
 		a.TrialUsageCurrent, a.TrialUsageLimit, a.TrialUsagePercent, a.TrialStatus, a.TrialExpiresAt,
 		a.RequestCount, a.ErrorCount, a.LastUsed, a.TotalTokens, a.TotalCredits,
 		a.WarmupStatus, a.WarmupError, a.LastWarmup, a.ProbeModel, strings.Join(a.ExtraModels, "\n"),
+		a.BaseURL, a.CompatAPIKey, a.CompatProtocol,
 	}
 }
 
@@ -121,6 +123,7 @@ func scanAccount(rows *sql.Rows) (Account, error) {
 	var a Account
 	var enabled int
 	var extraModels string
+	var baseURL, compatKey, compatProto sql.NullString
 	dest := []any{
 		&a.ID, &a.Email, &a.UserId, &a.Nickname,
 		&a.AccessToken, &a.RefreshToken, &a.ClientID, &a.ClientSecret,
@@ -134,11 +137,13 @@ func scanAccount(rows *sql.Rows) (Account, error) {
 		&a.TrialUsageCurrent, &a.TrialUsageLimit, &a.TrialUsagePercent, &a.TrialStatus, &a.TrialExpiresAt,
 		&a.RequestCount, &a.ErrorCount, &a.LastUsed, &a.TotalTokens, &a.TotalCredits,
 		&a.WarmupStatus, &a.WarmupError, &a.LastWarmup, &a.ProbeModel, &extraModels,
+		&baseURL, &compatKey, &compatProto,
 	}
 	if err := rows.Scan(dest...); err != nil {
 		return Account{}, err
 	}
 	a.Enabled = enabled != 0
+	a.BaseURL, a.CompatAPIKey, a.CompatProtocol = baseURL.String, compatKey.String, compatProto.String
 	if extraModels != "" {
 		a.ExtraModels = strings.Split(extraModels, "\n")
 	}
@@ -204,6 +209,7 @@ func (s *sqlStore) migrate() error {
 			request_count BIGINT, error_count BIGINT, last_used BIGINT, total_tokens BIGINT, total_credits DOUBLE PRECISION,
 			warmup_status TEXT DEFAULT '', warmup_error TEXT DEFAULT '', last_warmup BIGINT DEFAULT 0,
 			probe_model TEXT DEFAULT '', extra_models TEXT DEFAULT '',
+			base_url TEXT DEFAULT '', compat_api_key TEXT DEFAULT '', compat_protocol TEXT DEFAULT '',
 			position BIGINT
 		)`,
 		`CREATE TABLE IF NOT EXISTS api_keys (
@@ -260,7 +266,7 @@ func (s *sqlStore) migrate() error {
 	if err := addColumn("api_keys", "allowed_models", "TEXT DEFAULT ''"); err != nil {
 		return err
 	}
-	for col, typ := range map[string]string{"warmup_status": "TEXT DEFAULT ''", "warmup_error": "TEXT DEFAULT ''", "last_warmup": "BIGINT DEFAULT 0", "probe_model": "TEXT DEFAULT ''", "extra_models": "TEXT DEFAULT ''"} {
+	for col, typ := range map[string]string{"warmup_status": "TEXT DEFAULT ''", "warmup_error": "TEXT DEFAULT ''", "last_warmup": "BIGINT DEFAULT 0", "probe_model": "TEXT DEFAULT ''", "extra_models": "TEXT DEFAULT ''", "base_url": "TEXT DEFAULT ''", "compat_api_key": "TEXT DEFAULT ''", "compat_protocol": "TEXT DEFAULT ''"} {
 		if err := addColumn("accounts", col, typ); err != nil {
 			return err
 		}

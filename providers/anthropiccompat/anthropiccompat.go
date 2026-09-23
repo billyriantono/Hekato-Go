@@ -27,19 +27,18 @@ const anthropicVersion = "2023-06-01"
 
 // BaseURL is a var (not const) so tests can point the package at httptest
 // servers; messagesURL / modelsURL are computed at call time.
-var baseURL = ""
 
 // MessagesRequest is the wire format for Anthropic Messages. Defined locally
 // because providers does not expose it; the proxy package builds one of
 // these for each request from either ClaudeRequest or NeutralChat.
 type MessagesRequest struct {
-	Model     string             `json:"model"`
-	Messages  []MessagesMessage  `json:"messages"`
-	System    string             `json:"system,omitempty"`
-	MaxTokens int                `json:"max_tokens"`
-	Stream    bool               `json:"stream,omitempty"`
-	Tools     []MessagesTool     `json:"tools,omitempty"`
-	Thinking  *MessagesThinking  `json:"thinking,omitempty"`
+	Model     string            `json:"model"`
+	Messages  []MessagesMessage `json:"messages"`
+	System    string            `json:"system,omitempty"`
+	MaxTokens int               `json:"max_tokens"`
+	Stream    bool              `json:"stream,omitempty"`
+	Tools     []MessagesTool    `json:"tools,omitempty"`
+	Thinking  *MessagesThinking `json:"thinking,omitempty"`
 }
 
 // MessagesMessage is one turn. Content is a string (text-only) or []ContentBlock
@@ -63,15 +62,15 @@ type MessagesThinking struct {
 }
 
 // messagesURL appends /v1/messages to the configured base URL.
-func messagesURL() string {
-	return strings.TrimRight(baseURL, "/") + "/v1/messages"
+func messagesURL(base string) string {
+	return strings.TrimRight(base, "/") + "/v1/messages"
 }
 
 // modelsURL appends /v1/models to the configured base URL for the model
 // discovery endpoint. The Anthropic standard; most compatible vendors expose
 // the same path.
-func modelsURL() string {
-	return strings.TrimRight(baseURL, "/") + "/v1/models"
+func modelsURL(base string) string {
+	return strings.TrimRight(base, "/") + "/v1/models"
 }
 
 // CallMessages forwards an Anthropic Messages request to the configured
@@ -88,7 +87,6 @@ func CallMessages(account *config.Account, req *MessagesRequest, callback *provi
 	if account.CompatAPIKey == "" {
 		return fmt.Errorf("anthropiccompat: account %s has no API key configured", account.ID)
 	}
-	baseURL = account.BaseURL
 	body, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshal anthropiccompat request: %w", err)
@@ -113,7 +111,7 @@ func CallMessages(account *config.Account, req *MessagesRequest, callback *provi
 // doRequest issues the messages request. Most Anthropic vendors expect
 // x-api-key (not Bearer); some accept both, so we set both for safety.
 func doRequest(account *config.Account, body []byte, stream bool) (*http.Response, error) {
-	req, err := http.NewRequest(http.MethodPost, messagesURL(), bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, messagesURL(account.BaseURL), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build anthropiccompat request: %w", err)
 	}
@@ -208,12 +206,12 @@ func decodeNonStream(r io.Reader, callback *providers.StreamCallback) error {
 // consumeSSE parses an Anthropic-Messages-compatible SSE stream. Events we
 // care about:
 //
-//   message_start:    {message: {id, model, ...}} — metadata; ignored.
-//   content_block_start:  {index, content_block: {type, text|id|name|input}}
-//   content_block_delta:  {index, delta: {type:"text_delta", text}|{type:"input_json_delta", partial_json}}
-//   content_block_stop:   {index} — fires per block, no payload.
-//   message_delta:    {delta: {stop_reason, stop_sequence}, usage: {output_tokens}}
-//   message_stop:     {} — terminal.
+//	message_start:    {message: {id, model, ...}} — metadata; ignored.
+//	content_block_start:  {index, content_block: {type, text|id|name|input}}
+//	content_block_delta:  {index, delta: {type:"text_delta", text}|{type:"input_json_delta", partial_json}}
+//	content_block_stop:   {index} — fires per block, no payload.
+//	message_delta:    {delta: {stop_reason, stop_sequence}, usage: {output_tokens}}
+//	message_stop:     {} — terminal.
 //
 // Anything we don't recognise is logged and skipped, matching the rest of
 // the proxy's permissive parsers.
@@ -249,9 +247,9 @@ func consumeSSE(r io.Reader, callback *providers.StreamCallback) error {
 		}
 
 		var ev struct {
-			Type         string          `json:"type"`
-			Index        int             `json:"index"`
-			ContentBlock *contentBlock   `json:"content_block,omitempty"`
+			Type         string        `json:"type"`
+			Index        int           `json:"index"`
+			ContentBlock *contentBlock `json:"content_block,omitempty"`
 			Delta        *struct {
 				Type        string `json:"type"`
 				Text        string `json:"text,omitempty"`

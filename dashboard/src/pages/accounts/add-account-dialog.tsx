@@ -16,7 +16,7 @@ import { useI18n } from '@/lib/i18n'
 import { sleep } from './shared'
 import { SimpleSelect } from './simple-select'
 
-export type Method = 'builderid' | 'iam' | 'kirosso' | 'ssotoken' | 'local' | 'credentials' | 'cookie' | 'codebuddy' | 'grokDevice' | 'grokImport' | 'codexImport' | 'clinepassImport'
+export type Method = 'builderid' | 'iam' | 'kirosso' | 'ssotoken' | 'local' | 'credentials' | 'cookie' | 'codebuddy' | 'grokDevice' | 'grokImport' | 'codexImport' | 'clinepassImport' | 'openaiCompat' | 'anthropicCompat'
 
 type Added = { id: string; email?: string }
 type FormProps = { onDone: (accounts: Added[]) => void }
@@ -34,7 +34,30 @@ const METHODS: { id: Method; provider: string; title: string; desc: string }[] =
   { id: 'grokImport', provider: 'modal.grokProvider', title: 'grok.importTokens', desc: 'grok.importHint' },
   { id: 'codexImport', provider: 'modal.codexProvider', title: 'modal.codexImportTitle', desc: 'modal.codexImportDesc' },
   { id: 'clinepassImport', provider: 'modal.clinepassProvider', title: 'modal.clinepassImportTitle', desc: 'modal.clinepassImportDesc' },
+  { id: 'openaiCompat', provider: 'modal.compatProvider', title: 'modal.openaiCompatTitle', desc: 'modal.openaiCompatDesc' },
+  { id: 'anthropicCompat', provider: 'modal.compatProvider', title: 'modal.anthropicCompatTitle', desc: 'modal.anthropicCompatDesc' },
 ]
+
+// Well-known gateways / vendors per wire protocol. OpenAI-style bases include
+// the /v1 segment (the gateway appends /chat/completions); Anthropic-style
+// bases are the vendor root (the gateway appends /v1/messages).
+const COMPAT_PRESETS: Record<'openai_compat' | 'anthropic_compat', { name: string; url: string }[]> = {
+  openai_compat: [
+    { name: 'Vercel AI Gateway', url: 'https://ai-gateway.vercel.sh/v1' },
+    { name: 'OpenRouter', url: 'https://openrouter.ai/api/v1' },
+    { name: 'OpenAI', url: 'https://api.openai.com/v1' },
+    { name: 'Groq', url: 'https://api.groq.com/openai/v1' },
+    { name: 'DeepSeek', url: 'https://api.deepseek.com/v1' },
+    { name: 'Z.ai', url: 'https://api.z.ai/api/paas/v4' },
+  ],
+  anthropic_compat: [
+    { name: 'Anthropic', url: 'https://api.anthropic.com' },
+    { name: 'Vercel AI Gateway', url: 'https://ai-gateway.vercel.sh' },
+    { name: 'Z.ai', url: 'https://api.z.ai/api/anthropic' },
+    { name: 'MiniMax', url: 'https://api.minimax.io/anthropic' },
+    { name: 'Moonshot', url: 'https://api.moonshot.ai/anthropic' },
+  ],
+}
 
 export function AddAccountDialog({ open, initialMethod, onClose }: { open: boolean; initialMethod: Method | null; onClose: () => void }) {
   const { t } = useI18n()
@@ -93,6 +116,10 @@ export function AddAccountDialog({ open, initialMethod, onClose }: { open: boole
           <CodexImportForm onDone={onDone} />
         ) : method === 'clinepassImport' ? (
           <ClinepassImportForm onDone={onDone} />
+        ) : method === 'openaiCompat' ? (
+          <CompatForm key="oc" protocol="openai_compat" onDone={onDone} />
+        ) : method === 'anthropicCompat' ? (
+          <CompatForm key="ac" protocol="anthropic_compat" onDone={onDone} />
         ) : (
           <GrokImportForm onDone={onDone} />
         )}
@@ -110,6 +137,7 @@ function MethodPicker({ onPick }: { onPick: (m: Method) => void }) {
     'modal.grokProvider': <LuMonitor className="size-4" />,
     'modal.codexProvider': <LuKey className="size-4" />,
     'modal.clinepassProvider': <LuKey className="size-4" />,
+    'modal.compatProvider': <LuKey className="size-4" />,
   }
   return (
     <div className="max-h-[60vh] space-y-4 overflow-y-auto pr-1">
@@ -850,6 +878,73 @@ function ClinepassImportForm({ onDone }: FormProps) {
       </Field>
       <FileInput onText={setText} />
       <SubmitRow busy={busy} label={t('accounts.import')} onClick={go} disabled={!text.trim()} />
+    </>
+  )
+}
+
+// ---- OpenAI / Anthropic-compatible vendors (Vercel AI Gateway, OpenRouter, …) ----
+
+function CompatForm({ protocol, onDone }: FormProps & { protocol: 'openai_compat' | 'anthropic_compat' }) {
+  const { t } = useI18n()
+  const { busy, submit } = useSubmit()
+  const presets = COMPAT_PRESETS[protocol]
+  const [name, setName] = useState('')
+  const [baseUrl, setBaseUrl] = useState(presets[0].url)
+  const [keys, setKeys] = useState('')
+  const [models, setModels] = useState('')
+  const keyList = keys.split(/\n/).map((k) => k.trim()).filter(Boolean)
+  const modelList = models.split(/[,\n]/).map((m) => m.trim()).filter(Boolean)
+  const preset = presets.find((p) => p.url === baseUrl)
+  const go = () =>
+    submit(async () => {
+      const added: Added[] = []
+      const errors: string[] = []
+      for (const [i, key] of keyList.entries()) {
+        const label = (name.trim() || preset?.name || new URL(baseUrl).host) + (keyList.length > 1 ? ` #${i + 1}` : '')
+        try {
+          const r = await post<{ id: string }>('/accounts', {
+            providerKind: protocol,
+            compatProtocol: protocol,
+            authMethod: protocol,
+            provider: preset?.name || protocol,
+            email: label,
+            nickname: label,
+            baseUrl: baseUrl.trim(),
+            compatApiKey: key,
+            extraModels: modelList,
+            enabled: true,
+          })
+          added.push({ id: r.id, email: label })
+        } catch (e) {
+          errors.push(`${label}: ${errorMessage(e)}`)
+        }
+      }
+      if (added.length) toast.success(t('compat.added', added.length))
+      for (const err of errors) toast.error(err)
+      if (added.length) onDone(added)
+    })
+  return (
+    <>
+      <Field label={t('compat.preset')}>
+        <SimpleSelect
+          value={preset ? preset.url : '__custom__'}
+          onChange={(v) => v !== '__custom__' && setBaseUrl(v)}
+          options={[...presets.map((p) => ({ value: p.url, label: p.name })), { value: '__custom__', label: t('compat.custom') }]}
+        />
+      </Field>
+      <Field label={t('compat.baseUrl')} hint={t(protocol === 'openai_compat' ? 'compat.baseUrlHintOpenai' : 'compat.baseUrlHintAnthropic')}>
+        <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} className="font-mono text-xs" placeholder="https://" />
+      </Field>
+      <Field label={t('compat.name')} hint={t('compat.nameHint')}>
+        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={preset?.name || ''} />
+      </Field>
+      <Field label={t('compat.keys')} hint={t('compat.keysHint')}>
+        <Textarea value={keys} onChange={(e) => setKeys(e.target.value)} rows={4} className="font-mono text-xs" placeholder={'sk-…\nsk-…'} />
+      </Field>
+      <Field label={t('compat.models')} hint={t('compat.modelsHint')}>
+        <Input value={models} onChange={(e) => setModels(e.target.value)} className="font-mono text-xs" placeholder="anthropic/claude-sonnet-4.5, openai/gpt-5" />
+      </Field>
+      <SubmitRow busy={busy} label={keyList.length > 1 ? t('compat.addMany', keyList.length) : t('modal.addAccount')} onClick={go} disabled={!baseUrl.trim() || keyList.length === 0} />
     </>
   )
 }

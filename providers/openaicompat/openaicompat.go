@@ -20,21 +20,17 @@ import (
 	"strings"
 )
 
-// Upstream endpoints. BaseURL is a var (not const) so tests can point the
-// package at httptest servers; chatURL / modelsURL are computed at call time
-// so a test swap of baseURL is reflected immediately.
-var baseURL = ""
+// Endpoints are derived per call from the account's BaseURL (which already
+// includes the /v1 segment) so several compat accounts never share state.
 
-// chatURL appends /chat/completions to the configured base URL, tolerating a
-// trailing slash on baseURL.
-func chatURL() string {
-	return strings.TrimRight(baseURL, "/") + "/chat/completions"
+// chatURL appends /chat/completions to the base URL, tolerating a trailing slash.
+func chatURL(base string) string {
+	return strings.TrimRight(base, "/") + "/chat/completions"
 }
 
-// modelsURL appends /models to the configured base URL for the model discovery
-// endpoint. The OpenAI standard; most compatible vendors expose the same path.
-func modelsURL() string {
-	return strings.TrimRight(baseURL, "/") + "/models"
+// modelsURL appends /models to the base URL for model discovery.
+func modelsURL(base string) string {
+	return strings.TrimRight(base, "/") + "/models"
 }
 
 // CallOpenAI forwards an OpenAI Chat-Completions request to the configured
@@ -52,7 +48,6 @@ func CallOpenAI(account *config.Account, req *providers.OpenAIRequest, callback 
 	if account.CompatAPIKey == "" {
 		return fmt.Errorf("openaicompat: account %s has no API key configured", account.ID)
 	}
-	baseURL = account.BaseURL
 	body, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshal openaicompat request: %w", err)
@@ -77,7 +72,7 @@ func CallOpenAI(account *config.Account, req *providers.OpenAIRequest, callback 
 // doRequest issues the chat request and returns the raw response. Body is left
 // open for the caller (stream + non-stream share this seam).
 func doRequest(account *config.Account, body []byte, stream bool) (*http.Response, error) {
-	req, err := http.NewRequest(http.MethodPost, chatURL(), bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, chatURL(account.BaseURL), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build openaicompat request: %w", err)
 	}
