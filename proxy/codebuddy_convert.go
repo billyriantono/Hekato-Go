@@ -15,6 +15,10 @@ func isCodeBuddyAccount(account *config.Account) bool {
 	return mustBeProvider(account, providerCodeBuddy)
 }
 
+func isCodexAccount(account *config.Account) bool {
+	return mustBeProvider(account, providerCodex)
+}
+
 // ClaudeToCodeBuddy converts a Claude request to CodeBuddy's native
 // OpenAI-compatible /v2/chat/completions body via the neutral NeutralChat.
 func ClaudeToCodeBuddy(req *ClaudeRequest, thinking bool) codebuddy.ChatRequest {

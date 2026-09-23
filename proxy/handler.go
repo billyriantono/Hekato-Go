@@ -2583,6 +2583,9 @@ func (h *Handler) ensureValidToken(account *config.Account) error {
 
 	// 持久化
 	config.UpdateAccountToken(account.ID, accessToken, refreshToken, expiresAt)
+	if isCodexAccount(account) && account.UserId != "" {
+		config.UpdateAccountUserId(account.ID, account.UserId)
+	}
 
 	return nil
 }
@@ -3133,6 +3136,9 @@ func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 					if profileArn != "" {
 						account.ProfileArn = profileArn
 						config.UpdateAccountProfileArn(id, profileArn)
+					}
+					if isCodexAccount(account) && account.UserId != "" {
+						config.UpdateAccountUserId(id, account.UserId)
 					}
 					h.pool.UpdateToken(id, newAccess, newRefresh, newExpires)
 				}
@@ -3827,6 +3833,9 @@ func (h *Handler) apiRefreshAccount(w http.ResponseWriter, r *http.Request, id s
 		if profileArn != "" {
 			account.ProfileArn = profileArn
 			config.UpdateAccountProfileArn(id, profileArn)
+		}
+		if isCodexAccount(account) && account.UserId != "" {
+			config.UpdateAccountUserId(id, account.UserId)
 		}
 		return nil
 	}

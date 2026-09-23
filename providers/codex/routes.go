@@ -157,8 +157,20 @@ func importCodex(host providers.Host, w http.ResponseWriter, r *http.Request) {
 			userID = strings.TrimSpace(e.AccountID)
 		}
 
+		// Prefer chatgpt_account_id decoded from the JWT — it's the exact tenant
+		// id the Codex backend keys off in the `chatgpt-account-id` header. The
+		// userinfo endpoint sometimes returns a different (legacy) id and pinning
+		// that one produces "wrong tenant" 401s. Only fall back to userinfo when
+		// the JWT decode came up empty.
+		if access != "" && userID == "" {
+			if id := auth.CodexAccountIDFromJWT(access); id != "" {
+				userID = id
+			}
+		}
+
 		// Best-effort userinfo lookup if we have a fresh access token — fills in
-		// email / user id when the importer didn't. Best-effort, never fatal.
+		// email / user id when the importer didn't supply them and the JWT
+		// carried no account_id claim. Best-effort, never fatal.
 		if access != "" && (email == "" || userID == "") {
 			if gotEmail, gotID, uerr := auth.FetchCodexUserInfo(access); uerr == nil {
 				if email == "" {

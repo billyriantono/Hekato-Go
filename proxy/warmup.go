@@ -161,6 +161,11 @@ func (h *Handler) warmupOne(account *config.Account, probe, recover bool) warmup
 				account.ProfileArn = profileArn
 				config.UpdateAccountProfileArn(account.ID, profileArn)
 			}
+			// Codex may mutate UserId (chatgpt_account_id) on refresh; persist it
+			// so the next request's chatgpt-account-id header uses the fresh tenant.
+			if isCodexAccount(account) && account.UserId != "" {
+				config.UpdateAccountUserId(account.ID, account.UserId)
+			}
 			return nil
 		}); err != nil {
 			return h.finishWarmup(res, account, err, false)

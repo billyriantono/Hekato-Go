@@ -103,6 +103,21 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
     setNewModel('')
     void saveExtraModels([...extraModels, id])
   }
+  // Probe the typed model id through this account before adding it, so a typo
+  // never lands in the routing table. Adds automatically on success.
+  const probeAndAdd = () => {
+    const id = newModel.trim()
+    if (!id) return
+    void run('probeNew', async () => {
+      try {
+        const r = await post<{ reply: string; model: string }>(`/accounts/${a.id}/test`, { model: id })
+        toast.success(t('detail.probeNewOk', r.model, r.reply))
+        addModel()
+      } catch (e) {
+        toast.error(t('detail.probeNewFail', id, errorMessage(e)))
+      }
+    })
+  }
   const [machineId, setMachineId] = useState(a.machineId ?? '')
   const [egress, setEgress] = useState<'inherit' | 'proxy' | 'relay'>(a.relayURL ? 'relay' : a.proxyURL ? 'proxy' : 'inherit')
   const [proxyURL, setProxyURL] = useState(a.proxyURL ?? '')
@@ -434,24 +449,34 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
           <p className="text-xs text-muted-foreground">{t('detail.noModels')}</p>
         ) : (
           <div className="flex flex-wrap gap-1">
-            {modelList.map((m) => {
-              const manual = extraModels.some((x) => x.toLowerCase() === m.toLowerCase())
-              return (
-                <Badge key={m} variant={manual ? 'secondary' : 'outline'} className="font-mono">
+            {modelList
+              .filter((m) => !extraModels.some((x) => x.toLowerCase() === m.toLowerCase()))
+              .map((m) => (
+                <Badge key={m} variant="outline" className="font-mono">
                   {m}
-                  {manual && (
-                    <button
-                      type="button"
-                      className="ml-1 opacity-60 hover:opacity-100"
-                      title={t('detail.removeModel')}
-                      onClick={() => void saveExtraModels(extraModels.filter((x) => x.toLowerCase() !== m.toLowerCase()))}
-                    >
-                      <LuX className="size-3" />
-                    </button>
-                  )}
                 </Badge>
-              )
-            })}
+              ))}
+          </div>
+        )}
+        {extraModels.length > 0 && (
+          <div className="space-y-1 pt-1">
+            <p className="text-[11px] text-muted-foreground">{t('detail.manualModels')}</p>
+            <div className="flex flex-wrap gap-1">
+              {extraModels.map((m) => (
+                <Badge key={m} variant="secondary" className="font-mono">
+                  {m}
+                  <button
+                    type="button"
+                    className="ml-1 opacity-60 hover:opacity-100"
+                    title={t('detail.removeModel')}
+                    disabled={!!busy}
+                    onClick={() => void saveExtraModels(extraModels.filter((x) => x.toLowerCase() !== m.toLowerCase()))}
+                  >
+                    <LuX className="size-3" />
+                  </button>
+                </Badge>
+              ))}
+            </div>
           </div>
         )}
         <div className="flex gap-2 pt-1">
@@ -462,6 +487,9 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
             placeholder={t('detail.addModelPlaceholder')}
             className="flex-1 font-mono text-xs"
           />
+          <Button size="sm" variant="outline" onClick={probeAndAdd} disabled={!!busy || !newModel.trim()} title={t('detail.probeNewHint')}>
+            {spin('probeNew') ?? <LuFlaskConical />} {t('detail.probeNew')}
+          </Button>
           <Button size="sm" variant="outline" onClick={addModel} disabled={!!busy || !newModel.trim()}>
             {spin('extra') ?? <LuPlus />} {t('detail.addModel')}
           </Button>

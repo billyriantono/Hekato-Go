@@ -21,29 +21,35 @@ import (
 )
 
 // Codex upstream endpoints (mirrors etteum-pool's src/proxy/providers/codex.ts).
+//
+// User-Agent + originator match the current codex-cli TypeScript build. The
+// prior fingerprint (`codex_cli_rs/0.154.0`) was the Rust CLI from mid-2025;
+// Codex's abuse pipeline flags accounts pinned to that stale build, matching
+// the ban pattern the operator saw.
 const (
 	codexResponsesURL = "https://chatgpt.com/backend-api/codex/responses"
 	codexUsageURL     = "https://chatgpt.com/backend-api/wham/usage"
 	codexClientName   = "codex-cli"
 	codexClientVer    = "1.0.18"
+	codexOriginator   = "codex-cli"
 )
 
-// Headers applied to every Codex upstream request. Codex rejects requests that
-// don't carry these: openai-beta=responses=experimental gates the backend route,
-// chatgpt-account-id routes to the correct tenant when present, and the CLI
-// user-agent tells the gateway not to throttle.
+// setCodexHeaders applies the header set every Codex upstream request needs.
+// Codex rejects requests missing openai-beta=responses=experimental (that
+// header gates the backend route), and requires chatgpt-account-id when the
+// account has a resolved tenant. session_id is deliberately omitted: the
+// official CLI does not send it and etteum-pool does not either — echoing an
+// operator-chosen nickname back to chatgpt.com gave the abuse pipeline a
+// stable per-tenant correlation string.
 func setCodexHeaders(req *http.Request, account *config.Account) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+account.AccessToken)
 	req.Header.Set("Accept", "text/event-stream, application/json")
 	req.Header.Set("User-Agent", fmt.Sprintf("%s/%s (macOS; arm64)", codexClientName, codexClientVer))
 	req.Header.Set("OpenAI-Beta", "responses=experimental")
-	req.Header.Set("originator", codexClientName)
+	req.Header.Set("originator", codexOriginator)
 	if account.UserId != "" {
 		req.Header.Set("chatgpt-account-id", account.UserId)
-	}
-	if account.Nickname != "" {
-		req.Header.Set("session_id", account.Nickname)
 	}
 }
 
@@ -99,6 +105,12 @@ func sanitizeCodexRequest(req *providers.ResponsesRequest) *providers.ResponsesR
 	out.MaxOutputTokens = nil
 	out.Temperature = nil
 	out.PreviousResponseID = ""
+	// Codex bans accounts that leak non-OpenAI agent identity strings back to
+	// chatgpt.com (proxies for other models trigger the abuse pipeline).
+	// sanitizeCodexInput short-circuits when no marker is present, so the
+	// common case pays only a single strings.Contains sweep per request.
+	out.Input = sanitizeCodexInput(req.Input)
+	out.Instructions = sanitizeIdentityText(req.Instructions)
 	return &out
 }
 
@@ -120,26 +132,33 @@ func CallUpstream(w http.ResponseWriter, flusher http.Flusher, account *config.A
 // CallOpenAI bridges Chat-Completions callers (Claude-to-neutral-to-OpenAI
 // path, admin smoke test, etc.) to Codex's Responses API. The transport is the
 // Responses API because that's what Codex exposes; the wire format difference
-// is handled by marshalling OpenAIMessage → Responses input + emitting the
-// ResponsesObject's items into the existing providers.StreamCallback contract.
-func CallOpenAI(account *config.Account, req *providers.OpenAIRequest, callback *providers.StreamCallback) error {
+// is handled by marshalling OpenAIMessage → Responses typed input items and
+// emitting the ResponsesObject's items into the existing
+// providers.StreamCallback contract.
+//
+// The rewrite uses buildCodexPayload (payload.go) which splits system messages
+// into Instructions, converts user/assistant/tool turns into typed Codex input
+// items ({type:"message"}, {type:"function_call"}, {type:"function_call_output"}),
+// resolves model aliases through codexModelMap, and emits a reasoning block
+// when the caller's thinking signal or the model name warrants one.
+func CallOpenAI(account *config.Account, req *providers.OpenAIRequest, thinking bool, callback *providers.StreamCallback) error {
 	if req == nil {
 		return fmt.Errorf("codex: nil openai request")
 	}
 	if callback == nil {
 		callback = &providers.StreamCallback{}
 	}
-	input, err := json.Marshal(req.Messages)
-	if err != nil {
-		return fmt.Errorf("marshal codex input: %w", err)
+
+	opts := reasoningOptions{}
+	if thinking {
+		// The proxy's thinking flag comes from a -thinking model suffix.
+		// Map it to "medium" effort — close to etteum-pool's default for
+		// an explicit thinking toggle without a token budget.
+		opts.Effort = "medium"
+		opts.WantSummary = true
 	}
-	// max_output_tokens / temperature are deliberately not forwarded: Codex
-	// rejects both with 400 "Unsupported parameter".
-	codexReq := &providers.ResponsesRequest{
-		Model: req.Model,
-		Input: input,
-		Tools: req.Tools,
-	}
+
+	codexReq := buildCodexPayload(req, opts)
 
 	resp, err := doCodexRequest(account, codexReq)
 	if err != nil {

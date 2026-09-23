@@ -34,8 +34,8 @@ func callUpstreamCodexResponses(w http.ResponseWriter, f http.Flusher, account *
 // callUpstreamCodexFromOpenAI bridges OpenAI Chat Completions callers to
 // Codex's Responses endpoint. The Codex package handles the wire-shape
 // difference; this adapter is the seam.
-func callUpstreamCodexFromOpenAI(account *config.Account, req *OpenAIRequest, _ bool, cb *StreamCallback) error {
-	return codex.CallOpenAI(account, req, cb)
+func callUpstreamCodexFromOpenAI(account *config.Account, req *OpenAIRequest, thinking bool, cb *StreamCallback) error {
+	return codex.CallOpenAI(account, req, thinking, cb)
 }
 
 func listModelsCodex(account *config.Account) ([]ModelInfo, error) {

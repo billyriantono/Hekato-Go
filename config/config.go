@@ -722,6 +722,24 @@ func UpdateAccountToken(id, accessToken, refreshToken string, expiresAt int64) e
 	return nil
 }
 
+// UpdateAccountUserId persists a fresh provider-side user id (e.g. Codex's
+// chatgpt_account_id, decoded from the refreshed id/access JWT). No-op if the
+// account is missing or the value is unchanged.
+func UpdateAccountUserId(id, userId string) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	for i, a := range cfg.Accounts {
+		if a.ID == id {
+			if cfg.Accounts[i].UserId == userId {
+				return nil
+			}
+			cfg.Accounts[i].UserId = userId
+			return Save()
+		}
+	}
+	return nil
+}
+
 func GetApiKey() string {
 	cfgLock.RLock()
 	defer cfgLock.RUnlock()

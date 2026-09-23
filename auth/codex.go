@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"hekato-go/config"
@@ -27,6 +28,51 @@ const (
 	codexClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
 	codexScope    = "openid profile email offline_access"
 )
+
+// CodexAccountIDFromJWT decodes the unverified access/id token payload and
+// returns the chatgpt_account_id claim that the Codex backend requires in the
+// `chatgpt-account-id` header. The claim lives at
+// "https://api.openai.com/auth.chatgpt_account_id" (auth.openai.com's own
+// namespace), with fallbacks to "account_id" / "user_id" inside the same object
+// and then to top-level "chatgpt_account_id" / "account_id" / "sub". This
+// mirrors etteum-pool's _extract_account_id helper
+// (scripts/auth/app/providers/codex.py) so account_id drift on import does
+// not push Codex into the "wrong tenant" 401 that bans the account.
+//
+// No signature verification: this is used only to stamp Account.UserId on
+// import and on refresh, never to authenticate. Returns "" if the token is
+// not a JWT or carries no usable claim.
+func CodexAccountIDFromJWT(token string) string {
+	raw := strings.TrimSpace(token)
+	if raw == "" {
+		return ""
+	}
+	parts := strings.Split(raw, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	if auth, ok := claims["https://api.openai.com/auth"].(map[string]interface{}); ok {
+		for _, key := range []string{"chatgpt_account_id", "account_id", "user_id"} {
+			if v, ok := auth[key].(string); ok && v != "" {
+				return v
+			}
+		}
+	}
+	for _, key := range []string{"chatgpt_account_id", "account_id", "sub"} {
+		if v, ok := claims[key].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
+}
 
 // CodexUserInfo is what we read back from the Codex userinfo endpoint after
 // refresh or import, used to populate Account.Email / UserId.
@@ -91,6 +137,18 @@ func RefreshCodexToken(account *config.Account) (string, string, int, error) {
 		// Default to one hour — matches typical JWT lifetimes issued by
 		// auth.openai.com. Better to over-refresh than to serve expired tokens.
 		expiresIn = 3600
+	}
+	// Refresh the chatgpt_account_id claim off whichever JWT we just got —
+	// auth.openai.com puts it on the id_token, but on some grants it's only
+	// on the access_token. The claim can drift when a user moves workspaces,
+	// and a stale value sends Codex to the wrong tenant → 401 → ban. Caller
+	// is expected to persist UserId if the value changed.
+	if id := CodexAccountIDFromJWT(r.IDToken); id != "" && id != account.UserId {
+		account.UserId = id
+	} else if id == "" {
+		if id := CodexAccountIDFromJWT(r.AccessToken); id != "" && id != account.UserId {
+			account.UserId = id
+		}
 	}
 	return r.AccessToken, newRefresh, expiresIn, nil
 }
