@@ -73,6 +73,9 @@ type Account struct {
 
 	// Priority weight for load balancing (higher = more requests)
 	Weight int `json:"weight,omitempty"` // 0 or 1 = normal, 2+ = higher priority
+	// ProbeModel is the model used for this account's Test button and warmup
+	// probe ("" = global default test model, else a cheap advertised model).
+	ProbeModel string `json:"probeModel,omitempty"`
 
 	// Upstream Overages state (mirrored from AWS Q `setUserPreference` / `getUsageLimits`).
 	// OverageStatus is the only switch that decides whether to keep dispatching once UsageLimit is reached.

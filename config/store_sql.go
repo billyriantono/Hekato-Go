@@ -97,7 +97,7 @@ var accountColumns = []string{
 	"usage_current", "usage_limit", "usage_percent", "next_reset_date", "last_refresh",
 	"trial_usage_current", "trial_usage_limit", "trial_usage_percent", "trial_status", "trial_expires_at",
 	"request_count", "error_count", "last_used", "total_tokens", "total_credits",
-	"warmup_status", "warmup_error", "last_warmup",
+	"warmup_status", "warmup_error", "last_warmup", "probe_model",
 }
 
 func accountValues(a *Account) []any {
@@ -113,7 +113,7 @@ func accountValues(a *Account) []any {
 		a.UsageCurrent, a.UsageLimit, a.UsagePercent, a.NextResetDate, a.LastRefresh,
 		a.TrialUsageCurrent, a.TrialUsageLimit, a.TrialUsagePercent, a.TrialStatus, a.TrialExpiresAt,
 		a.RequestCount, a.ErrorCount, a.LastUsed, a.TotalTokens, a.TotalCredits,
-		a.WarmupStatus, a.WarmupError, a.LastWarmup,
+		a.WarmupStatus, a.WarmupError, a.LastWarmup, a.ProbeModel,
 	}
 }
 
@@ -132,7 +132,7 @@ func scanAccount(rows *sql.Rows) (Account, error) {
 		&a.UsageCurrent, &a.UsageLimit, &a.UsagePercent, &a.NextResetDate, &a.LastRefresh,
 		&a.TrialUsageCurrent, &a.TrialUsageLimit, &a.TrialUsagePercent, &a.TrialStatus, &a.TrialExpiresAt,
 		&a.RequestCount, &a.ErrorCount, &a.LastUsed, &a.TotalTokens, &a.TotalCredits,
-		&a.WarmupStatus, &a.WarmupError, &a.LastWarmup,
+		&a.WarmupStatus, &a.WarmupError, &a.LastWarmup, &a.ProbeModel,
 	}
 	if err := rows.Scan(dest...); err != nil {
 		return Account{}, err
@@ -195,6 +195,7 @@ func (s *sqlStore) migrate() error {
 			trial_usage_percent DOUBLE PRECISION, trial_status TEXT, trial_expires_at BIGINT,
 			request_count BIGINT, error_count BIGINT, last_used BIGINT, total_tokens BIGINT, total_credits DOUBLE PRECISION,
 			warmup_status TEXT DEFAULT '', warmup_error TEXT DEFAULT '', last_warmup BIGINT DEFAULT 0,
+			probe_model TEXT DEFAULT '',
 			position BIGINT
 		)`,
 		`CREATE TABLE IF NOT EXISTS api_keys (
@@ -247,7 +248,7 @@ func (s *sqlStore) migrate() error {
 			return err
 		}
 	}
-	for col, typ := range map[string]string{"warmup_status": "TEXT DEFAULT ''", "warmup_error": "TEXT DEFAULT ''", "last_warmup": "BIGINT DEFAULT 0"} {
+	for col, typ := range map[string]string{"warmup_status": "TEXT DEFAULT ''", "warmup_error": "TEXT DEFAULT ''", "last_warmup": "BIGINT DEFAULT 0", "probe_model": "TEXT DEFAULT ''"} {
 		if err := addColumn("accounts", col, typ); err != nil {
 			return err
 		}

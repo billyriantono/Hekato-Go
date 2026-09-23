@@ -81,10 +81,15 @@ func isTransient(err error) bool {
 	return strings.Contains(msg, "timeout") || strings.Contains(msg, "connection") || strings.Contains(msg, "eof")
 }
 
-// probeModelFor picks the model for the Test button and the warmup probe: the
-// configured default test model when the account serves it, else a haiku-class
-// or first advertised model, else a Claude default.
+// probeModelFor picks the model for the Test button and the warmup probe:
+// the account's own probe model, else the global default test model when the
+// account serves it, else the cheapest-looking advertised model (haiku /
+// flash / lite / mini / small), else the first advertised, else a Claude
+// default. Never the first catalog entry blindly: that can be the priciest.
 func probeModelFor(account *config.Account) string {
+	if account != nil && strings.TrimSpace(account.ProbeModel) != "" {
+		return strings.TrimSpace(account.ProbeModel)
+	}
 	models, err := ListAvailableModels(account)
 	if preferred := config.GetTestModel(); preferred != "" {
 		if err != nil || len(models) == 0 {
@@ -97,14 +102,22 @@ func probeModelFor(account *config.Account) string {
 		}
 	}
 	if err == nil && len(models) > 0 {
+		return cheapestModel(models)
+	}
+	return "claude-sonnet-4.5"
+}
+
+// cheapestModel prefers small / fast tiers by name; falls back to the first.
+func cheapestModel(models []ModelInfo) string {
+	for _, hint := range []string{"haiku", "flash-lite", "lite", "flash", "mini", "small", "nano"} {
 		for _, m := range models {
-			if strings.Contains(strings.ToLower(m.ModelId), "haiku") {
+			id := strings.ToLower(m.ModelId)
+			if strings.Contains(id, hint) && !strings.Contains(id, "thinking") {
 				return m.ModelId
 			}
 		}
-		return models[0].ModelId
 	}
-	return "claude-sonnet-4.5"
+	return models[0].ModelId
 }
 
 // warmupOne runs the full check for one account and persists the outcome.

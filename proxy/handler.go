@@ -2788,6 +2788,7 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 			"hasToken":          a.AccessToken != "",
 			"machineId":         a.MachineId,
 			"weight":            a.Weight,
+			"probeModel":        a.ProbeModel,
 			"overageStatus":     a.OverageStatus,
 			"overageCapability": a.OverageCapability,
 			"overageCap":        a.OverageCap,
@@ -2902,6 +2903,9 @@ func (h *Handler) apiUpdateAccount(w http.ResponseWriter, r *http.Request, id st
 	}
 	if v, ok := updates["weight"].(float64); ok {
 		existing.Weight = int(v)
+	}
+	if v, ok := updates["probeModel"].(string); ok {
+		existing.ProbeModel = strings.TrimSpace(v)
 	}
 	if v, ok := updates["proxyURL"].(string); ok {
 		if v != "" && !strings.HasPrefix(v, "http://") && !strings.HasPrefix(v, "https://") && !strings.HasPrefix(v, "socks5://") && !strings.HasPrefix(v, "socks5h://") {

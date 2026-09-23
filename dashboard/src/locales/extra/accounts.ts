@@ -40,9 +40,15 @@ export const en: Record<string, string> = {
   'codebuddy.expiredTokens': '{0} expired token(s)',
   'codebuddy.importCount': '{0} CodeBuddy account(s) added',
   'codebuddy.addMany': 'Add {0} accounts',
+  'detail.probeModel': 'Test / warmup model',
+  'detail.probeModelDefault': '(automatic: global default, else cheapest advertised)',
+  'detail.probeModelHint': 'Used by the Test button and the warmup probe for this account. Pick a cheap model so health checks do not burn credits.',
 }
 
 export const zh: Record<string, string> = {
+  'detail.probeModel': '测试 / 预热模型',
+  'detail.probeModelDefault': '（自动：全局默认，否则选最便宜的可用模型）',
+  'detail.probeModelHint': '此账号的“测试”按钮和预热探测使用该模型。请选择便宜的模型以免消耗额度。',
   'codebuddy.labelHint': '可选。多个凭证时会自动编号（#1、#2…）。',
   'codebuddy.credentials': 'API 密钥或会话令牌',
   'codebuddy.credentialsHint': '可粘贴 CodeBuddy API 密钥（sk-…）、JWT 会话令牌（eyJ…）或令牌 JSON（{"access_token","refresh_token","uid"}）——每行一个、数组或文件，可混用。API 密钥创建受限时可使用会话令牌；带 refresh_token 时网关会自动续期。',

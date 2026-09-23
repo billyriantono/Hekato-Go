@@ -84,6 +84,7 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
   // editable fields
   const [nickname, setNickname] = useState(a.nickname ?? '')
   const [weight, setWeight] = useState(String(a.weight ?? 0))
+  const [probeModel, setProbeModel] = useState(a.probeModel ?? '')
   const [machineId, setMachineId] = useState(a.machineId ?? '')
   const [egress, setEgress] = useState<'inherit' | 'proxy' | 'relay'>(a.relayURL ? 'relay' : a.proxyURL ? 'proxy' : 'inherit')
   const [proxyURL, setProxyURL] = useState(a.proxyURL ?? '')
@@ -100,13 +101,15 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
   const modelList = models.data?.models ?? []
   const settings = useQuery({ queryKey: ['settings'], queryFn: () => get<{ testModel?: string }>('/settings') })
   const configuredTestModel = settings.data?.testModel?.trim() ?? ''
-  const accountDefaultModel = modelList.find((model) => model.toLowerCase() === configuredTestModel.toLowerCase())
+  const accountDefaultModel =
+    modelList.find((model) => model.toLowerCase() === (a.probeModel ?? '').toLowerCase()) ??
+    modelList.find((model) => model.toLowerCase() === configuredTestModel.toLowerCase())
   const selectedTestModel = testModel ?? accountDefaultModel ?? modelList[0] ?? ''
 
   const saveIdentity = () =>
     run('identity', async () => {
       if (machineId && !isMachineId(machineId)) throw new Error(t('detail.machineIdError'))
-      await put(`/accounts/${a.id}`, { nickname, weight: Number(weight) || 0, machineId })
+      await put(`/accounts/${a.id}`, { nickname, weight: Number(weight) || 0, machineId, probeModel })
       toast.success(t('detail.saved'))
       invalidate()
     })
@@ -235,6 +238,23 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
             <Input id="weight" type="number" min={0} value={weight} onChange={(e) => setWeight(e.target.value)} />
             <p className="text-[11px] text-muted-foreground">{t('detail.weightHint')}</p>
           </div>
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor="probe-model">{t('detail.probeModel')}</Label>
+          <select
+            id="probe-model"
+            value={probeModel}
+            onChange={(e) => setProbeModel(e.target.value)}
+            className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+          >
+            <option value="">{t('detail.probeModelDefault')}</option>
+            {modelList.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+          <p className="text-[11px] text-muted-foreground">{t('detail.probeModelHint')}</p>
         </div>
         <div className="space-y-1">
           <Label htmlFor="mid">{t('detail.machineId')}</Label>
