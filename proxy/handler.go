@@ -1848,6 +1848,13 @@ func (h *Handler) appendRequestLog(entry RequestLog) {
 // recordFailureWithDetails records a failure and stores it in the request logs.
 // log row renders empty TTFT/TPS cells.
 func (h *Handler) recordFailureWithDetails(w http.ResponseWriter, endpoint, model, accountID string, err error) {
+	h.recordFailureTimed(w, endpoint, model, accountID, err, 0, 0)
+}
+
+// recordFailureTimed is recordFailureWithDetails for paths that know how far
+// the request got. Without the timings a failed row shows "0 ms / —", which
+// reads as "failed instantly" when the truth may be "died after four minutes".
+func (h *Handler) recordFailureTimed(w http.ResponseWriter, endpoint, model, accountID string, err error, durationMs, ttftMs int64) {
 	atomic.AddInt64(&h.totalRequests, 1)
 	atomic.AddInt64(&h.failedRequests, 1)
 
@@ -1858,7 +1865,7 @@ func (h *Handler) recordFailureWithDetails(w http.ResponseWriter, endpoint, mode
 	errMsg := err.Error()
 	errType := classifyError(errMsg)
 
-	entry := h.newLogEntry(w, endpoint, model, accountID, "error", 0, 0, 0, 0, 0, 0)
+	entry := h.newLogEntry(w, endpoint, model, accountID, "error", 0, 0, 0, durationMs, ttftMs, 0)
 	entry.Error = errMsg
 	entry.ErrorType = errType
 
@@ -2499,7 +2506,12 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 			if !responseStarted {
 				continue
 			}
-			h.recordFailureWithDetails(w, "openai", model, account.ID, err)
+			// Bytes are already on the wire, so failover is out. Close the SSE
+			// stream properly instead of dropping it: a stream that just stops
+			// makes strict clients ("stream closed before a finish_reason")
+			// discard the partial answer they already rendered.
+			h.recordFailureTimed(w, "openai", model, account.ID, err, time.Since(reqStart).Milliseconds(), perf.finalise().ttftMs)
+			endOpenAIStreamTruncated(w, flusher, chatID, model, inputTokens, outputTokens)
 			return
 		}
 
@@ -2565,6 +2577,36 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 
 	h.recordFailureWithDetails(w, "openai", model, "", lastErr)
 	h.sendOpenAIError(w, 500, "server_error", lastErr.Error())
+}
+
+// endOpenAIStreamTruncated closes a half-delivered SSE stream with a terminal
+// chunk. finish_reason is "length" rather than "stop" because the reply really
+// was cut short — a client that keeps the partial text should know it is
+// incomplete. The failure itself is already in the request log.
+func endOpenAIStreamTruncated(w http.ResponseWriter, flusher http.Flusher, chatID, model string, inputTokens, outputTokens int) {
+	if flusher == nil {
+		return
+	}
+	chunk := map[string]interface{}{
+		"id":      chatID,
+		"object":  "chat.completion.chunk",
+		"created": time.Now().Unix(),
+		"model":   model,
+		"choices": []map[string]interface{}{{
+			"index":         0,
+			"delta":         map[string]interface{}{},
+			"finish_reason": "length",
+		}},
+		"usage": map[string]int{
+			"prompt_tokens":     inputTokens,
+			"completion_tokens": outputTokens,
+			"total_tokens":      inputTokens + outputTokens,
+		},
+	}
+	data, _ := json.Marshal(chunk)
+	fmt.Fprintf(w, "data: %s\n\n", string(data))
+	fmt.Fprintf(w, "data: [DONE]\n\n")
+	flusher.Flush()
 }
 
 // handleOpenAINonStream OpenAI 非流式响应

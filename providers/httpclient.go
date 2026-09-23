@@ -48,7 +48,12 @@ func clientForAccount(account *config.Account, rest bool) *http.Client {
 	if account.RelayURL != "" {
 		transport = egress.NewRelayTransportWith(transport, account.RelayURL, account.RelaySecret)
 	}
-	timeout := 5 * time.Minute
+	if rest {
+		transport = withIdleTimeout(transport, 0)
+	} else {
+		transport = withIdleTimeout(transport, streamIdleTimeout)
+	}
+	var timeout time.Duration // streaming: no overall deadline, see InitHTTPClients
 	if rest {
 		timeout = 30 * time.Second
 	}
@@ -70,6 +75,9 @@ func buildTransport(proxyURL string) *http.Transport {
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 20,
 		IdleConnTimeout:     90 * time.Second,
+		// Headers must arrive promptly even when the body then streams for
+		// many minutes; this is the only deadline a stream still has.
+		ResponseHeaderTimeout: 2 * time.Minute,
 		DisableCompression:  false,
 		ForceAttemptHTTP2:   true,
 	}
@@ -87,9 +95,13 @@ func buildTransport(proxyURL string) *http.Transport {
 
 // InitHTTPClients initializes (or reinitializes) the HTTP clients used for Kiro API requests.
 func InitHTTPClients(proxyURL string) {
+	// Streaming carries no overall deadline: http.Client.Timeout spans the body
+	// read too, so a 5-minute cap killed long reasoning streams mid-flight and
+	// the client saw a response that just stopped. Liveness is enforced instead
+	// by streamIdleTimeout (no bytes for that long = dead) and by the
+	// transport's response-header timeout.
 	client := &http.Client{
-		Timeout:   5 * time.Minute,
-		Transport: egress.NewRelayTransport(buildTransport(proxyURL)),
+		Transport: withIdleTimeout(egress.NewRelayTransport(buildTransport(proxyURL)), streamIdleTimeout),
 	}
 	streamClientStore.Store(client)
 
