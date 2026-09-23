@@ -28,6 +28,7 @@ import {
   warmupCounts,
   type Account,
   type WarmupResult,
+  isKiroAccount,
 } from './shared'
 
 export function AccountDetailSheet({ account, onClose }: { account: Account | null; onClose: () => void }) {
@@ -309,6 +310,7 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
         {a.warmupError && <Row label={t('accounts.warmup.error')}>{a.warmupError}</Row>}
       </Section>
 
+      {isKiroAccount(a) && (
       <Section
         title={t('detail.overage')}
         action={
@@ -333,6 +335,7 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
         <Row label={t('detail.overageCurrent')}>{usd(a.currentOverages)}</Row>
         <Row label={t('detail.overageCheckedAt')}>{formatTime(a.overageCheckedAt)}</Row>
       </Section>
+      )}
 
       <Section title={t('detail.proxyURL')}>
         <p className="text-[11px] text-muted-foreground">{t('detail.proxyHint')}</p>

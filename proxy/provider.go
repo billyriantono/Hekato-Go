@@ -36,6 +36,10 @@ type providerAdapter struct {
 	responses  func(http.ResponseWriter, http.Flusher, *config.Account, *ResponsesRequest) error
 	listModels func(*config.Account) ([]ModelInfo, error)
 	fetchUsage func(*config.Account) (*config.AccountInfo, error)
+	// staticModels marks listModels as a local catalog (no network), so the
+	// pool can be seeded with it synchronously at startup and routing never
+	// sees an empty model list for the provider.
+	staticModels bool
 }
 
 var providerAdapters = map[providerKind]providerAdapter{}

@@ -386,6 +386,10 @@ func NewHandler() *Handler {
 		close(h.logSaverDone)
 	}
 	// 启动后台刷新
+	// Seed static model catalogs before serving so the router has candidates
+	// from the first request; live lists (Kiro, Codex, Grok) arrive from the
+	// background refresh a few seconds later.
+	h.seedStaticModelLists()
 	go h.backgroundRefresh()
 	// 启动后台统计保存 (每30秒保存一次)
 	go h.backgroundStatsSaver()
@@ -440,6 +444,26 @@ func (h *Handler) Shutdown() {
 	}
 	if h.logSaverDone != nil {
 		<-h.logSaverDone
+	}
+}
+
+// seedStaticModelLists fills the pool's per-account model lists for providers
+// whose catalog is local (no network), synchronously.
+func (h *Handler) seedStaticModelLists() {
+	for _, acc := range config.GetEnabledAccounts() {
+		adapter, err := adapterForAccount(&acc)
+		if err != nil || !adapter.staticModels || adapter.listModels == nil {
+			continue
+		}
+		models, err := adapter.listModels(&acc)
+		if err != nil || len(models) == 0 {
+			continue
+		}
+		ids := make([]string, 0, len(models))
+		for _, m := range models {
+			ids = append(ids, m.ModelId)
+		}
+		h.pool.SetModelList(acc.ID, ids)
 	}
 }
 

@@ -149,3 +149,9 @@ export const isHttpUrl = (v: string) => /^https?:\/\//.test(v)
 export const isMachineId = (v: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v) || /^[0-9a-f]{32}$/i.test(v)
 
+
+/** Kiro (AWS) accounts have upstream overage billing; other providers do not. */
+export function isKiroAccount(a: { authMethod?: string; provider?: string }): boolean {
+  const key = `${a.authMethod ?? ''} ${a.provider ?? ''}`.toLowerCase()
+  return !/codebuddy|grok|xai|codex|openai|cline/.test(key)
+}

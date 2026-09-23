@@ -15,7 +15,8 @@ func init() {
 		chatFromOpenAI: func(a *config.Account, r *OpenAIRequest, thinking bool, cb *StreamCallback) error {
 			return codebuddy.Call(a, OpenAIToCodeBuddy(r, thinking), cb)
 		},
-		listModels: func(a *config.Account) ([]ModelInfo, error) { return codebuddy.ModelsForAccount(a), nil },
-		fetchUsage: codebuddy.FetchUsage,
+		listModels:   func(a *config.Account) ([]ModelInfo, error) { return codebuddy.ModelsForAccount(a), nil },
+		staticModels: true,
+		fetchUsage:   codebuddy.FetchUsage,
 	})
 }
