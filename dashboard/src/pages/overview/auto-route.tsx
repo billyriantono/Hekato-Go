@@ -21,10 +21,13 @@ type Decision = {
   explored: boolean
   pinned: boolean
   thinking?: boolean
+  email?: string
+  provider?: string
   signals: { inputTokens: number; tools: number; turns: number; images: number; thinking: boolean }
   reason: string
 }
-type Candidate = { accountId: string; model: string; successes: number; failures: number; ewmaLatencyMs: number; reliability: number; lastUpdated: number }
+type Candidate = { accountId: string; email?: string; provider?: string; model: string; successes: number; failures: number; ewmaLatencyMs: number; reliability: number; lastUpdated: number }
+const who = (email?: string, id = '') => email || short(id)
 
 const REFETCH = 15000
 
@@ -78,7 +81,7 @@ export function AutoRouteCard() {
                       <Badge variant="secondary">{d.tier}</Badge>
                       <Tooltip>
                         <TooltipTrigger render={<span className="min-w-0 flex-1 cursor-help truncate font-mono" />}>
-                          {d.model} <span className="text-muted-foreground">· {short(d.accountId)}</span>
+                          {d.model} <span className="text-muted-foreground">· {d.provider ? `${d.provider} / ` : ''}{who(d.email, d.accountId)}</span>
                         </TooltipTrigger>
                         <TooltipContent className="max-w-xs break-words">
                           <div>{d.reason || '—'}</div>
@@ -105,6 +108,7 @@ export function AutoRouteCard() {
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      <TableHead>{t('overview.provider')}</TableHead>
                       <TableHead>{t('logs.model')}</TableHead>
                       <TableHead>{t('logs.account')}</TableHead>
                       <TableHead className="text-right">{t('overview.reliability')}</TableHead>
@@ -115,8 +119,9 @@ export function AutoRouteCard() {
                   <TableBody>
                     {candidates.map((c) => (
                       <TableRow key={`${c.accountId}/${c.model}`}>
+                        <TableCell className="text-xs">{c.provider ? <Badge variant="outline">{c.provider}</Badge> : '—'}</TableCell>
                         <TableCell className="font-mono text-xs">{c.model}</TableCell>
-                        <TableCell className="font-mono text-xs" title={`${c.accountId} · ${formatTime(c.lastUpdated)}`}>{short(c.accountId)}</TableCell>
+                        <TableCell className="max-w-48 truncate text-xs" title={`${c.email || ''} ${c.accountId} · ${formatTime(c.lastUpdated)}`}>{who(c.email, c.accountId)}</TableCell>
                         <TableCell className="text-right text-xs tabular-nums">{pct(c.reliability)}</TableCell>
                         <TableCell className="text-right text-xs tabular-nums">{Math.round(c.ewmaLatencyMs)}ms</TableCell>
                         <TableCell className="text-right text-xs tabular-nums">{c.successes}/{c.failures}</TableCell>

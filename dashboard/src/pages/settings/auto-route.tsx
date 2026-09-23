@@ -33,6 +33,8 @@ type Decision = {
   explored: boolean
   pinned: boolean
   thinking?: boolean
+  email?: string
+  provider?: string
   signals: { inputTokens: number; tools: number; turns: number; images: number; thinking: boolean }
   reason: string
 }
@@ -173,8 +175,9 @@ export function AutoRouteSection() {
                         <Badge variant={TIER_VARIANT[d.tier] ?? 'outline'}>{d.tier}</Badge>
                       </TableCell>
                       <TableCell className="font-mono">{d.model}</TableCell>
-                      <TableCell className="font-mono" title={d.accountId}>
-                        {short(d.accountId)}
+                      <TableCell className="max-w-56 truncate" title={`${d.email || ''} (${d.accountId})`}>
+                        {d.provider && <Badge variant="outline" className="mr-1">{d.provider}</Badge>}
+                        {d.email || short(d.accountId)}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">{d.score.toFixed(3)}</TableCell>
                       <TableCell className="space-x-1">

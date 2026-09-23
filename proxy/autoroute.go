@@ -70,17 +70,20 @@ func (c *candidateStats) decay(now time.Time) {
 
 // routeDecision is what the router chose and why; kept in a ring for the dashboard.
 type routeDecision struct {
-	Time      int64        `json:"time"`
-	Endpoint  string       `json:"endpoint"`
-	Tier      string       `json:"tier"`
-	Model     string       `json:"model"`
-	AccountID string       `json:"accountId"`
-	Score     float64      `json:"score"`
-	Explored  bool         `json:"explored"`
-	Pinned    bool         `json:"pinned"`
-	Thinking  bool         `json:"thinking"` // thinking switched on by the router
-	Signals   routeSignals `json:"signals"`
-	Reason    string       `json:"reason"`
+	Time      int64   `json:"time"`
+	Endpoint  string  `json:"endpoint"`
+	Tier      string  `json:"tier"`
+	Model     string  `json:"model"`
+	AccountID string  `json:"accountId"`
+	Score     float64 `json:"score"`
+	Explored  bool    `json:"explored"`
+	Pinned    bool    `json:"pinned"`
+	Thinking  bool    `json:"thinking"` // thinking switched on by the router
+	// Display-only, filled in by Snapshot from the account list.
+	Email    string       `json:"email,omitempty"`
+	Provider string       `json:"provider,omitempty"`
+	Signals  routeSignals `json:"signals"`
+	Reason   string       `json:"reason"`
 }
 
 const decisionsRingSize = 200
@@ -409,16 +412,17 @@ func (r *autoRouter) Snapshot() ([]routeDecision, []candidateView) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := time.Now()
-	dec := make([]routeDecision, len(r.decisions))
-	for i, d := range r.decisions {
-		dec[len(r.decisions)-1-i] = d
-	}
 	providers, emails := map[string]string{}, map[string]string{}
 	for _, a := range config.GetAccounts() {
 		emails[a.ID] = a.Email
 		if prov, err := config.ProviderForAccount(&a); err == nil {
 			providers[a.ID] = string(prov)
 		}
+	}
+	dec := make([]routeDecision, len(r.decisions))
+	for i, d := range r.decisions {
+		d.Email, d.Provider = emails[d.AccountID], providers[d.AccountID]
+		dec[len(r.decisions)-1-i] = d
 	}
 	var cands []candidateView
 	for k, st := range r.stats {
