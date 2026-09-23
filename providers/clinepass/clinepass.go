@@ -22,19 +22,21 @@ import (
 	"net/http"
 	"strings"
 )
+
 // Upstream endpoints. ClinePass and "cline" share these in 9router; the
 // provider is effectively a model-catalog/auth-mode variant.
 //
 // BaseURL is a var (not const) so tests can point the package at httptest
 // servers; doClinepassRequest reads it on every call.
 var (
-	clinepassBaseURL     = "https://api.cline.bot"
+	clinepassBaseURL       = "https://api.cline.bot"
 	clinepassAuthUserAgent = "hekato-go/1.0 (clinepass)"
 )
 
 // clinepassChatURL is derived from the (overridable) base URL. Computed at call
 // time so a test swap of clinepassBaseURL is reflected immediately.
 func clinepassChatURL() string { return clinepassBaseURL + "/api/v1/chat/completions" }
+
 // setClinepassHeaders writes the headers every ClinePass request needs.
 // The token is sent verbatim — auth.NormalizeClinepassToken already prefixes
 // raw WorkOS JWTs with "workos:" so the upstream accepts them.
@@ -101,20 +103,20 @@ func CallOpenAI(account *config.Account, req *providers.OpenAIRequest, callback 
 // between non-stream + SSE parsing. Defined inline because providers does not
 // expose an OpenAIResponse (every provider defines its own minimal shape).
 type clinepassChoice struct {
-	Index        int                  `json:"index"`
-	Message      *clinepassChoiceMsg  `json:"message,omitempty"`
-	Delta        *clinepassChoiceMsg  `json:"delta,omitempty"`
-	FinishReason string               `json:"finish_reason"`
+	Index        int                 `json:"index"`
+	Message      *clinepassChoiceMsg `json:"message,omitempty"`
+	Delta        *clinepassChoiceMsg `json:"delta,omitempty"`
+	FinishReason string              `json:"finish_reason"`
 }
 
 type clinepassChoiceMsg struct {
-	Role      string                  `json:"role"`
-	Content   string                  `json:"content"`
-	ToolCalls []providers.ToolCall     `json:"tool_calls"`
+	Role      string               `json:"role"`
+	Content   string               `json:"content"`
+	ToolCalls []providers.ToolCall `json:"tool_calls"`
 }
 
 type clinepassResponse struct {
-	Choices []clinepassChoice          `json:"choices"`
+	Choices []clinepassChoice `json:"choices"`
 	Usage   struct {
 		PromptTokens     int `json:"prompt_tokens"`
 		CompletionTokens int `json:"completion_tokens"`

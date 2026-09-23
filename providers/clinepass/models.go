@@ -84,8 +84,8 @@ func FetchModels(account *config.Account) ([]providers.ModelInfo, error) {
 			continue
 		}
 		info := providers.ModelInfo{
-			ModelId:   id,
-			ModelName: id,
+			ModelId:    id,
+			ModelName:  id,
 			InputTypes: []string{"text"},
 		}
 		if m.OwnedBy != "" {

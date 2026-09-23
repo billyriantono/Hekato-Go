@@ -206,6 +206,10 @@ func (s *sqlStore) migrate() error {
 			rpm_limit BIGINT DEFAULT 0, concurrency_limit BIGINT DEFAULT 0,
 			position BIGINT
 		)`,
+		`CREATE TABLE IF NOT EXISTS runtime_blobs (
+			key TEXT PRIMARY KEY,
+			data TEXT
+		)`,
 		`CREATE TABLE IF NOT EXISTS metrics_minutes (
 			minute BIGINT PRIMARY KEY,
 			data TEXT

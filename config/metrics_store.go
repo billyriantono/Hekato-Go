@@ -1,10 +1,12 @@
 package config
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // MetricsStore persists per-minute ops metrics so dashboards survive restarts.
@@ -15,6 +17,25 @@ type MetricsStore interface {
 	LoadMetrics(sinceMinute int64) (map[int64]string, error)
 	SaveMetrics(rows map[int64]string) error
 	PruneMetrics(beforeMinute int64) error
+}
+
+// BlobStore persists small runtime documents (JSON) that must survive
+// restarts, keyed by name: the auto-router's decisions and learned stats, etc.
+//   - jsonStore: runtime-<key>.json beside config.json (atomic write).
+//   - sqlStore:  runtime_blobs(key PRIMARY KEY, data TEXT).
+type BlobStore interface {
+	LoadBlob(key string) (string, error)
+	SaveBlob(key, data string) error
+}
+
+// Blobs returns the runtime blob persistence for the active backend.
+func Blobs() BlobStore {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if bs, ok := store.(BlobStore); ok {
+		return bs
+	}
+	return nil
 }
 
 // Metrics returns the metrics persistence for the active backend.
@@ -153,5 +174,44 @@ func (s *sqlStore) SaveMetrics(rowsIn map[int64]string) error {
 
 func (s *sqlStore) PruneMetrics(beforeMinute int64) error {
 	_, err := s.db.Exec(s.rebind(`DELETE FROM metrics_minutes WHERE minute < ?`), beforeMinute)
+	return err
+}
+
+// ---- runtime blobs ----
+
+func (s *jsonStore) blobPath(key string) string {
+	safe := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			return r
+		}
+		return '_'
+	}, key)
+	return filepath.Join(filepath.Dir(s.path), "runtime-"+safe+".json")
+}
+
+func (s *jsonStore) LoadBlob(key string) (string, error) {
+	data, err := os.ReadFile(s.blobPath(key))
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	return string(data), err
+}
+
+func (s *jsonStore) SaveBlob(key, data string) error {
+	return writeFileAtomic(s.blobPath(key), []byte(data))
+}
+
+func (s *sqlStore) LoadBlob(key string) (string, error) {
+	var data string
+	err := s.db.QueryRow(s.rebind(`SELECT data FROM runtime_blobs WHERE key = ?`), key).Scan(&data)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return data, err
+}
+
+func (s *sqlStore) SaveBlob(key, data string) error {
+	_, err := s.db.Exec(s.rebind(`INSERT INTO runtime_blobs (key, data) VALUES (?, ?)
+		ON CONFLICT (key) DO UPDATE SET data = excluded.data`), key, data)
 	return err
 }

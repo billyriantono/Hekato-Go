@@ -156,21 +156,6 @@ func (m *metricsCollector) Flush() {
 	}
 }
 
-// run flushes every 30s until stop is closed, then flushes once more.
-func (m *metricsCollector) run(stop <-chan struct{}) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			m.Flush()
-		case <-stop:
-			m.Flush()
-			return
-		}
-	}
-}
-
 func (m *metricsCollector) bucketFor(minute int64) *metricsBucket {
 	idx := int(minute % metricsMinutes)
 	b := m.buckets[idx]

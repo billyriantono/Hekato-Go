@@ -3,14 +3,14 @@ package clinepass
 import (
 	"context"
 	"encoding/json"
+	"hekato-go/auth"
+	"hekato-go/config"
+	"hekato-go/providers"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"hekato-go/auth"
-	"hekato-go/config"
-	"hekato-go/providers"
 )
 
 // parser fixtures --------------------------------------------------------------
@@ -82,7 +82,7 @@ func TestParseClinepassImportEntries_BareTokens(t *testing.T) {
 		}
 	}
 	// Blank lines must be skipped, not turned into empty AccessTokens.
-entries, err = parseClinepassImportEntries([]byte("\nsk_x\n\n\nclp_y\n"))
+	entries, err = parseClinepassImportEntries([]byte("\nsk_x\n\n\nclp_y\n"))
 	if err != nil {
 		t.Fatalf("blank-line parse: %v", err)
 	}
@@ -201,9 +201,9 @@ func TestConsumeClinepassSSEDeltaAndDone(t *testing.T) {
 	var gotStop string
 	var gotP, gotC int
 	cb := &providers.StreamCallback{
-		OnText: func(s string, _ bool) { got.WriteString(s) },
+		OnText:       func(s string, _ bool) { got.WriteString(s) },
 		OnStopReason: func(s string) { gotStop = s },
-		OnComplete: func(p, c int) { gotP, gotC = p, c },
+		OnComplete:   func(p, c int) { gotP, gotC = p, c },
 	}
 	if err := consumeClinepassSSE(strings.NewReader(body), cb); err != nil {
 		t.Fatalf("consume: %v", err)

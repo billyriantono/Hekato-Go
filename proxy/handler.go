@@ -359,7 +359,8 @@ func NewHandler() *Handler {
 	}
 	// Restore persisted ops metrics and keep flushing them in the background.
 	h.metrics.Load(config.Metrics())
-	go h.metrics.run(h.stopStatsSaver)
+	h.autoRouter.Load(config.Blobs())
+	go h.runTelemetryFlusher()
 	// 从持久化存储加载最近请求日志，使重启后 /logs 与 dashboard telemetry 不再清空。
 	// 容量不足 (e.g. 历史未持久化、或后端未实现 RequestLogStore) 时静默回退到内存环。
 	if rs := config.RequestLogs(); rs != nil {
@@ -406,12 +407,31 @@ func accountRefreshInterval() time.Duration {
 	return 30 * time.Minute
 }
 
-// Shutdown stops background loops and flushes stats and metrics to storage.
+// runTelemetryFlusher persists ops telemetry (metrics buckets, auto-router
+// state) every 30s and once more on shutdown.
+func (h *Handler) runTelemetryFlusher() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			h.metrics.Flush()
+			h.autoRouter.Flush()
+		case <-h.stopStatsSaver:
+			h.metrics.Flush()
+			h.autoRouter.Flush()
+			return
+		}
+	}
+}
+
+// Shutdown stops background loops and flushes stats and telemetry to storage.
 func (h *Handler) Shutdown() {
 	close(h.stopRefresh)
 	close(h.stopStatsSaver)
 	h.saveStats()
 	h.metrics.Flush()
+	h.autoRouter.Flush()
 	// Drain pending request logs to disk before exit. Non-blocking on shutdown:
 	// if no flusher was started (backend without RequestLogStore), logSaverDone
 	// was closed in NewHandler, so the select hits it immediately.

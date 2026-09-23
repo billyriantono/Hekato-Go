@@ -281,6 +281,7 @@ func parseCodeBuddySSE(body io.Reader, callback *providers.StreamCallback) error
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	toolStates := map[int]*codeBuddyToolDeltaState{}
 	var inputTokens, outputTokens int
+	var credits float64
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -305,6 +306,9 @@ func parseCodeBuddySSE(body io.Reader, callback *providers.StreamCallback) error
 			if v, ok := providers.ReadTokenNumber(usage, "completion_tokens", "completionTokens", "output_tokens", "outputTokens"); ok {
 				outputTokens = v
 			}
+			if c := codeBuddyCredit(usage); c > 0 {
+				credits = c
+			}
 		}
 		choices, _ := evt["choices"].([]interface{})
 		for _, rawChoice := range choices {
@@ -321,10 +325,28 @@ func parseCodeBuddySSE(body io.Reader, callback *providers.StreamCallback) error
 		return err
 	}
 	flushCodeBuddyTools(toolStates, callback)
+	if credits > 0 && callback.OnCredits != nil {
+		callback.OnCredits(credits)
+	}
 	if callback.OnComplete != nil {
 		callback.OnComplete(inputTokens, outputTokens)
 	}
 	return nil
+}
+
+// codeBuddyCredit reads the per-call credit charge CodeBuddy reports in the
+// final usage object ("credit"; 0 on free-promo models).
+func codeBuddyCredit(usage map[string]interface{}) float64 {
+	for _, k := range []string{"credit", "credits", "credit_used", "creditsUsed"} {
+		switch v := usage[k].(type) {
+		case float64:
+			return v
+		case json.Number:
+			f, _ := v.Float64()
+			return f
+		}
+	}
+	return 0
 }
 
 func dispatchCodeBuddyDelta(delta map[string]interface{}, toolStates map[int]*codeBuddyToolDeltaState, callback *providers.StreamCallback) {
@@ -422,6 +444,9 @@ func parseCodeBuddyJSON(body io.Reader, callback *providers.StreamCallback) erro
 				callback.OnToolUse(providers.ToolUse{ToolUseID: tc.ID, Name: tc.Function.Name, Input: input})
 			}
 		}
+	}
+	if c := codeBuddyCredit(out.Usage); c > 0 && callback.OnCredits != nil {
+		callback.OnCredits(c)
 	}
 	if callback.OnComplete != nil {
 		inTok, _ := providers.ReadTokenNumber(out.Usage, "prompt_tokens", "promptTokens", "input_tokens", "inputTokens")

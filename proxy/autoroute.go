@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hekato-go/config"
+	"hekato-go/logger"
 	"hekato-go/pool"
 	"math"
 	"math/rand"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // The virtual "auto" model. When auto routing is enabled, requests for it are
@@ -86,6 +89,71 @@ type autoRouter struct {
 	stats     map[string]*candidateStats // "accountID|model"
 	decisions []routeDecision
 	rng       *rand.Rand
+	store     config.BlobStore
+	dirty     bool
+}
+
+const autoRouterBlobKey = "autoroute"
+
+// autoRouterState is the persisted form: learned stats + recent decisions.
+type autoRouterState struct {
+	Stats     map[string]*candidateStats `json:"stats"`
+	Decisions []routeDecision            `json:"decisions"`
+}
+
+// Load restores state from the blob store (no-op when nil / empty).
+func (r *autoRouter) Load(store config.BlobStore) {
+	if r == nil || store == nil {
+		return
+	}
+	r.mu.Lock()
+	r.store = store
+	r.mu.Unlock()
+	data, err := store.LoadBlob(autoRouterBlobKey)
+	if err != nil {
+		logger.Warnf("[AutoRoute] load failed: %v", err)
+		return
+	}
+	if data == "" {
+		return
+	}
+	var st autoRouterState
+	if err := json.Unmarshal([]byte(data), &st); err != nil {
+		logger.Warnf("[AutoRoute] load: bad state: %v", err)
+		return
+	}
+	r.mu.Lock()
+	if st.Stats != nil {
+		r.stats = st.Stats
+	}
+	r.decisions = st.Decisions
+	r.mu.Unlock()
+	logger.Infof("[AutoRoute] restored %d candidates, %d decisions", len(st.Stats), len(st.Decisions))
+}
+
+// Flush persists state when it changed since the last flush.
+func (r *autoRouter) Flush() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	if r.store == nil || !r.dirty {
+		r.mu.Unlock()
+		return
+	}
+	data, err := json.Marshal(autoRouterState{Stats: r.stats, Decisions: r.decisions})
+	r.dirty = false
+	store := r.store
+	r.mu.Unlock()
+	if err != nil {
+		return
+	}
+	if err := store.SaveBlob(autoRouterBlobKey, string(data)); err != nil {
+		logger.Warnf("[AutoRoute] save failed: %v", err)
+		r.mu.Lock()
+		r.dirty = true
+		r.mu.Unlock()
+	}
 }
 
 func newAutoRouter() *autoRouter {
@@ -260,6 +328,7 @@ func (r *autoRouter) Record(accountID, model string, success bool, latencyMs int
 		r.stats[k] = st
 	}
 	st.decay(now)
+	r.dirty = true
 	if success {
 		st.Successes++
 		if latencyMs > 0 {
@@ -285,6 +354,7 @@ func (r *autoRouter) pushLocked(d routeDecision) {
 		r.decisions = r.decisions[1:]
 	}
 	r.decisions = append(r.decisions, d)
+	r.dirty = true
 }
 
 type candidateView struct {
@@ -353,7 +423,9 @@ func (h *Handler) resolveAutoModel(w http.ResponseWriter, endpoint, model string
 		return model
 	}
 	if *affinityKey == "" {
-		*affinityKey = "auto:" + fmt.Sprintf("%d-%d", time.Now().UnixNano(), h.autoRouter.rng.Int63())
+		// Per-request key so pickAccount honours the router's choice; uuid is
+		// goroutine-safe (the router's rand.Rand is only used under its mutex).
+		*affinityKey = "auto:" + uuid.NewString()
 	}
 	h.affinity.SetWithModel(*affinityKey, d.AccountID, d.Model)
 	w.Header().Set("X-Hekato-Routed-Model", d.Model)
