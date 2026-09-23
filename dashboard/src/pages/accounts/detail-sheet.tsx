@@ -471,6 +471,9 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
           </Button>
         </div>
         <p className="text-[11px] text-muted-foreground">{t('detail.addModelHint')}</p>
+        {/cline/i.test(`${a.authMethod} ${a.provider}`) && (
+          <p className="text-[11px] text-amber-600 dark:text-amber-400">{t('detail.clinepassModelsHint')}</p>
+        )}
       </Section>
 
       <Section title={t('accounts.testModalTitle')}>

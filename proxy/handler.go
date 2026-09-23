@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -4027,6 +4028,15 @@ func (h *Handler) apiGetAccountModels(w http.ResponseWriter, r *http.Request, id
 // apiGetAccountModelsCached 返回账号已缓存的模型列表（不实时拉取）
 func (h *Handler) apiGetAccountModelsCached(w http.ResponseWriter, r *http.Request, id string) {
 	models := h.pool.GetModelList(id)
+	// Stable, readable order: subscription-covered entries (cline-pass/…)
+	// first, then alphabetical.
+	sort.SliceStable(models, func(i, j int) bool {
+		pi, pj := strings.HasPrefix(models[i], "cline-pass/"), strings.HasPrefix(models[j], "cline-pass/")
+		if pi != pj {
+			return pi
+		}
+		return models[i] < models[j]
+	})
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"models":  models,

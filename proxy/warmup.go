@@ -214,8 +214,11 @@ func (h *Handler) finishWarmup(res warmupResult, account *config.Account, err er
 			res.Error = res.Error[:500]
 		}
 		config.UpdateAccountWarmup(account.ID, "error", res.Error, now)
+		logger.Warnf("[Warmup] %s failed: %s", account.Email, res.Error)
 		if account.Enabled {
 			h.handleAccountFailure(account, err)
+		} else {
+			logger.Infof("[Warmup] %s is disabled; failure not fed to failover", account.Email)
 		}
 		return res
 	}

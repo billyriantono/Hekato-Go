@@ -1,6 +1,9 @@
 package proxy
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestAccountFailureClassifiers(t *testing.T) {
 	tests := []struct {

@@ -51,9 +51,13 @@ export const en: Record<string, string> = {
   'detail.probeModelCurrent': 'Current test / warmup model: {0}',
   'detail.probeModelUnset': 'No test / warmup model pinned (automatic).',
   'detail.probeModelSaved': 'Test / warmup model set to {0}',
+  'modal.clinepassImportTitle': 'Import ClinePass tokens',
+  'detail.clinepassModelsHint': 'ClinePass: only the cline-pass/… models are covered by the subscription (verified list). Every other entry is billed against the Cline credit balance.',
 }
 
 export const zh: Record<string, string> = {
+  'detail.clinepassModelsHint': 'ClinePass：只有 cline-pass/… 模型包含在订阅内（已验证列表），其余模型均按 Cline 积分余额计费。',
+  'modal.clinepassImportTitle': '导入 ClinePass 令牌',
   'detail.setAsDefault': '设为测试 / 预热模型',
   'detail.probeModelCurrent': '当前测试 / 预热模型：{0}',
   'detail.probeModelUnset': '未指定测试 / 预热模型（自动）。',
