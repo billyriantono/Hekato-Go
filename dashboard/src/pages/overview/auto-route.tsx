@@ -20,6 +20,7 @@ type Decision = {
   score: number
   explored: boolean
   pinned: boolean
+  thinking?: boolean
   signals: { inputTokens: number; tools: number; turns: number; images: number; thinking: boolean }
   reason: string
 }
@@ -89,6 +90,7 @@ export function AutoRouteCard() {
                       <span className="shrink-0 tabular-nums text-muted-foreground">{d.score.toFixed(2)}</span>
                       {d.pinned && <Badge variant="outline">{t('overview.pinned')}</Badge>}
                       {d.explored && <Badge variant="outline">{t('overview.explored')}</Badge>}
+                      {d.thinking && <Badge variant="outline">{t('overview.thinking')}</Badge>}
                     </li>
                   ))}
                 </ul>

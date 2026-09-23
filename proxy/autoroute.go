@@ -78,6 +78,7 @@ type routeDecision struct {
 	Score     float64      `json:"score"`
 	Explored  bool         `json:"explored"`
 	Pinned    bool         `json:"pinned"`
+	Thinking  bool         `json:"thinking"` // thinking switched on by the router
 	Signals   routeSignals `json:"signals"`
 	Reason    string       `json:"reason"`
 }
@@ -223,16 +224,26 @@ func (r *autoRouter) Resolve(p *pool.AccountPool, cfg config.AutoRouteConfig, si
 			order = append(order, tier-d)
 		}
 	}
+	// Pass 1 (vision requests only): a tier with image-capable candidates,
+	// nearest tier first. Pass 2: any candidates. So a text-only tier never
+	// beats a neighbouring tier that can actually see the image.
 	var cands []routeCandidate
 	usedTier := tier
-	for _, ti := range order {
-		cands = r.candidates(p, tiers[ti], filter, cfg)
-		if sig.Images {
-			cands = r.preferVision(cands)
-		}
-		if len(cands) > 0 {
-			usedTier = ti
-			break
+	passes := []bool{false}
+	if sig.Images && r.vision != nil {
+		passes = []bool{true, false}
+	}
+search:
+	for _, needVision := range passes {
+		for _, ti := range order {
+			cands = r.candidates(p, tiers[ti], filter, cfg)
+			if needVision {
+				cands = r.onlyVision(cands)
+			}
+			if len(cands) > 0 {
+				usedTier = ti
+				break search
+			}
 		}
 	}
 	if len(cands) == 0 {
@@ -294,23 +305,21 @@ func (r *autoRouter) Resolve(p *pool.AccountPool, cfg config.AutoRouteConfig, si
 	return &d
 }
 
-// preferVision keeps only candidates whose model is known to accept images.
-// If none in the set is marked (catalog lacks modality info), the original
-// list is returned so a vision request still gets routed rather than failing.
-func (r *autoRouter) preferVision(cands []routeCandidate) []routeCandidate {
-	if r.vision == nil {
-		return cands
-	}
+// onlyVision keeps candidates whose model is known to accept images.
+func (r *autoRouter) onlyVision(cands []routeCandidate) []routeCandidate {
 	var out []routeCandidate
 	for _, c := range cands {
-		if r.vision(c.model) {
+		if r.vision != nil && r.vision(c.model) {
 			out = append(out, c)
 		}
 	}
-	if len(out) == 0 {
-		return cands
-	}
 	return out
+}
+
+// wantsThinking is the auto-thinking heuristic: heavy requests (the raw
+// strong-tier signals: very long context or many tools) get reasoning on.
+func wantsThinking(cfg config.AutoRouteConfig, sig routeSignals) bool {
+	return cfg.AutoThinking && !sig.Thinking && classifyTier(sig) == 2
 }
 
 // candidates lists routable (account, model) pairs whose model matches the tier.
@@ -431,22 +440,29 @@ func (r *autoRouter) Snapshot() ([]routeDecision, []candidateView) {
 // model. It returns the concrete model to use and pins the chosen account on
 // the affinity key (creating a per-request key if the conversation has none)
 // so the normal pickAccount path selects it. Headers announce the decision.
-func (h *Handler) resolveAutoModel(w http.ResponseWriter, endpoint, model string, sig routeSignals, affinityKey *string, cap providerCapability) string {
+// The second result reports that the router switched thinking on for a plain
+// "auto" request (see wantsThinking); callers must honour it.
+func (h *Handler) resolveAutoModel(w http.ResponseWriter, endpoint, model string, sig routeSignals, affinityKey *string, cap providerCapability) (string, bool) {
 	if !isAutoModel(model) {
-		return model
+		return model, false
 	}
 	cfg := config.GetAutoRouteConfig()
 	if !cfg.Enabled {
-		return model
+		return model, false
+	}
+	think := wantsThinking(cfg, sig)
+	reasonSuffix := ""
+	if think {
+		reasonSuffix = "; thinking=auto"
 	}
 	// Cache affinity wins: a pinned conversation keeps its account and model.
 	if *affinityKey != "" {
 		if accID, pinnedModel := h.affinity.GetWithModel(*affinityKey); accID != "" && pinnedModel != "" && !isAutoModel(pinnedModel) {
 			if h.pool.GetForModelByID(accID, pinnedModel, capabilityFilter(cap)) != nil {
-				h.autoRouter.RecordPinned(routeDecision{Time: time.Now().Unix(), Endpoint: endpoint, Tier: "pinned", Model: pinnedModel, AccountID: accID, Pinned: true, Signals: sig, Reason: "conversation pinned (warm cache)"})
+				h.autoRouter.RecordPinned(routeDecision{Time: time.Now().Unix(), Endpoint: endpoint, Tier: "pinned", Model: pinnedModel, AccountID: accID, Pinned: true, Thinking: think, Signals: sig, Reason: "conversation pinned (warm cache)" + reasonSuffix})
 				w.Header().Set("X-Hekato-Routed-Model", pinnedModel)
-				w.Header().Set("X-Hekato-Route-Reason", "pinned")
-				return pinnedModel
+				w.Header().Set("X-Hekato-Route-Reason", "pinned"+reasonSuffix)
+				return pinnedModel, think
 			}
 		}
 	}
@@ -459,12 +475,17 @@ func (h *Handler) resolveAutoModel(w http.ResponseWriter, endpoint, model string
 		// is "auto" passed through (Kiro / CodeBuddy CN serve it natively).
 		if fb := h.fallbackAutoModel(cfg, capabilityFilter(cap)); fb != "" {
 			w.Header().Set("X-Hekato-Routed-Model", fb)
-			w.Header().Set("X-Hekato-Route-Reason", "no tier candidates; fallback to advertised model")
-			h.autoRouter.RecordPinned(routeDecision{Time: time.Now().Unix(), Endpoint: endpoint, Tier: "fallback", Model: fb, Signals: sig, Reason: "no tier candidates; first advertised model"})
-			return fb
+			w.Header().Set("X-Hekato-Route-Reason", "no tier candidates; fallback to advertised model"+reasonSuffix)
+			h.autoRouter.RecordPinned(routeDecision{Time: time.Now().Unix(), Endpoint: endpoint, Tier: "fallback", Model: fb, Thinking: think, Signals: sig, Reason: "no tier candidates; first advertised model" + reasonSuffix})
+			return fb, think
 		}
 		logger.Warnf("[AutoRoute] no routable model advertised for an auto request; passing \"auto\" upstream")
-		return model
+		return model, false
+	}
+	if think {
+		d.Thinking = true
+		d.Reason += reasonSuffix
+		h.autoRouter.markThinking(d.Time, d.AccountID, d.Model)
 	}
 	if *affinityKey == "" {
 		// Per-request key so pickAccount honours the router's choice; uuid is
@@ -474,7 +495,22 @@ func (h *Handler) resolveAutoModel(w http.ResponseWriter, endpoint, model string
 	h.affinity.SetWithModel(*affinityKey, d.AccountID, d.Model)
 	w.Header().Set("X-Hekato-Routed-Model", d.Model)
 	w.Header().Set("X-Hekato-Route-Reason", d.Reason)
-	return d.Model
+	return d.Model, think
+}
+
+// markThinking flags the most recent matching decision in the ring (Resolve
+// pushed a copy before the caller knew whether thinking would be enabled).
+func (r *autoRouter) markThinking(ts int64, accountID, model string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := len(r.decisions) - 1; i >= 0; i-- {
+		d := &r.decisions[i]
+		if d.Time == ts && d.AccountID == accountID && d.Model == model {
+			d.Thinking = true
+			d.Reason += "; thinking=auto"
+			return
+		}
+	}
 }
 
 // fallbackAutoModel picks a concrete model when no tier has candidates.

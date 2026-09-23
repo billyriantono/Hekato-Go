@@ -108,7 +108,7 @@ func TestAutoRouterNeverFabricatesUnadvertisedModels(t *testing.T) {
 	h := &Handler{pool: p, affinity: newAccountAffinity(), autoRouter: r}
 	rec := httptest.NewRecorder()
 	affinityKey := ""
-	if got := h.resolveAutoModel(rec, "claude", "auto", routeSignals{InputTokens: 100}, &affinityKey, capClaudeChat); got != "auto" {
+	if got, _ := h.resolveAutoModel(rec, "claude", "auto", routeSignals{InputTokens: 100}, &affinityKey, capClaudeChat); got != "auto" {
 		t.Fatalf("no candidates should leave virtual model untouched, got %q", got)
 	}
 	if got := rec.Header().Get("X-Hekato-Routed-Model"); got != "" {
@@ -187,19 +187,56 @@ func TestHandleModelFailureFeedsRouter(t *testing.T) {
 	t.Fatalf("per-attempt failure not recorded in router candidates: %+v", cands)
 }
 
-func TestPreferVisionFiltersWhenKnown(t *testing.T) {
+func TestOnlyVisionAndAutoThinking(t *testing.T) {
 	r := newAutoRouter()
 	a := &config.Account{ID: "a"}
 	cands := []routeCandidate{{account: a, model: "text-only"}, {account: a, model: "vision-model"}}
-	if got := r.preferVision(cands); len(got) != 2 {
-		t.Fatalf("nil vision fn must not filter, got %d", len(got))
+	if got := r.onlyVision(cands); len(got) != 0 {
+		t.Fatalf("nil vision fn knows nothing, got %d", len(got))
 	}
 	r.vision = func(m string) bool { return m == "vision-model" }
-	if got := r.preferVision(cands); len(got) != 1 || got[0].model != "vision-model" {
+	if got := r.onlyVision(cands); len(got) != 1 || got[0].model != "vision-model" {
 		t.Fatalf("expected only the vision model, got %+v", got)
 	}
-	r.vision = func(string) bool { return false }
-	if got := r.preferVision(cands); len(got) != 2 {
-		t.Fatal("unknown modality info must fall back to the full list")
+	cfg := config.AutoRouteConfig{AutoThinking: true}
+	if !wantsThinking(cfg, routeSignals{InputTokens: 50000}) || !wantsThinking(cfg, routeSignals{Tools: 9}) {
+		t.Fatal("heavy requests should get thinking")
+	}
+	if wantsThinking(cfg, routeSignals{InputTokens: 2000, Tools: 2}) {
+		t.Fatal("ordinary request must not get thinking")
+	}
+	if wantsThinking(cfg, routeSignals{InputTokens: 50000, Thinking: true}) {
+		t.Fatal("already-thinking request needs no auto flag")
+	}
+	cfg.AutoThinking = false
+	if wantsThinking(cfg, routeSignals{InputTokens: 50000}) {
+		t.Fatal("switch off must disable auto thinking")
+	}
+	if c := config.DefaultAutoRouteConfig(); !c.AutoThinking {
+		t.Fatal("default should be on")
+	}
+}
+
+func TestVisionTierPrefersImageCapableNeighbour(t *testing.T) {
+	mustInitConfig(t)
+	for _, id := range []string{"v1", "v2"} {
+		if err := config.AddAccount(config.Account{ID: id, Email: id + "@x", AccessToken: "t", Enabled: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := accountpool.GetPool()
+	p.Reload()
+	p.SetModelList("v1", []string{"fast-text"})
+	p.SetModelList("v2", []string{"balanced-vision"})
+	t.Cleanup(func() { p.SetModelList("v1", nil); p.SetModelList("v2", nil) })
+	r := newAutoRouter()
+	r.vision = func(m string) bool { return m == "balanced-vision" }
+	cfg := config.AutoRouteConfig{Fast: []string{"fast-text"}, Balanced: []string{"balanced-vision"}}
+	// Small request with an image classifies balanced anyway; force the fast
+	// tier via cost weight and check vision still wins.
+	cfg.CostWeight = 1
+	d := r.Resolve(p, cfg, routeSignals{InputTokens: 100, Images: true}, nil, "claude")
+	if d == nil || d.Model != "balanced-vision" {
+		t.Fatalf("expected the vision-capable neighbour tier, got %+v", d)
 	}
 }

@@ -26,6 +26,10 @@ type AutoRouteConfig struct {
 	// the model ID). A match removes that (provider, model) pair from auto
 	// routing only; the same model on another provider stays eligible.
 	Blacklist []string `json:"blacklist"`
+	// AutoThinking lets a plain "auto" request enable thinking by itself when
+	// the request classifies as heavy (strong tier). "auto-thinking" always
+	// forces it on regardless.
+	AutoThinking bool `json:"autoThinking"`
 }
 
 // Blacklisted reports whether auto routing must skip model on provider.
@@ -57,6 +61,7 @@ func DefaultAutoRouteConfig() AutoRouteConfig {
 		Fast:          []string{"haiku"},
 		Balanced:      []string{"sonnet"},
 		Strong:        []string{"opus"},
+		AutoThinking:  true,
 	}
 }
 
@@ -88,7 +93,8 @@ func autoRouteFromString(s string) *AutoRouteConfig {
 	if s == "" {
 		return nil
 	}
-	var c AutoRouteConfig
+	// Configs saved before AutoThinking existed keep the default (on).
+	c := AutoRouteConfig{AutoThinking: true}
 	if json.Unmarshal([]byte(s), &c) != nil {
 		return nil
 	}

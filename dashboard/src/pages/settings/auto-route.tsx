@@ -21,6 +21,7 @@ type Config = {
   balanced: string[]
   strong: string[]
   blacklist: string[]
+  autoThinking: boolean
 }
 type Decision = {
   time: number
@@ -31,6 +32,7 @@ type Decision = {
   score: number
   explored: boolean
   pinned: boolean
+  thinking?: boolean
   signals: { inputTokens: number; tools: number; turns: number; images: number; thinking: boolean }
   reason: string
 }
@@ -94,6 +96,7 @@ export function AutoRouteSection() {
       ) : (
         <>
           <SwitchRow label={t('settings.autoRoute.enabled')} hint={t('settings.autoRoute.enabledHint')} checked={draft.enabled} onChange={(v) => patch({ enabled: v })} />
+          <SwitchRow label={t('settings.autoRoute.autoThinking')} hint={t('settings.autoRoute.autoThinkingHint')} checked={!!draft.autoThinking} onChange={(v) => patch({ autoThinking: v })} />
           <div className="grid gap-4 sm:grid-cols-2">
             <Slider id="ar-quality" label={t('settings.autoRoute.quality')} hint={t('settings.autoRoute.qualityHint')} value={draft.qualityWeight} max={1} onChange={(v) => patch({ qualityWeight: v })} />
             <Slider id="ar-cost" label={t('settings.autoRoute.cost')} hint={t('settings.autoRoute.costHint')} value={draft.costWeight} max={1} onChange={(v) => patch({ costWeight: v })} />
@@ -177,6 +180,7 @@ export function AutoRouteSection() {
                       <TableCell className="space-x-1">
                         {d.explored && <Badge variant="secondary">{t('settings.autoRoute.explored')}</Badge>}
                         {d.pinned && <Badge variant="outline">{t('settings.autoRoute.pinned')}</Badge>}
+                        {d.thinking && <Badge variant="default">{t('settings.autoRoute.thinking')}</Badge>}
                       </TableCell>
                       <TableCell className="max-w-48 truncate text-muted-foreground" title={d.reason}>
                         {d.reason}

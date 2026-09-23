@@ -118,7 +118,9 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 	affinityKey := openAIAffinityKey(openaiReq)
 	if isAutoModel(actualModel) {
 		markRequestedModel(w, actualModel)
-		actualModel = h.resolveAutoModel(w, "responses", actualModel, openAIRouteSignals(openaiReq, estimatedInputTokens, thinking), &affinityKey, capResponses)
+		var autoThink bool
+		actualModel, autoThink = h.resolveAutoModel(w, "responses", actualModel, openAIRouteSignals(openaiReq, estimatedInputTokens, thinking), &affinityKey, capResponses)
+		thinking = thinking || autoThink
 		openaiReq.Model = actualModel
 	}
 

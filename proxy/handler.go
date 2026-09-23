@@ -1125,7 +1125,12 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 	affinityKey := claudeAffinityKey(&req)
 	if isAutoModel(req.Model) {
 		markRequestedModel(w, req.Model)
-		req.Model = h.resolveAutoModel(w, "claude", req.Model, claudeRouteSignals(&req, estimatedInputTokens, thinking), &affinityKey, capClaudeChat)
+		var autoThink bool
+		req.Model, autoThink = h.resolveAutoModel(w, "claude", req.Model, claudeRouteSignals(&req, estimatedInputTokens, thinking), &affinityKey, capClaudeChat)
+		if autoThink {
+			thinking = true
+			effectiveReq = cloneClaudeRequestForThinking(&req, thinking)
+		}
 		effectiveReq.Model = req.Model
 		cacheProfile = h.promptCache.BuildClaudeProfile(effectiveReq, estimatedInputTokens)
 	}
@@ -2102,7 +2107,9 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	affinityKey := openAIAffinityKey(&req)
 	if isAutoModel(req.Model) {
 		markRequestedModel(w, req.Model)
-		req.Model = h.resolveAutoModel(w, "openai", req.Model, openAIRouteSignals(&req, estimatedInputTokens, thinking), &affinityKey, capOpenAIChat)
+		var autoThink bool
+		req.Model, autoThink = h.resolveAutoModel(w, "openai", req.Model, openAIRouteSignals(&req, estimatedInputTokens, thinking), &affinityKey, capOpenAIChat)
+		thinking = thinking || autoThink
 	}
 	if req.Stream {
 		h.handleOpenAIStream(w, &req, req.Model, thinking, estimatedInputTokens, apiKeyID, affinityKey)
