@@ -45,3 +45,11 @@ func TestInjectFingerprintToolsUsesCLIRequiredPair(t *testing.T) {
 		t.Fatalf("required tools = %#v, want bash and read", tools)
 	}
 }
+
+func TestStaticModelsExcludeSystemOneJev(t *testing.T) {
+	for _, model := range zenStaticModels {
+		if model.ModelId == "jev-1.13-free" || model.ModelId == "jev-1.13" {
+			t.Fatalf("SystemOne model %q must not be exposed as a chat model", model.ModelId)
+		}
+	}
+}

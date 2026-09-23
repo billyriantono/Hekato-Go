@@ -1,8 +1,7 @@
-// Package opencodezen implements the OpenCode Zen upstream. OpenCode Zen is an
-// OpenAI-compatible multi-format provider at opencode.ai/zen/v1 supporting
-// Chat Completions, Claude Messages, and OpenAI Responses endpoints. Free-tier
-// models require a client fingerprint (four mandatory tool names plus specific
-// headers) to pass the upstream gate.
+// Package opencodezen implements the OpenCode Zen OpenAI-compatible
+// transports at opencode.ai/zen/v1. It supports Chat Completions and
+// Responses models; Jev SystemOne models use a separate decision API and are
+// intentionally excluded because they cannot produce chat completions.
 package opencodezen
 
 import (

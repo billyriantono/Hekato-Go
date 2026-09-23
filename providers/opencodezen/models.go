@@ -11,7 +11,8 @@ import (
 )
 
 // zenStaticModels is the fallback catalog when the live /models endpoint is
-// unreachable. Normal operation uses the upstream catalog unchanged.
+// unreachable. Jev is absent: its SystemOne decision protocol is not a chat
+// or Responses API, so exposing it here would create unroutable requests.
 var zenStaticModels = []providers.ModelInfo{
 	{ModelId: "big-pickle"},
 	{ModelId: "ling-3.0-flash-fin-free"},
@@ -21,7 +22,6 @@ var zenStaticModels = []providers.ModelInfo{
 	{ModelId: "muse-spark-1.3-contributor-free"},
 	{ModelId: "nemotron-3-ultra-free"},
 	{ModelId: "nemotron-3.5-lightning-free"},
-	{ModelId: "jev-1.13-free"},
 }
 
 // RefreshModels fetches the live model list from the Zen /models endpoint,
