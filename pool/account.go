@@ -445,6 +445,17 @@ func (p *AccountPool) RecordSuccess(id string) {
 	p.errorCounts[id] = 0
 }
 
+// SetCooldown parks the account until `until` (e.g. a provider stated when a
+// monthly cap resets). Earlier/zero times are ignored.
+func (p *AccountPool) SetCooldown(id string, until time.Time) {
+	if until.Before(time.Now()) {
+		return
+	}
+	p.mu.Lock()
+	p.cooldowns[id] = until
+	p.mu.Unlock()
+}
+
 // RecordError 记录请求错误，设置冷却
 func (p *AccountPool) RecordError(id string, isQuotaError bool) {
 	p.mu.Lock()

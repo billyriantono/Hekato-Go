@@ -24,14 +24,19 @@ func clinepassModelsURL() string { return clinepassBaseURL + "/api/v1/models" }
 //
 // Reference: 9router open-sse/shared/models.js — entries prefixed "cline-pass/".
 var clinepassStaticModels = []providers.ModelInfo{
-	{ModelId: "cline-pass/claude-sonnet-4.6", ModelName: "Claude Sonnet 4.6 (ClinePass)", Description: "ClinePass pass-through to Anthropic Claude Sonnet 4.6."},
-	{ModelId: "cline-pass/claude-sonnet-4.5", ModelName: "Claude Sonnet 4.5 (ClinePass)", Description: "ClinePass pass-through to Anthropic Claude Sonnet 4.5."},
-	{ModelId: "cline-pass/claude-haiku-4.5", ModelName: "Claude Haiku 4.5 (ClinePass)", Description: "ClinePass pass-through to Anthropic Claude Haiku 4.5."},
-	{ModelId: "cline-pass/gpt-5.4", ModelName: "GPT 5.4 (ClinePass)", Description: "ClinePass pass-through to OpenAI GPT 5.4."},
-	{ModelId: "cline-pass/gpt-5.4-mini", ModelName: "GPT 5.4 Mini (ClinePass)", Description: "ClinePass pass-through to OpenAI GPT 5.4 Mini."},
-	{ModelId: "cline-pass/gpt-5.3-codex", ModelName: "GPT 5.3 Codex (ClinePass)", Description: "ClinePass pass-through to OpenAI Codex."},
-	{ModelId: "cline-pass/gemini-3-pro", ModelName: "Gemini 3 Pro (ClinePass)", Description: "ClinePass pass-through to Google Gemini 3 Pro."},
-	{ModelId: "cline-pass/grok-4", ModelName: "Grok 4 (ClinePass)", Description: "ClinePass pass-through to xAI Grok 4."},
+	// Verified 2026-09-23 by probing api.cline.bot with a ClinePass account:
+	// these IDs are accepted by the pass (they answer the monthly-cap 429
+	// rather than "model not found"). The live /models catalog never lists them.
+	{ModelId: "cline-pass/kimi-k3", ModelName: "Kimi K3 (ClinePass)"},
+	{ModelId: "cline-pass/minimax-m3", ModelName: "MiniMax M3 (ClinePass)"},
+	{ModelId: "cline-pass/glm-5.3", ModelName: "GLM 5.3 (ClinePass)"},
+	{ModelId: "cline-pass/glm-5.3-flash", ModelName: "GLM 5.3 Flash (ClinePass)"},
+	{ModelId: "cline-pass/deepseek-v4-pro", ModelName: "DeepSeek V4 Pro (ClinePass)"},
+	{ModelId: "cline-pass/deepseek-v4.1-flash", ModelName: "DeepSeek V4.1 Flash (ClinePass)"},
+	{ModelId: "cline-pass/mimo-v2.5-pro", ModelName: "MiMo V2.5 Pro (ClinePass)"},
+	{ModelId: "cline-pass/mimo-v2.5", ModelName: "MiMo V2.5 (ClinePass)"},
+	{ModelId: "cline-pass/qwen3.7-max", ModelName: "Qwen 3.7 Max (ClinePass)"},
+	{ModelId: "cline-pass/qwen3.7-plus", ModelName: "Qwen 3.7 Plus (ClinePass)"},
 }
 
 // clinepassModelEntry mirrors one element of the OpenAI /v1/models data array.

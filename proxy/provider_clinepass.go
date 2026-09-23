@@ -3,6 +3,7 @@ package proxy
 import (
 	"hekato-go/config"
 	"hekato-go/providers/clinepass"
+	"strings"
 )
 
 // ClinePass is a dual-auth (API key + WorkOS OAuth) wrapper around Cline's
@@ -22,6 +23,7 @@ func init() {
 		chatFromOpenAI: callUpstreamClinepassFromOpenAI,
 		listModels:     listModelsClinepass,
 		fetchUsage:     clinepass.FetchUsage,
+		probeModel:     clinepassProbeModel,
 	})
 }
 
@@ -41,6 +43,46 @@ func callUpstreamClinepassFromClaude(account *config.Account, req *ClaudeRequest
 	return clinepass.CallOpenAI(account, openAIReq, cb)
 }
 
+// listModelsClinepass merges the live catalog (pay-per-use models) with the
+// static pass-covered "cline-pass/*" entries, which the live endpoint omits.
 func listModelsClinepass(account *config.Account) ([]ModelInfo, error) {
-	return clinepass.FetchModels(account)
+	live, err := clinepass.FetchModels(account)
+	if err != nil {
+		return live, err
+	}
+	seen := make(map[string]bool, len(live))
+	for _, m := range live {
+		seen[strings.ToLower(m.ModelId)] = true
+	}
+	out := clinepass.ModelsForAccount(&config.Account{}) // static pass list
+	for _, m := range live {
+		out = append(out, m)
+	}
+	merged := out[:0:0]
+	dedupe := map[string]bool{}
+	for _, m := range out {
+		k := strings.ToLower(m.ModelId)
+		if dedupe[k] {
+			continue
+		}
+		dedupe[k] = true
+		merged = append(merged, m)
+	}
+	_ = seen
+	return merged, nil
+}
+
+// clinepassProbeModel keeps Test / warmup on models the pass covers: the
+// cheapest "cline-pass/*" entry (haiku / mini), else the first pass model.
+func clinepassProbeModel(models []ModelInfo) string {
+	var pass []ModelInfo
+	for _, m := range models {
+		if strings.HasPrefix(strings.ToLower(m.ModelId), "cline-pass/") {
+			pass = append(pass, m)
+		}
+	}
+	if len(pass) == 0 {
+		return ""
+	}
+	return cheapestModel(pass)
 }

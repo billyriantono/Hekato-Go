@@ -41,6 +41,9 @@ type providerAdapter struct {
 	// pool can be seeded with it synchronously at startup and routing never
 	// sees an empty model list for the provider.
 	staticModels bool
+	// probeModel optionally picks the model for Test / warmup from the
+	// account's list (e.g. ClinePass must probe a pass-covered model).
+	probeModel func([]ModelInfo) string
 }
 
 var providerAdapters = map[providerKind]providerAdapter{}

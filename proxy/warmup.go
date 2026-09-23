@@ -102,6 +102,11 @@ func probeModelFor(account *config.Account) string {
 		}
 	}
 	if err == nil && len(models) > 0 {
+		if adapter, aerr := adapterForAccount(account); aerr == nil && adapter.probeModel != nil {
+			if m := adapter.probeModel(models); m != "" {
+				return m
+			}
+		}
 		return cheapestModel(models)
 	}
 	return "claude-sonnet-4.5"
