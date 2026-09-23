@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 const (
@@ -109,8 +110,11 @@ func FromNeutral(nc *providers.NeutralChat) *providers.OpenAIRequest {
 
 // FetchUsage returns nil — OpenCode Zen tracks usage server-side; the proxy
 // logs per-call usage from the SSE stream instead.
+// FetchUsage: Zen has no API-key usage endpoint (balance lives behind the
+// console login), so only the plan label is reported; per-call usage is
+// tracked by the gateway itself.
 func FetchUsage(_ *config.Account) (*config.AccountInfo, error) {
-	return nil, nil
+	return &config.AccountInfo{LastRefresh: time.Now().Unix(), SubscriptionType: "PAYG", SubscriptionTitle: "OpenCode Zen (pay-as-you-go)"}, nil
 }
 
 // ---------- headers ----------

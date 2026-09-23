@@ -19,11 +19,11 @@ import (
 
 const (
 	goChatURL        = "https://opencode.ai/zen/go/v1/chat/completions"
-	goResponsesURL    = "https://opencode.ai/zen/go/v1/responses"
-	goModelsURL       = "https://opencode.ai/zen/go/v1/models"
-	goUsageURL        = "https://opencode.ai/zen/go/v1/usage"
-	opencodeUA        = "opencode/1.18.31"
-	anthropicVersion  = "2023-06-01"
+	goResponsesURL   = "https://opencode.ai/zen/go/v1/responses"
+	goModelsURL      = "https://opencode.ai/zen/go/v1/models"
+	goUsageURL       = "https://opencode.ai/zen/go/v1/usage"
+	opencodeUA       = "opencode/1.18.31"
+	anthropicVersion = "2023-06-01"
 )
 
 // CallOpenAI sends an OpenAI Chat Completions request through the OpenCode
@@ -97,13 +97,6 @@ func CallUpstream(w http.ResponseWriter, flusher http.Flusher, account *config.A
 // FromNeutral converts a NeutralChat to an OpenAIRequest using the shared translator.
 func FromNeutral(nc *providers.NeutralChat) *providers.OpenAIRequest {
 	return providers.NeutralToOpenAI(nc)
-}
-
-// FetchUsage returns nil — usage is tracked server-side and reflected in the
-// account's quota via the /usage endpoint. The proxy logs per-call usage
-// from the SSE stream instead.
-func FetchUsage(_ *config.Account) (*config.AccountInfo, error) {
-	return nil, nil
 }
 
 // ---------- headers ----------

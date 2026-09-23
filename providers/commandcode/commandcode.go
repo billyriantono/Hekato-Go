@@ -79,12 +79,6 @@ func FromNeutral(nc *providers.NeutralChat) *providers.OpenAIRequest {
 	return providers.NeutralToOpenAI(nc)
 }
 
-// FetchUsage returns nil — CommandCode tracks usage server-side; the proxy
-// logs per-call usage from the NDJSON stream instead.
-func FetchUsage(_ *config.Account) (*config.AccountInfo, error) {
-	return nil, nil
-}
-
 // ---------- headers ----------
 
 // setHeaders applies the per-request header set CommandCode requires. The
