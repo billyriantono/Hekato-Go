@@ -103,14 +103,56 @@ func TestCodexStaticModels(t *testing.T) {
 	}
 }
 
-// TestCodexHeaders sanity-checks that the upstream headers the backend gateway
-// rejects without are present on every outgoing request.
+// TestCodexHeaders pins the outbound User-Agent and originator against the
+// value 9router ships with (`codex_cli_rs/<ver>`) and the live codex-cli
+// Rust release (rust-v0.156.0). The Codex backend's gateway allowlist keys
+// off the family identifier, so any future "clean up" to a different UA
+// shape will silently start returning 403s — the failure mode the operator
+// already saw once.
 func TestCodexHeaders(t *testing.T) {
-	req, _ := json.Marshal(struct{}{})
-	if len(req) == 0 {
-		t.Fatal("setup")
+	req, err := http.NewRequest(http.MethodPost, "https://example.invalid/", nil)
+	if err != nil {
+		t.Fatalf("build req: %v", err)
 	}
-	_ = req // header construction is exercised by the production code path
+	setCodexHeaders(req, &config.Account{AccessToken: "tok"})
+
+	wantUA := "codex_cli_rs/0.156.0"
+	if got := req.Header.Get("User-Agent"); got != wantUA {
+		t.Fatalf("User-Agent = %q, want %q", got, wantUA)
+	}
+	if got := req.Header.Get("originator"); got != "codex_cli_rs" {
+		t.Fatalf("originator = %q, want codex_cli_rs", got)
+	}
+	if req.Header.Get("OpenAI-Beta") != "responses=experimental" {
+		t.Fatalf("missing OpenAI-Beta=responses=experimental")
+	}
+	if req.Header.Get("Authorization") != "Bearer tok" {
+		t.Fatalf("Authorization = %q", req.Header.Get("Authorization"))
+	}
+	if got := req.Header.Get("Accept"); got != "text/event-stream, application/json" {
+		t.Fatalf("Accept = %q", got)
+	}
+	if got := req.Header.Get("session_id"); got != "" {
+		t.Fatalf("session_id must be unset, got %q", got)
+	}
+	if got := req.Header.Get("chatgpt-account-id"); got != "" {
+		t.Fatalf("chatgpt-account-id should be empty when account.UserId is empty, got %q", got)
+	}
+}
+
+// TestCodexHeadersTenantID pins that account.UserId flows through to
+// chatgpt-account-id — a missing header routes the request to the wrong
+// tenant and the upstream answers with the rightmost plan's quota, which
+// silently looks like a billing bug.
+func TestCodexHeadersTenantID(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "https://example.invalid/", nil)
+	if err != nil {
+		t.Fatalf("build req: %v", err)
+	}
+	setCodexHeaders(req, &config.Account{AccessToken: "tok", UserId: "user-abc"})
+	if got := req.Header.Get("chatgpt-account-id"); got != "user-abc" {
+		t.Fatalf("chatgpt-account-id = %q, want user-abc", got)
+	}
 }
 
 // codexRoundTrip routes a codex HTTP call to a stub without touching the network.

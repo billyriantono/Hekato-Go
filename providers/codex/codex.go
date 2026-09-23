@@ -20,18 +20,22 @@ import (
 	"time"
 )
 
-// Codex upstream endpoints (mirrors etteum-pool's src/proxy/providers/codex.ts).
+// Codex upstream endpoints (mirrors etteum-pool's src/proxy/providers/codex.ts
+// and 9router's open-sse/providers/registry/codex.js).
 //
-// User-Agent + originator match the current codex-cli TypeScript build. The
-// prior fingerprint (`codex_cli_rs/0.154.0`) was the Rust CLI from mid-2025;
-// Codex's abuse pipeline flags accounts pinned to that stale build, matching
-// the ban pattern the operator saw.
+// User-Agent + originator identify as the Rust codex_cli_rs build — the
+// official CLI from github.com/openai/codex (current release: rust-v0.156.0).
+// 9router pins codex_cli_rs/0.154.0; we use the latest stable of the same
+// family so the backend gateway's fingerprint allowlist (built from the
+// official CLI's outbound HTTP) recognises our requests. A non-Rust
+// identifier like "codex-cli/1.0.18" is not on the allowlist and trips the
+// same abuse-pipeline gating the operator saw with the stale Rust version.
 const (
 	codexResponsesURL = "https://chatgpt.com/backend-api/codex/responses"
 	codexUsageURL     = "https://chatgpt.com/backend-api/wham/usage"
-	codexClientName   = "codex-cli"
-	codexClientVer    = "1.0.18"
-	codexOriginator   = "codex-cli"
+	codexClientName   = "codex_cli_rs"
+	codexClientVer    = "0.156.0"
+	codexOriginator   = "codex_cli_rs"
 )
 
 // setCodexHeaders applies the header set every Codex upstream request needs.
@@ -45,7 +49,7 @@ func setCodexHeaders(req *http.Request, account *config.Account) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+account.AccessToken)
 	req.Header.Set("Accept", "text/event-stream, application/json")
-	req.Header.Set("User-Agent", fmt.Sprintf("%s/%s (macOS; arm64)", codexClientName, codexClientVer))
+	req.Header.Set("User-Agent", fmt.Sprintf("%s/%s", codexClientName, codexClientVer))
 	req.Header.Set("OpenAI-Beta", "responses=experimental")
 	req.Header.Set("originator", codexOriginator)
 	if account.UserId != "" {
