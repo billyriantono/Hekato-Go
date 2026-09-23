@@ -14,6 +14,7 @@ import {
   LuLanguages,
   LuX,
   LuBookOpen,
+  LuCoins,
 } from 'react-icons/lu'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -31,6 +32,7 @@ const manage: NavItem[] = [
   { to: '/api-keys', labelKey: 'nav.apiKeys', icon: <LuKeyRound className="size-4" /> },
 ]
 const system: NavItem[] = [
+  { to: '/model-prices', labelKey: 'nav.modelPrices', icon: <LuCoins className="size-4" /> },
   { to: '/logs', labelKey: 'nav.logs', icon: <LuScrollText className="size-4" /> },
   { to: '/settings', labelKey: 'nav.settings', icon: <LuSettings className="size-4" /> },
 ]

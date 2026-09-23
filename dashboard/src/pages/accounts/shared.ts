@@ -8,6 +8,7 @@ export type Account = {
   providerKind?: string
   probeModel?: string
   extraModels?: string[]
+  allowPaidModels?: boolean
   provider: string
   region: string
   enabled: boolean
@@ -155,6 +156,11 @@ export const isHttpUrl = (v: string) => /^https?:\/\//.test(v)
 export const isMachineId = (v: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v) || /^[0-9a-f]{32}$/i.test(v)
 
+
+/** OpenCode Zen serves a free tier alongside paid models, so it gets the paid-models opt-in. */
+export function hasFreeTier(a: { providerKind?: string }): boolean {
+  return a.providerKind === 'opencode_zen'
+}
 
 /** Kiro (AWS) accounts have upstream overage billing; other providers do not. */
 export function isKiroAccount(a: { authMethod?: string; provider?: string; providerKind?: string }): boolean {

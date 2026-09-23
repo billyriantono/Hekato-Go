@@ -5,6 +5,7 @@ import { AccountsPage } from '@/pages/accounts'
 import { ApiKeysPage } from '@/pages/api-keys'
 import { SettingsPage } from '@/pages/settings'
 import { LogsPage } from '@/pages/logs'
+import { ModelPricesPage } from '@/pages/model-prices'
 
 const rootRoute = createRootRoute({ component: () => <Outlet /> })
 const shellRoute = createRoute({ getParentRoute: () => rootRoute, id: 'shell', component: AppShell })
@@ -15,6 +16,7 @@ const routes = [
   createRoute({ getParentRoute: () => shellRoute, path: '/api-keys', component: ApiKeysPage }),
   createRoute({ getParentRoute: () => shellRoute, path: '/settings', component: SettingsPage }),
   createRoute({ getParentRoute: () => shellRoute, path: '/logs', component: LogsPage }),
+  createRoute({ getParentRoute: () => shellRoute, path: '/model-prices', component: ModelPricesPage }),
 ]
 
 const routeTree = rootRoute.addChildren([shellRoute.addChildren(routes)])

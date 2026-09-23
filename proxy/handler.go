@@ -13,6 +13,7 @@ import (
 	"hekato-go/logger"
 	"hekato-go/pool"
 	"hekato-go/providers"
+	"hekato-go/providers/modelsdev"
 	"hekato-go/providers/opencodezen"
 	"hekato-go/relay"
 	"io"
@@ -430,6 +431,8 @@ func NewHandler() *Handler {
 	h.pool.RestoreModelLists(config.Blobs())
 	h.seedStaticModelLists()
 	go h.backgroundRefresh()
+	// Keep the models.dev pricing catalog warm and persisted.
+	go modelsdev.StartSync(h.stopRefresh)
 	// 启动后台统计保存 (每30秒保存一次)
 	go h.backgroundStatsSaver()
 	// 清理过期的 stored responses（>30 天）
@@ -2811,6 +2814,8 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiUpdateAccount(w, r, strings.TrimPrefix(path, "/accounts/"))
 	case path == "/auth/credentials" && r.Method == "POST":
 		h.apiImportCredentials(w, r)
+	case path == "/models-dev" && r.Method == "GET":
+		h.apiGetModelsDev(w, r)
 	case path == "/status" && r.Method == "GET":
 		h.apiGetStatus(w, r)
 	case path == "/settings" && r.Method == "GET":
@@ -2930,6 +2935,7 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 			"weight":            a.Weight,
 			"probeModel":        a.ProbeModel,
 			"extraModels":       a.ExtraModels,
+			"allowPaidModels":   a.AllowPaidModels,
 			"overageStatus":     a.OverageStatus,
 			"overageCapability": a.OverageCapability,
 			"overageCap":        a.OverageCap,
@@ -3060,6 +3066,9 @@ func (h *Handler) apiUpdateAccount(w http.ResponseWriter, r *http.Request, id st
 				existing.ExtraModels = append(existing.ExtraModels, strings.TrimSpace(id))
 			}
 		}
+	}
+	if v, ok := updates["allowPaidModels"].(bool); ok {
+		existing.AllowPaidModels = v
 	}
 	if v, ok := updates["proxyURL"].(string); ok {
 		if v != "" && !strings.HasPrefix(v, "http://") && !strings.HasPrefix(v, "https://") && !strings.HasPrefix(v, "socks5://") && !strings.HasPrefix(v, "socks5h://") {
@@ -3683,6 +3692,7 @@ func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
 		"allowOverUsage":        config.GetAllowOverUsage(),
 		"logLevel":              config.GetLogLevel(),
 		"accountRefreshMinutes": config.GetAccountRefreshMinutes(),
+		"modelsDevSyncHours":    config.GetModelsDevSyncHours(),
 		"warmupProbe":           warmupProbe,
 		"warmupRecover":         warmupRecover,
 		"testModel":             config.GetTestModel(),
@@ -3741,6 +3751,7 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		AllowOverUsage        *bool                `json:"allowOverUsage,omitempty"`
 		LogLevel              *string              `json:"logLevel,omitempty"`
 		AccountRefreshMinutes *int                 `json:"accountRefreshMinutes,omitempty"`
+		ModelsDevSyncHours    *int                 `json:"modelsDevSyncHours,omitempty"`
 		WarmupProbe           *bool                `json:"warmupProbe,omitempty"`
 		WarmupRecover         *bool                `json:"warmupRecover,omitempty"`
 		TestModel             *string              `json:"testModel,omitempty"`
@@ -3803,6 +3814,20 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := config.UpdateAccountRefreshMinutes(*req.AccountRefreshMinutes); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
+	if req.ModelsDevSyncHours != nil {
+		// -1 disables the periodic sync; 0 means "default"; a week is the ceiling.
+		if *req.ModelsDevSyncHours < -1 || *req.ModelsDevSyncHours > 168 {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": "modelsDevSyncHours must be between -1 (disabled) and 168"})
+			return
+		}
+		if err := config.UpdateModelsDevSyncHours(*req.ModelsDevSyncHours); err != nil {
 			w.WriteHeader(500)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return

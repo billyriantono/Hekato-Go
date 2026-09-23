@@ -86,6 +86,10 @@ type Account struct {
 	// ExtraModels are operator-added model IDs for this account, merged into the
 	// provider's advertised list (for models a catalog does not know yet).
 	ExtraModels []string `json:"extraModels,omitempty"`
+	// AllowPaidModels opts the account into the upstream's paid catalog. Default
+	// false keeps providers with a free tier (OpenCode Zen) on zero-cost models
+	// only, so auto-routing cannot pick a model the account has no credit for.
+	AllowPaidModels bool `json:"allowPaidModels,omitempty"`
 
 	// Upstream Overages state (mirrored from AWS Q `setUserPreference` / `getUsageLimits`).
 	// OverageStatus is the only switch that decides whether to keep dispatching once UsageLimit is reached.
@@ -260,6 +264,10 @@ type Config struct {
 	// AccountRefreshMinutes: how often account tokens and quotas are re-checked
 	// upstream. 0 = default (ACCOUNT_REFRESH_MINUTES env or 30).
 	AccountRefreshMinutes int `json:"accountRefreshMinutes,omitempty"`
+
+	// ModelsDevSyncHours: how often the models.dev pricing catalog is re-pulled
+	// and persisted. 0 = default (12h), negative = periodic sync disabled.
+	ModelsDevSyncHours int `json:"modelsDevSyncHours,omitempty"`
 
 	// AutoRoute configures the virtual "auto" model router (nil = defaults, disabled).
 	AutoRoute *AutoRouteConfig `json:"autoRoute,omitempty"`
@@ -1245,6 +1253,25 @@ func UpdateAccountRefreshMinutes(minutes int) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	cfg.AccountRefreshMinutes = minutes
+	return Save()
+}
+
+// GetModelsDevSyncHours returns the models.dev sync interval in hours
+// (0 = default, negative = disabled).
+func GetModelsDevSyncHours() int {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return 0
+	}
+	return cfg.ModelsDevSyncHours
+}
+
+// UpdateModelsDevSyncHours persists the models.dev sync interval.
+func UpdateModelsDevSyncHours(hours int) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.ModelsDevSyncHours = hours
 	return Save()
 }
 

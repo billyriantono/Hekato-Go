@@ -15,6 +15,7 @@ type Settings = {
   allowOverUsage: boolean
   logLevel?: string
   accountRefreshMinutes?: number
+  modelsDevSyncHours?: number
   warmupProbe?: boolean
   warmupRecover?: boolean
   testModel?: string
@@ -33,6 +34,7 @@ export function GeneralSection() {
         allowOverUsage: draft!.allowOverUsage,
         logLevel: draft!.logLevel ?? 'info',
         accountRefreshMinutes: draft!.accountRefreshMinutes ?? 0,
+        modelsDevSyncHours: draft!.modelsDevSyncHours ?? 0,
         warmupProbe: !!draft!.warmupProbe,
         warmupRecover: !!draft!.warmupRecover,
         testModel: draft!.testModel ?? '',
@@ -94,6 +96,18 @@ export function GeneralSection() {
                 className="w-44"
                 value={draft.accountRefreshMinutes ?? 0}
                 onChange={(e) => patch({ accountRefreshMinutes: Math.max(0, Math.min(1440, parseInt(e.target.value, 10) || 0)) })}
+              />
+            </Field>
+            <Field label={t('settings.modelsDevSync')} hint={t('settings.modelsDevSyncHint')} htmlFor="modelsdev-hours">
+              <Input
+                id="modelsdev-hours"
+                type="number"
+                min={-1}
+                max={168}
+                step={1}
+                className="w-44"
+                value={draft.modelsDevSyncHours ?? 0}
+                onChange={(e) => patch({ modelsDevSyncHours: Math.max(-1, Math.min(168, parseInt(e.target.value, 10) || 0)) })}
               />
             </Field>
             <Field label={t('settings.testModel')} hint={t('settings.testModelHint')} htmlFor="test-model">

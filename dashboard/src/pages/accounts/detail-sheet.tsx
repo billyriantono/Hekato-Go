@@ -30,6 +30,7 @@ import {
   type Account,
   type WarmupResult,
   isKiroAccount,
+  hasFreeTier,
 } from './shared'
 
 export function AccountDetailSheet({ account, onClose }: { account: Account | null; onClose: () => void }) {
@@ -170,6 +171,14 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
     run('overage', async () => {
       await get(`/accounts/${a.id}/overage`)
       invalidate()
+    })
+  const setAllowPaid = (allowPaidModels: boolean) =>
+    run('allowPaid', async () => {
+      await put(`/accounts/${a.id}`, { allowPaidModels })
+      // The catalog is filtered at fetch time, so re-pull it under the new setting.
+      await post(`/accounts/${a.id}/models/refresh`).catch(() => undefined)
+      invalidate()
+      qc.invalidateQueries({ queryKey: ['account-models', a.id] })
     })
   const setOverage = (enabled: boolean) =>
     run('overage', async () => {
@@ -381,6 +390,16 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
         </Row>
         {a.warmupError && <Row label={t('accounts.warmup.error')}>{a.warmupError}</Row>}
       </Section>
+
+      {hasFreeTier(a) && (
+        <Section title={t('detail.allowPaidModels')}>
+          <p className="text-[11px] text-muted-foreground">{t('detail.allowPaidModelsHint')}</p>
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">{t('detail.allowPaidModels')}</span>
+            <Switch checked={!!a.allowPaidModels} onCheckedChange={(v) => setAllowPaid(v)} disabled={!!busy} />
+          </div>
+        </Section>
+      )}
 
       {isKiroAccount(a) && (
       <Section
