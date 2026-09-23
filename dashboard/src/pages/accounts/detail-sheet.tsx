@@ -15,6 +15,7 @@ import { ConfirmDialog, CopyButton, StatusDot, errorMessage, formatNumber, forma
 import { del, get, post, put } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
 import { SimpleSelect } from './simple-select'
+import { ModelCombobox } from '@/components/model-combobox'
 import {
   accountStatus,
   countdown,
@@ -258,19 +259,14 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
         </div>
         <div className="space-y-1">
           <Label htmlFor="probe-model">{t('detail.probeModel')}</Label>
-          <select
-            id="probe-model"
+          <ModelCombobox
             value={probeModel}
-            onChange={(e) => setProbeModel(e.target.value)}
-            className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
-          >
-            <option value="">{t('detail.probeModelDefault')}</option>
-            {modelList.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
+            onChange={setProbeModel}
+            options={modelList}
+            placeholder={t('detail.probeModelDefault')}
+            emptyLabel={t('detail.probeModelDefault')}
+            className="w-full"
+          />
           <p className="text-[11px] text-muted-foreground">{t('detail.probeModelHint')}</p>
         </div>
         <div className="space-y-1">
@@ -478,16 +474,7 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
 
       <Section title={t('accounts.testModalTitle')}>
         <div className="flex gap-2">
-          {modelList.length ? (
-            <SimpleSelect
-              value={selectedTestModel}
-              onChange={setTestModel}
-              className="flex-1"
-              options={modelList.map((m) => ({ value: m, label: m }))}
-            />
-          ) : (
-            <Input value={testModel} onChange={(e) => setTestModel(e.target.value)} placeholder="claude-sonnet-4" className="flex-1 font-mono text-xs" />
-          )}
+          <ModelCombobox value={selectedTestModel} onChange={setTestModel} options={modelList} placeholder={t('models.searchPlaceholder')} className="flex-1" />
           <Button size="sm" onClick={runTest} disabled={!!busy}>
             {spin('test') ?? <LuFlaskConical />} {t('accounts.test')}
           </Button>

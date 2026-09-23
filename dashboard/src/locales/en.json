@@ -608,5 +608,8 @@
   "table.pageSize": "Rows per page",
   "table.perPage": "{0} / page",
   "table.prev": "Previous page",
-  "table.next": "Next page"
+  "table.next": "Next page",
+  "models.searchPlaceholder": "Search models…",
+  "models.useCustom": "Use \"{0}\"",
+  "models.moreResults": "{0} more, keep typing to narrow"
 }

@@ -43,33 +43,13 @@ func callUpstreamClinepassFromClaude(account *config.Account, req *ClaudeRequest
 	return clinepass.CallOpenAI(account, openAIReq, cb)
 }
 
-// listModelsClinepass merges the live catalog (pay-per-use models) with the
-// static pass-covered "cline-pass/*" entries, which the live endpoint omits.
+// listModelsClinepass lists only the subscription-covered "cline-pass/*"
+// models. The live /models catalog (450+ pay-per-credit entries) is
+// intentionally hidden: it never contains the pass models and drowns the
+// picker. Operators can still add a credit-billed model per account
+// (extraModels) when they really want one.
 func listModelsClinepass(account *config.Account) ([]ModelInfo, error) {
-	live, err := clinepass.FetchModels(account)
-	if err != nil {
-		return live, err
-	}
-	seen := make(map[string]bool, len(live))
-	for _, m := range live {
-		seen[strings.ToLower(m.ModelId)] = true
-	}
-	out := clinepass.ModelsForAccount(&config.Account{}) // static pass list
-	for _, m := range live {
-		out = append(out, m)
-	}
-	merged := out[:0:0]
-	dedupe := map[string]bool{}
-	for _, m := range out {
-		k := strings.ToLower(m.ModelId)
-		if dedupe[k] {
-			continue
-		}
-		dedupe[k] = true
-		merged = append(merged, m)
-	}
-	_ = seen
-	return merged, nil
+	return clinepass.ModelsForAccount(&config.Account{}), nil // static pass list
 }
 
 // clinepassProbeModel keeps Test / warmup on models the pass covers: the
