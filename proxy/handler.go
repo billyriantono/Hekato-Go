@@ -2321,6 +2321,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 				inputTokens = inTok
 				outputTokens = outTok
 			},
+			OnCredits: func(c float64) { credits = c },
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
 			},

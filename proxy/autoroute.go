@@ -417,9 +417,18 @@ func (h *Handler) resolveAutoModel(w http.ResponseWriter, endpoint, model string
 	}
 	d := h.autoRouter.Resolve(h.pool, cfg, sig, capabilityFilter(cap), endpoint)
 	if d == nil {
-		// Tier patterns are filters, not proof that an upstream account supports
-		// a model. Leave the virtual model untouched rather than inventing a
-		// concrete destination that no account advertised.
+		// No tier has a candidate. Fall back to a concrete model that a routable
+		// account actually advertises (balanced, then fast, then strong patterns,
+		// then anything) so the literal "auto" never leaks upstream while
+		// routing is enabled. Only when no account advertises any model at all
+		// is "auto" passed through (Kiro / CodeBuddy CN serve it natively).
+		if fb := h.fallbackAutoModel(cfg, capabilityFilter(cap)); fb != "" {
+			w.Header().Set("X-Hekato-Routed-Model", fb)
+			w.Header().Set("X-Hekato-Route-Reason", "no tier candidates; fallback to advertised model")
+			h.autoRouter.RecordPinned(routeDecision{Time: time.Now().Unix(), Endpoint: endpoint, Tier: "fallback", Model: fb, Signals: sig, Reason: "no tier candidates; first advertised model"})
+			return fb
+		}
+		logger.Warnf("[AutoRoute] no routable model advertised for an auto request; passing \"auto\" upstream")
 		return model
 	}
 	if *affinityKey == "" {
@@ -431,6 +440,37 @@ func (h *Handler) resolveAutoModel(w http.ResponseWriter, endpoint, model string
 	w.Header().Set("X-Hekato-Routed-Model", d.Model)
 	w.Header().Set("X-Hekato-Route-Reason", d.Reason)
 	return d.Model
+}
+
+// fallbackAutoModel picks a concrete model when no tier has candidates.
+func (h *Handler) fallbackAutoModel(cfg config.AutoRouteConfig, filter pool.AccountFilter) string {
+	seen := map[string]bool{}
+	var advertised []string
+	for _, acc := range h.pool.GetAllAccounts() {
+		if seen[acc.ID] {
+			continue
+		}
+		seen[acc.ID] = true
+		for _, m := range h.pool.GetModelList(acc.ID) {
+			if isAutoModel(m) {
+				continue
+			}
+			if h.pool.GetForModelByID(acc.ID, m, filter) != nil {
+				advertised = append(advertised, m)
+			}
+		}
+	}
+	for _, patterns := range [][]string{cfg.Balanced, cfg.Fast, cfg.Strong} {
+		for _, m := range advertised {
+			if matchesTier(m, patterns) {
+				return m
+			}
+		}
+	}
+	if len(advertised) > 0 {
+		return advertised[0]
+	}
+	return ""
 }
 
 func claudeRouteSignals(req *ClaudeRequest, inputTokens int, thinking bool) routeSignals {
