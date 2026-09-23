@@ -400,10 +400,11 @@ export function OverviewPage() {
         </CardContent>
       </Card>
 
-      <div className="text-xs text-muted-foreground">
-        {t('common.version')} {s?.version ?? '—'}
-        {s?.storage && <> · {t('overview.storage')}: {s.storage}</>}
-      </div>
+      {s?.storage && (
+        <div className="text-xs text-muted-foreground">
+          {t('overview.storage')}: {s.storage}
+        </div>
+      )}
 
       <ConfirmDialog
         open={resetOpen}
