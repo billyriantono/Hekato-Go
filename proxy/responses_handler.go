@@ -146,7 +146,7 @@ func (h *Handler) handleResponsesNonStream(
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
 			excluded[account.ID] = true
-			h.handleAccountFailure(account, err)
+			h.handleModelFailure(account, model, err)
 			continue
 		}
 
@@ -154,7 +154,7 @@ func (h *Handler) handleResponsesNonStream(
 		if adapterErr != nil {
 			lastErr = adapterErr
 			excluded[account.ID] = true
-			h.handleAccountFailure(account, adapterErr)
+			h.handleModelFailure(account, model, adapterErr)
 			continue
 		}
 		// Providers with a native Responses transport bypass the chat converter.
@@ -162,7 +162,7 @@ func (h *Handler) handleResponsesNonStream(
 			if providerErr := adapter.responses(w, nil, account, req); providerErr != nil {
 				lastErr = providerErr
 				excluded[account.ID] = true
-				h.handleAccountFailure(account, providerErr)
+				h.handleModelFailure(account, model, providerErr)
 				continue
 			}
 			h.recordSuccessForApiKey(apiKeyID, 0, 0, 0)
@@ -207,7 +207,7 @@ func (h *Handler) handleResponsesNonStream(
 		if err != nil {
 			lastErr = err
 			excluded[account.ID] = true
-			h.handleAccountFailure(account, err)
+			h.handleModelFailure(account, model, err)
 			continue
 		}
 
@@ -363,7 +363,7 @@ func (h *Handler) handleResponsesStream(
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
 			excluded[account.ID] = true
-			h.handleAccountFailure(account, err)
+			h.handleModelFailure(account, model, err)
 			continue
 		}
 
@@ -371,7 +371,7 @@ func (h *Handler) handleResponsesStream(
 		if adapterErr != nil {
 			lastErr = adapterErr
 			excluded[account.ID] = true
-			h.handleAccountFailure(account, adapterErr)
+			h.handleModelFailure(account, model, adapterErr)
 			continue
 		}
 		// Providers with a native Responses transport pass SSE through directly.
@@ -379,7 +379,7 @@ func (h *Handler) handleResponsesStream(
 			if providerErr := adapter.responses(w, flusher, account, req); providerErr != nil {
 				lastErr = providerErr
 				excluded[account.ID] = true
-				h.handleAccountFailure(account, providerErr)
+				h.handleModelFailure(account, model, providerErr)
 				continue
 			}
 			h.recordSuccessForApiKey(apiKeyID, 0, 0, 0)
@@ -542,7 +542,7 @@ func (h *Handler) handleResponsesStream(
 			if !responseStarted {
 				lastErr = err
 				excluded[account.ID] = true
-				h.handleAccountFailure(account, err)
+				h.handleModelFailure(account, model, err)
 				continue
 			}
 			send("response.failed", map[string]interface{}{

@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"errors"
 	"hekato-go/config"
 	accountpool "hekato-go/pool"
 	"net/http/httptest"
@@ -170,4 +171,18 @@ func TestAutoRouteBlacklistIsPerProvider(t *testing.T) {
 	if !cfg.Blacklisted(config.ProviderGrok, "gemini-3-pro") || !cfg.Blacklisted(config.ProviderKiro, "claude-haiku-4.5") {
 		t.Fatal("wildcard / bare entries should apply to every provider")
 	}
+}
+
+func TestHandleModelFailureFeedsRouter(t *testing.T) {
+	mustInitConfig(t)
+	h := &Handler{pool: accountpool.GetPool(), autoRouter: newAutoRouter()}
+	acc := &config.Account{ID: "acc-fail", Email: "f@x", Enabled: true}
+	h.handleModelFailure(acc, "claude-opus-4.8", errors.New("HTTP 400 from codebuddy: model [claude-opus-4.8] service info not found"))
+	_, cands := h.autoRouter.Snapshot()
+	for _, c := range cands {
+		if c.AccountID == "acc-fail" && c.Model == "claude-opus-4.8" && c.Failures == 1 {
+			return
+		}
+	}
+	t.Fatalf("per-attempt failure not recorded in router candidates: %+v", cands)
 }

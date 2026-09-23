@@ -113,6 +113,17 @@ func (h *Handler) disableAccountOverage(account *config.Account) {
 	h.pool.Reload()
 }
 
+// handleModelFailure records a failed attempt against the (account, model)
+// pair for the auto router's bandit stats, then applies account failover.
+// Every per-attempt failure must flow through here so the learned candidates
+// table reflects real upstream errors, not just requests that exhausted retries.
+func (h *Handler) handleModelFailure(account *config.Account, model string, err error) {
+	if account != nil && err != nil {
+		h.autoRouter.Record(account.ID, model, false, 0)
+	}
+	h.handleAccountFailure(account, err)
+}
+
 func (h *Handler) handleAccountFailure(account *config.Account, err error) {
 	if account == nil || err == nil {
 		return
