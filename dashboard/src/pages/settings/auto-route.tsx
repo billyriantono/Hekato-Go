@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { LuRefreshCw } from 'react-icons/lu'
+import { LuBan, LuRefreshCw, LuX } from 'react-icons/lu'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -20,6 +20,7 @@ type Config = {
   fast: string[]
   balanced: string[]
   strong: string[]
+  blacklist: string[]
 }
 type Decision = {
   time: number
@@ -35,6 +36,7 @@ type Decision = {
 }
 type Candidate = {
   accountId: string
+  provider: string
   model: string
   successes: number
   failures: number
@@ -114,6 +116,26 @@ export function AutoRouteSection() {
             ))}
           </div>
 
+          <Field label={t('settings.autoRoute.blacklist')} hint={t('settings.autoRoute.blacklistHint')} htmlFor="ar-blacklist">
+            <Input
+              key={'bl' + q.dataUpdatedAt}
+              id="ar-blacklist"
+              defaultValue={(draft.blacklist ?? []).join(', ')}
+              onChange={(e) => patch({ blacklist: splitPatterns(e.target.value) })}
+              placeholder={t('settings.autoRoute.blacklistPlaceholder')}
+            />
+            <div className="flex flex-wrap gap-1">
+              {(draft.blacklist ?? []).map((p) => (
+                <Badge key={p} variant="destructive" className="font-mono">
+                  {p}
+                  <button type="button" className="ml-1 opacity-70 hover:opacity-100" onClick={() => patch({ blacklist: (draft.blacklist ?? []).filter((x) => x !== p) })}>
+                    <LuX className="size-3" />
+                  </button>
+                </Badge>
+              ))}
+            </div>
+          </Field>
+
           <div className="space-y-3 rounded-lg border p-3">
             <div className="flex items-center justify-between gap-2">
               <div className="text-sm font-medium">{t('settings.autoRoute.decisions')}</div>
@@ -176,6 +198,7 @@ export function AutoRouteSection() {
                     <TableHead className="text-right">{t('settings.autoRoute.col.reliability')}</TableHead>
                     <TableHead className="text-right">{t('settings.autoRoute.col.latency')}</TableHead>
                     <TableHead className="text-right">{t('settings.autoRoute.col.outcomes')}</TableHead>
+                    <TableHead />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -189,6 +212,17 @@ export function AutoRouteSection() {
                       <TableCell className="text-right tabular-nums">{Math.round(c.ewmaLatencyMs)} ms</TableCell>
                       <TableCell className="text-right tabular-nums">
                         {Math.round(c.successes)} / {Math.round(c.failures)}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {(() => {
+                          const entry = `${c.provider || '*'}:${c.model}`
+                          const listed = (draft.blacklist ?? []).some((x) => x.toLowerCase() === entry.toLowerCase())
+                          return (
+                            <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" disabled={listed} title={t('settings.autoRoute.blacklistThis')} onClick={() => patch({ blacklist: [...(draft.blacklist ?? []), entry] })}>
+                              <LuBan className="size-3" /> {listed ? t('settings.autoRoute.blacklisted') : t('settings.autoRoute.blacklistThis')}
+                            </Button>
+                          )
+                        })()}
                       </TableCell>
                     </TableRow>
                   ))}

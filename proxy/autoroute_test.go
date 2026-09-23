@@ -98,7 +98,7 @@ func TestAutoRouterNeverFabricatesUnadvertisedModels(t *testing.T) {
 	// An empty model list is not permission to turn an exact tier pattern into
 	// an advertised model.
 	p.SetModelList("only", nil)
-	if cands := r.candidates(p, []string{"claude-haiku-4.5"}, nil); len(cands) != 0 {
+	if cands := r.candidates(p, []string{"claude-haiku-4.5"}, nil, config.AutoRouteConfig{}); len(cands) != 0 {
 		t.Fatalf("empty account catalog produced fabricated candidates: %+v", cands)
 	}
 	if err := config.UpdateAutoRouteConfig(cfg); err != nil {
@@ -156,5 +156,18 @@ func TestMetricsPersistAcrossRestart(t *testing.T) {
 	}
 	if len(byModel) != 1 || byModel[0].Key != "claude-sonnet-4.5" || byModel[0].Requests != 2 {
 		t.Fatalf("restored breakdown mismatch: %+v", byModel)
+	}
+}
+
+func TestAutoRouteBlacklistIsPerProvider(t *testing.T) {
+	cfg := config.AutoRouteConfig{Blacklist: []string{"codebuddy:claude-opus", " *:gemini-3 ", "haiku"}}
+	if !cfg.Blacklisted(config.ProviderCodeBuddy, "claude-opus-4.8") {
+		t.Fatal("codebuddy opus should be blacklisted")
+	}
+	if cfg.Blacklisted(config.ProviderKiro, "claude-opus-4.8") {
+		t.Fatal("same model on kiro must stay eligible")
+	}
+	if !cfg.Blacklisted(config.ProviderGrok, "gemini-3-pro") || !cfg.Blacklisted(config.ProviderKiro, "claude-haiku-4.5") {
+		t.Fatal("wildcard / bare entries should apply to every provider")
 	}
 }

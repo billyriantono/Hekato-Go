@@ -223,7 +223,7 @@ func (r *autoRouter) Resolve(p *pool.AccountPool, cfg config.AutoRouteConfig, si
 	var cands []routeCandidate
 	usedTier := tier
 	for _, ti := range order {
-		cands = r.candidates(p, tiers[ti], filter)
+		cands = r.candidates(p, tiers[ti], filter, cfg)
 		if len(cands) > 0 {
 			usedTier = ti
 			break
@@ -289,7 +289,7 @@ func (r *autoRouter) Resolve(p *pool.AccountPool, cfg config.AutoRouteConfig, si
 }
 
 // candidates lists routable (account, model) pairs whose model matches the tier.
-func (r *autoRouter) candidates(p *pool.AccountPool, patterns []string, filter pool.AccountFilter) []routeCandidate {
+func (r *autoRouter) candidates(p *pool.AccountPool, patterns []string, filter pool.AccountFilter, cfg config.AutoRouteConfig) []routeCandidate {
 	if len(patterns) == 0 {
 		return nil
 	}
@@ -301,8 +301,9 @@ func (r *autoRouter) candidates(p *pool.AccountPool, patterns []string, filter p
 		}
 		seen[acc.ID] = true
 		models := p.GetModelList(acc.ID)
+		prov, _ := config.ProviderForAccount(&acc)
 		for _, m := range models {
-			if !matchesTier(m, patterns) {
+			if !matchesTier(m, patterns) || cfg.Blacklisted(prov, m) {
 				continue
 			}
 			if a := p.GetForModelByID(acc.ID, m, filter); a != nil {
@@ -359,6 +360,7 @@ func (r *autoRouter) pushLocked(d routeDecision) {
 
 type candidateView struct {
 	AccountID   string  `json:"accountId"`
+	Provider    string  `json:"provider"`
 	Model       string  `json:"model"`
 	Successes   float64 `json:"successes"`
 	Failures    float64 `json:"failures"`
@@ -376,12 +378,18 @@ func (r *autoRouter) Snapshot() ([]routeDecision, []candidateView) {
 	for i, d := range r.decisions {
 		dec[len(r.decisions)-1-i] = d
 	}
+	providers := map[string]string{}
+	for _, a := range config.GetAccounts() {
+		if prov, err := config.ProviderForAccount(&a); err == nil {
+			providers[a.ID] = string(prov)
+		}
+	}
 	var cands []candidateView
 	for k, st := range r.stats {
 		st.decay(now)
 		parts := strings.SplitN(k, "|", 2)
 		cands = append(cands, candidateView{
-			AccountID: parts[0], Model: parts[1],
+			AccountID: parts[0], Provider: providers[parts[0]], Model: parts[1],
 			Successes: math.Round(st.Successes*100) / 100, Failures: math.Round(st.Failures*100) / 100,
 			EwmaLatency: math.Round(st.EwmaLatency),
 			Reliability: math.Round((st.Successes+1)/(st.Successes+st.Failures+2)*1000) / 1000,

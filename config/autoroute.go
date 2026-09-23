@@ -1,6 +1,9 @@
 package config
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // AutoRouteConfig drives the virtual "auto" model: requests are classified into
 // a tier, then an (account, model) pair inside that tier is chosen by a bandit.
@@ -18,6 +21,30 @@ type AutoRouteConfig struct {
 	Fast     []string `json:"fast"`
 	Balanced []string `json:"balanced"`
 	Strong   []string `json:"strong"`
+	// Blacklist entries are "provider:pattern" (provider = kiro, codebuddy,
+	// grok, codex, clinepass or "*"; pattern = case-insensitive substring of
+	// the model ID). A match removes that (provider, model) pair from auto
+	// routing only; the same model on another provider stays eligible.
+	Blacklist []string `json:"blacklist"`
+}
+
+// Blacklisted reports whether auto routing must skip model on provider.
+func (c AutoRouteConfig) Blacklisted(provider AccountProvider, model string) bool {
+	m := strings.ToLower(model)
+	for _, e := range c.Blacklist {
+		prov, pat, ok := strings.Cut(strings.ToLower(strings.TrimSpace(e)), ":")
+		if !ok {
+			prov, pat = "*", prov
+		}
+		pat = strings.TrimSpace(pat)
+		if pat == "" || (prov != "*" && prov != string(provider)) {
+			continue
+		}
+		if strings.Contains(m, pat) {
+			return true
+		}
+	}
+	return false
 }
 
 func DefaultAutoRouteConfig() AutoRouteConfig {
