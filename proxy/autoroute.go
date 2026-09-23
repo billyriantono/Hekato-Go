@@ -91,6 +91,9 @@ type autoRouter struct {
 	rng       *rand.Rand
 	store     config.BlobStore
 	dirty     bool
+	// vision reports image support for a model ID (nil = unknown). When a
+	// request carries images, candidates that are known to accept them win.
+	vision func(model string) bool
 }
 
 const autoRouterBlobKey = "autoroute"
@@ -224,6 +227,9 @@ func (r *autoRouter) Resolve(p *pool.AccountPool, cfg config.AutoRouteConfig, si
 	usedTier := tier
 	for _, ti := range order {
 		cands = r.candidates(p, tiers[ti], filter, cfg)
+		if sig.Images {
+			cands = r.preferVision(cands)
+		}
 		if len(cands) > 0 {
 			usedTier = ti
 			break
@@ -286,6 +292,25 @@ func (r *autoRouter) Resolve(p *pool.AccountPool, cfg config.AutoRouteConfig, si
 	}
 	r.pushLocked(d)
 	return &d
+}
+
+// preferVision keeps only candidates whose model is known to accept images.
+// If none in the set is marked (catalog lacks modality info), the original
+// list is returned so a vision request still gets routed rather than failing.
+func (r *autoRouter) preferVision(cands []routeCandidate) []routeCandidate {
+	if r.vision == nil {
+		return cands
+	}
+	var out []routeCandidate
+	for _, c := range cands {
+		if r.vision(c.model) {
+			out = append(out, c)
+		}
+	}
+	if len(out) == 0 {
+		return cands
+	}
+	return out
 }
 
 // candidates lists routable (account, model) pairs whose model matches the tier.

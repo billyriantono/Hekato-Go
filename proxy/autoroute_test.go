@@ -186,3 +186,20 @@ func TestHandleModelFailureFeedsRouter(t *testing.T) {
 	}
 	t.Fatalf("per-attempt failure not recorded in router candidates: %+v", cands)
 }
+
+func TestPreferVisionFiltersWhenKnown(t *testing.T) {
+	r := newAutoRouter()
+	a := &config.Account{ID: "a"}
+	cands := []routeCandidate{{account: a, model: "text-only"}, {account: a, model: "vision-model"}}
+	if got := r.preferVision(cands); len(got) != 2 {
+		t.Fatalf("nil vision fn must not filter, got %d", len(got))
+	}
+	r.vision = func(m string) bool { return m == "vision-model" }
+	if got := r.preferVision(cands); len(got) != 1 || got[0].model != "vision-model" {
+		t.Fatalf("expected only the vision model, got %+v", got)
+	}
+	r.vision = func(string) bool { return false }
+	if got := r.preferVision(cands); len(got) != 2 {
+		t.Fatal("unknown modality info must fall back to the full list")
+	}
+}

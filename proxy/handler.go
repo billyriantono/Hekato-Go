@@ -380,6 +380,7 @@ func NewHandler() *Handler {
 	}
 	// Restore persisted ops metrics and keep flushing them in the background.
 	h.metrics.Load(config.Metrics())
+	h.autoRouter.vision = h.modelHasVision
 	h.autoRouter.Load(config.Blobs())
 	go h.runTelemetryFlusher()
 	// 从持久化存储加载最近请求日志，使重启后 /logs 与 dashboard telemetry 不再清空。
@@ -732,6 +733,7 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 	// 添加别名模型
 	models = append(models,
 		buildModelInfo("auto", "kiro-proxy", true),
+		buildModelInfo("auto"+thinkingSuffix, "kiro-proxy", true),
 		buildModelInfo("gpt-4o", "kiro-proxy", true),
 		buildModelInfo("gpt-4", "kiro-proxy", true),
 	)
@@ -765,6 +767,11 @@ func buildAnthropicModelsResponse(cached []ModelInfo, thinkingSuffix string) []m
 	models := make([]map[string]interface{}, 0, len(cached)*2)
 	if len(cached) > 0 {
 		for _, m := range cached {
+			if isAutoModel(m.ModelId) {
+				// Upstream-native "auto" (CodeBuddy) collides with the gateway's
+				// virtual auto model; the alias block below lists it once.
+				continue
+			}
 			supportsImage := modelSupportsImage(m.InputTypes)
 			models = append(models, buildModelInfo(m.ModelId, "anthropic", supportsImage))
 			// 自动生成 thinking 变体
@@ -834,6 +841,19 @@ func buildModelInfo(id, ownedBy string, supportsImage bool) map[string]interface
 			},
 		},
 	}
+}
+
+// modelHasVision reports whether the aggregated catalog marks model as
+// accepting image input.
+func (h *Handler) modelHasVision(model string) bool {
+	h.modelsCacheMu.RLock()
+	defer h.modelsCacheMu.RUnlock()
+	for _, m := range h.cachedModels {
+		if strings.EqualFold(m.ModelId, model) {
+			return modelSupportsImage(m.InputTypes)
+		}
+	}
+	return false
 }
 
 // refreshModelsCache 从 Kiro API 拉取模型列表并缓存
