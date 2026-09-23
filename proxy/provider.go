@@ -24,6 +24,8 @@ const (
 	providerClinepass       = config.ProviderClinepass
 	providerOpenAICompat    = config.ProviderOpenAICompat
 	providerAnthropicCompat = config.ProviderAnthropicCompat
+	providerOpenCodeZen     = config.ProviderOpenCodeZen
+	providerOpenCodeGo      = config.ProviderOpenCodeGo
 )
 
 // providerAdapter is the one registration point for proxy capabilities. Each

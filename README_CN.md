@@ -20,8 +20,8 @@ Hekato-Go 是一个支持 Kiro 与 CodeBuddy 账号的多上游 OpenAI / Anthrop
 ## 功能特性
 
 - Anthropic `/v1/messages` 与 OpenAI `/v1/chat/completions`
-- 多上游 Provider 路由：Kiro + CodeBuddy Global / China
-- Kiro 与 CodeBuddy 使用独立请求转换路径
+- 多上游 Provider 路由：Kiro、CodeBuddy Global / China、Grok (xAI)、OpenCode Zen（免费）、OpenCode Go（订阅）
+- 各 Provider 使用独立请求转换路径
 - 多账号池轮询负载均衡
 - 自动 Token 刷新、SSE 流式输出、Web 管理面板
 - 多种 Kiro 认证方式：AWS Builder ID、IAM Identity Center (企业 SSO)、SSO Token、本地缓存、凭证 JSON

@@ -4,7 +4,7 @@
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat&logo=docker)](https://www.docker.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Hekato-Go is a multi-provider OpenAI / Anthropic compatible AI gateway: one endpoint in front of pools of Kiro, CodeBuddy and Grok accounts, with load balancing, smart routing, per-key limits and an operations dashboard.
+Hekato-Go is a multi-provider OpenAI / Anthropic compatible AI gateway: one endpoint in front of pools of Kiro, CodeBuddy, Grok, OpenCode Zen and OpenCode Go accounts, with load balancing, smart routing, per-key limits and an operations dashboard.
 
 [English](README.md) | [中文](README_CN.md)
 
@@ -20,7 +20,7 @@ If this project helps you, a Star would mean a lot.
 ## Features
 
 - Anthropic `/v1/messages` & OpenAI `/v1/chat/completions`
-- Multi-provider upstream routing: Kiro, CodeBuddy Global / China, Grok (xAI)
+- Multi-provider upstream routing: Kiro, CodeBuddy Global / China, Grok (xAI), OpenCode Zen (free), OpenCode Go (subscription)
 - Provider-neutral request layer: every client format is parsed once into a neutral form and each provider serializes from it, so adding an upstream is a new package plus one registration file
 - Virtual `auto` model: requests are classified by complexity and routed to the best account/model by a learning bandit (see Auto routing)
 - Multi-account pool with round-robin load balancing

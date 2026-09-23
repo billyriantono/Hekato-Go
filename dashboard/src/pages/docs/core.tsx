@@ -327,7 +327,7 @@ export function Models() {
 
       <H2 id="providers">Provider notes</H2>
       <P>
-        The pool can mix Kiro, CodeBuddy (Global / China) and Grok (xAI) accounts. All of them serve the same endpoints and the same model
+        The pool can mix Kiro, CodeBuddy, Grok, OpenCode Zen, and OpenCode Go accounts. All of them serve the same endpoints and the same model
         names; the gateway translates each request into the provider's native format. Which provider actually served you is an admin-side
         detail and does not change the request or response shape.
       </P>
@@ -341,6 +341,12 @@ export function Models() {
         </li>
         <li>
           <strong>Grok</strong> — xAI models; use the <C>grok-*</C> IDs listed by <C>/v1/models</C>, or let <C>auto</C> pick.
+        </li>
+        <li>
+          <strong>OpenCode Zen</strong> — free-tier models via opencode.ai/zen; the gateway injects the required fingerprint tools automatically.
+        </li>
+        <li>
+          <strong>OpenCode Go</strong> — subscription-tier ($5+/mo) models via opencode.ai/zen/go; same fingerprint requirement, auto-injected.
         </li>
       </Ul>
     </>

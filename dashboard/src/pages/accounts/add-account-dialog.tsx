@@ -16,7 +16,7 @@ import { useI18n } from '@/lib/i18n'
 import { sleep } from './shared'
 import { SimpleSelect } from './simple-select'
 
-export type Method = 'builderid' | 'iam' | 'kirosso' | 'ssotoken' | 'local' | 'credentials' | 'cookie' | 'codebuddy' | 'grokDevice' | 'grokImport' | 'codexImport' | 'clinepassImport' | 'openaiCompat' | 'anthropicCompat'
+export type Method = 'builderid' | 'iam' | 'kirosso' | 'ssotoken' | 'local' | 'credentials' | 'cookie' | 'codebuddy' | 'grokDevice' | 'grokImport' | 'codexImport' | 'clinepassImport' | 'opencodeZenImport' | 'opencodeGoImport' | 'openaiCompat' | 'anthropicCompat'
 
 type Added = { id: string; email?: string }
 type FormProps = { onDone: (accounts: Added[]) => void }
@@ -34,6 +34,8 @@ const METHODS: { id: Method; provider: string; title: string; desc: string }[] =
   { id: 'grokImport', provider: 'modal.grokProvider', title: 'grok.importTokens', desc: 'grok.importHint' },
   { id: 'codexImport', provider: 'modal.codexProvider', title: 'modal.codexImportTitle', desc: 'modal.codexImportDesc' },
   { id: 'clinepassImport', provider: 'modal.clinepassProvider', title: 'modal.clinepassImportTitle', desc: 'modal.clinepassImportDesc' },
+  { id: 'opencodeZenImport', provider: 'modal.opencodeZenProvider', title: 'modal.opencodeZenImportTitle', desc: 'modal.opencodeZenImportDesc' },
+  { id: 'opencodeGoImport', provider: 'modal.opencodeGoProvider', title: 'modal.opencodeGoImportTitle', desc: 'modal.opencodeGoImportDesc' },
   { id: 'openaiCompat', provider: 'modal.compatProvider', title: 'modal.openaiCompatTitle', desc: 'modal.openaiCompatDesc' },
   { id: 'anthropicCompat', provider: 'modal.compatProvider', title: 'modal.anthropicCompatTitle', desc: 'modal.anthropicCompatDesc' },
 ]
@@ -116,6 +118,10 @@ export function AddAccountDialog({ open, initialMethod, onClose }: { open: boole
           <CodexImportForm onDone={onDone} />
         ) : method === 'clinepassImport' ? (
           <ClinepassImportForm onDone={onDone} />
+        ) : method === 'opencodeZenImport' ? (
+          <OpenCodeTokenImportForm key="zen" provider="opencode_zen" route="/auth/opencodezen/import" successKey="opencodezen.importSuccess" tokenLabel="opencodezen.tokensLabel" hintKey="opencodezen.importHint" optional onDone={onDone} />
+        ) : method === 'opencodeGoImport' ? (
+          <OpenCodeTokenImportForm key="go" provider="opencode_go" route="/auth/opencodego/import" successKey="opencodego.importSuccess" tokenLabel="opencodego.tokensLabel" hintKey="opencodego.importHint" onDone={onDone} />
         ) : method === 'openaiCompat' ? (
           <CompatForm key="oc" protocol="openai_compat" onDone={onDone} />
         ) : method === 'anthropicCompat' ? (
@@ -878,6 +884,31 @@ function ClinepassImportForm({ onDone }: FormProps) {
       </Field>
       <FileInput onText={setText} />
       <SubmitRow busy={busy} label={t('accounts.import')} onClick={go} disabled={!text.trim()} />
+    </>
+  )
+}
+
+// ---- OpenCode Zen / Go token import ----
+
+function OpenCodeTokenImportForm({ provider, route, successKey, tokenLabel, hintKey, optional, onDone }: FormProps & {
+  provider: string; route: string; successKey: string; tokenLabel: string; hintKey: string; optional?: boolean
+}) {
+  const { t } = useI18n()
+  const { busy, submit } = useSubmit()
+  const [text, setText] = useState('')
+  const go = () =>
+    submit(async () => {
+      const r = await api<{ imported: number; accounts: Added[]; errors?: string[] }>(route, { method: 'POST', body: text.trim() || 'public' })
+      toast.success(`${t(successKey)} (${r.imported})` + (r.errors?.length ? ` — ${r.errors.length} error(s)` : ''))
+      onDone(r.accounts)
+    })
+  return (
+    <>
+      <Field label={t(tokenLabel)} hint={t(hintKey)}>
+        <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={4} className="font-mono text-xs" placeholder={optional ? 'Leave blank for free public tier, or paste API key(s) — one per line' : 'Paste API key(s) — one per line'} />
+      </Field>
+      <FileInput onText={setText} />
+      <SubmitRow busy={busy} label={t('accounts.import')} onClick={go} disabled={!optional && !text.trim()} />
     </>
   )
 }
