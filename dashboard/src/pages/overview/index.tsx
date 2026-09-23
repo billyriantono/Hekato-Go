@@ -106,6 +106,14 @@ export function OverviewPage() {
     select: (d) => (d.logs ?? []).slice().sort((a, b) => b.time - a.time).slice(0, RECENT),
   })
 
+  const accountNames = useMemo(() => {
+    const map: Record<string, string> = {}
+    for (const a of accounts.data ?? []) {
+      map[a.id] = a.nickname || a.email || a.id
+    }
+    return map
+  }, [accounts.data])
+
   const resetStats = useMutation({
     mutationFn: () => post('/stats/reset'),
     onSuccess: () => {
@@ -157,7 +165,7 @@ export function OverviewPage() {
       { accessorKey: 'time', header: t('logs.time'), cell: ({ getValue }) => <span className="whitespace-nowrap text-xs">{formatTime(getValue<number>())}</span> },
       { accessorKey: 'endpoint', header: t('logs.endpoint'), cell: ({ getValue }) => <span className="font-mono text-xs">{getValue<string>()}</span> },
       { accessorKey: 'model', header: t('logs.model'), cell: ({ getValue }) => <span className="font-mono text-xs">{getValue<string>()}</span> },
-      { accessorKey: 'accountId', header: t('logs.account'), cell: ({ getValue }) => <span className="font-mono text-xs">{short(getValue<string>() ?? '')}</span> },
+      { accessorKey: 'accountId', header: t('logs.account'), cell: ({ getValue }) => { const id = getValue<string>() ?? ''; return <span className="font-mono text-xs" title={id}>{accountNames[id] || short(id)}</span> } },
       { accessorKey: 'tokens', header: t('logs.tokens'), cell: ({ getValue }) => <span className="tabular-nums">{formatNumber(getValue<number>())}</span> },
       { accessorKey: 'credits', header: t('overview.credits'), cell: ({ getValue }) => <span className="tabular-nums">{(getValue<number>() ?? 0).toFixed(2)}</span> },
       { accessorKey: 'duration', header: t('logs.duration'), cell: ({ getValue }) => <span className="tabular-nums">{getValue<number>()}ms</span> },
@@ -178,7 +186,7 @@ export function OverviewPage() {
         },
       },
     ],
-    [t],
+    [t, accountNames],
   )
 
   const origin = window.location.origin
@@ -275,7 +283,7 @@ export function OverviewPage() {
         <StatCard label={t('overview.tokensInRange', range)} value={formatNumber(m?.tokens)} hint={t('overview.creditsHint', (m?.credits ?? 0).toFixed(2))} icon={<LuCpu className="size-4" />} />
       </div>
 
-      <MetricsCharts data={metrics.data} range={range} loading={metrics.isPending} />
+      <MetricsCharts data={metrics.data} range={range} loading={metrics.isPending} accountNames={accountNames} />
 
       <WarmupCard />
 

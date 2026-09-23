@@ -91,7 +91,7 @@ function TopList({ rows, colour, error, label }: { rows: Bucket[]; colour: strin
   )
 }
 
-export function MetricsCharts({ data, range, loading }: { data?: Metrics; range: Range; loading: boolean }) {
+export function MetricsCharts({ data, range, loading, accountNames }: { data?: Metrics; range: Range; loading: boolean; accountNames?: Record<string, string> }) {
   const { t } = useI18n()
   const { theme } = useTheme()
   const { slots, error } = PALETTE[theme]
@@ -164,7 +164,7 @@ export function MetricsCharts({ data, range, loading }: { data?: Metrics; range:
             <CardTitle>{t('overview.topAccounts')}</CardTitle>
             <CardDescription>{t('overview.topHint')}</CardDescription>
           </CardHeader>
-          <CardContent>{loading ? <LoadingBlock /> : empty ? <EmptyState title={t('overview.noTraffic')} /> : <TopList rows={top(data?.byAccount)} colour={slots[1]} error={error} label={short} />}</CardContent>
+          <CardContent>{loading ? <LoadingBlock /> : empty ? <EmptyState title={t('overview.noTraffic')} /> : <TopList rows={top(data?.byAccount)} colour={slots[1]} error={error} label={(k) => accountNames?.[k] || short(k)} />}</CardContent>
         </Card>
         <Card>
           <CardHeader>
