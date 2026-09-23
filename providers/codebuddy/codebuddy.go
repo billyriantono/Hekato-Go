@@ -460,30 +460,31 @@ const codeBuddyCNMainSubProduct = "sp_tcaca_codebuddy_ide"
 
 func FetchUsage(account *config.Account) (*config.AccountInfo, error) {
 	info := &config.AccountInfo{LastRefresh: time.Now().Unix()}
-	if variantForAccount(account).Name != codeBuddyCN.Name {
+	if variantForAccount(account).Name == codeBuddyCN.Name {
+		info.SubscriptionType = "CODEBUDDY_CN"
+		info.SubscriptionTitle = "CodeBuddy China"
+	} else {
 		info.SubscriptionType = "CODEBUDDY"
 		info.SubscriptionTitle = "CodeBuddy Global"
-		return info, nil
 	}
-	limit, used, remain, err := fetchCodeBuddyCNCredits(account)
+	// Both regions expose the same billing endpoint and response shape
+	// (/v2/billing/meter/get-user-resource → data.Response.Data.Accounts[]).
+	limit, used, _, err := fetchCodeBuddyCredits(account)
 	if err != nil {
 		return nil, err
 	}
-	info.SubscriptionType = "CODEBUDDY_CN"
-	info.SubscriptionTitle = "CodeBuddy China"
 	info.UsageCurrent = used
 	info.UsageLimit = limit
 	if limit > 0 {
 		info.UsagePercent = used / limit
 	}
-	_ = remain
 	return info, nil
 }
 
-func fetchCodeBuddyCNCredits(account *config.Account) (limit, used, remain float64, err error) {
+func fetchCodeBuddyCredits(account *config.Account) (limit, used, remain float64, err error) {
 	token := codeBuddyToken(account)
 	if token == "" {
-		return 0, 0, 0, fmt.Errorf("codebuddy-cn: api key is required")
+		return 0, 0, 0, fmt.Errorf("codebuddy: api key is required")
 	}
 	v := variantForAccount(account)
 	now := time.Now()
@@ -511,7 +512,7 @@ func fetchCodeBuddyCNCredits(account *config.Account) (limit, used, remain float
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
-		return 0, 0, 0, fmt.Errorf("codebuddy-cn credits (HTTP %d)", resp.StatusCode)
+		return 0, 0, 0, fmt.Errorf("codebuddy credits (HTTP %d)", resp.StatusCode)
 	}
 
 	var out struct {
@@ -536,7 +537,7 @@ func fetchCodeBuddyCNCredits(account *config.Account) (limit, used, remain float
 		return 0, 0, 0, err
 	}
 	if out.Code != 0 {
-		return 0, 0, 0, fmt.Errorf("codebuddy-cn credits (code=%d)", out.Code)
+		return 0, 0, 0, fmt.Errorf("codebuddy credits (code=%d)", out.Code)
 	}
 
 	for _, a := range out.Data.Response.Data.Accounts {
