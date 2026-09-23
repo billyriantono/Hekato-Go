@@ -12,6 +12,7 @@ import (
 	"hekato-go/config"
 	"hekato-go/logger"
 	"hekato-go/providers"
+	"hekato-go/providers/codex"
 	"io"
 	"net/http"
 	"strings"
@@ -35,6 +36,9 @@ func CallOpenAI(account *config.Account, req *providers.OpenAIRequest, callback 
 		return fmt.Errorf("opencodezen: nil account")
 	}
 	hadCallerTools := len(req.Tools) != 0
+	if usesResponsesTransport(req.Model) {
+		return callResponsesForChat(account, req, hadCallerTools, callback)
+	}
 	req.Tools, _ = InjectFingerprintTools(req.Tools)
 	req.Stream = true // upstream requires stream:true for free-tier
 
@@ -144,9 +148,11 @@ func marshalChatRequest(req *providers.OpenAIRequest, disableTools bool) ([]byte
 	return json.Marshal(payload)
 }
 
-// marshalResponsesRequest adds the free-tier stream frame and disables the
-// injected tools when the caller did not request tool execution.
-func marshalResponsesRequest(req *providers.ResponsesRequest, disableTools bool) ([]byte, error) {
+// marshalResponsesRequest adds the free-tier stream frame. Zen's Responses
+// endpoint only accepts tool_choice "auto" (it rejects "none"), so the
+// injected fingerprint tools stay callable; spurious calls to them are
+// dropped in dropFingerprintCalls when the caller supplied no tools.
+func marshalResponsesRequest(req *providers.ResponsesRequest, _ bool) ([]byte, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
@@ -156,10 +162,65 @@ func marshalResponsesRequest(req *providers.ResponsesRequest, disableTools bool)
 		return nil, err
 	}
 	payload["stream"] = true
-	if disableTools {
-		payload["tool_choice"] = "none"
-	}
+	delete(payload, "tool_choice")
 	return json.Marshal(payload)
+}
+
+// usesResponsesTransport reports models Zen serves only on /responses.
+// Probed 2026-09-23: muse-spark-* return 503 "Endpoint is unavailable" on
+// /chat/completions and 200 on /responses (with the fingerprint tools).
+func usesResponsesTransport(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "muse-spark")
+}
+
+// callResponsesForChat bridges a Chat Completions caller to Zen's Responses
+// endpoint and feeds the Responses SSE back through the chat callback.
+func callResponsesForChat(account *config.Account, req *providers.OpenAIRequest, hadCallerTools bool, callback *providers.StreamCallback) error {
+	rr := codex.ConvertChatToResponses(req)
+	rr.Stream = true
+	rr.Tools = InjectFingerprintResponsesTools(rr.Tools)
+	body, err := marshalResponsesRequest(rr, !hadCallerTools)
+	if err != nil {
+		return fmt.Errorf("marshal opencodezen responses request: %w", err)
+	}
+	httpReq, err := http.NewRequest(http.MethodPost, zenResponsesURL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build opencodezen responses request: %w", err)
+	}
+	setHeaders(httpReq, account)
+	httpReq.Header.Set("Accept", "text/event-stream")
+	resp, err := providers.GetRestClientForAccount(account).Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("opencodezen responses upstream: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+		return providers.Errorf(resp.StatusCode, "opencodezen responses HTTP %d: %s", resp.StatusCode, truncate(string(raw)))
+	}
+	if !hadCallerTools {
+		callback = dropFingerprintCalls(callback)
+	}
+	return codex.ConsumeResponsesSSE(resp.Body, callback)
+}
+
+// dropFingerprintCalls swallows tool calls to the injected fingerprint tools
+// so a caller that declared no tools never sees them.
+func dropFingerprintCalls(cb *providers.StreamCallback) *providers.StreamCallback {
+	if cb == nil || cb.OnToolUse == nil {
+		return cb
+	}
+	inner := cb.OnToolUse
+	out := *cb
+	out.OnToolUse = func(tu providers.ToolUse) {
+		for _, fp := range fingerprintToolNames {
+			if strings.EqualFold(tu.Name, fp) {
+				return
+			}
+		}
+		inner(tu)
+	}
+	return &out
 }
 
 // ---------- SSE parsing (mirrors providers/openaicompat) ----------

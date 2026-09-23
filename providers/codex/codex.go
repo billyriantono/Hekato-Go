@@ -462,3 +462,10 @@ func clampPercent(p float64) float64 {
 	}
 	return p
 }
+
+// ConsumeResponsesSSE parses a standard OpenAI Responses SSE stream into the
+// StreamCallback contract. Exported for vendors that speak the same wire
+// format (OpenCode Zen's muse-spark models).
+func ConsumeResponsesSSE(r io.Reader, callback *providers.StreamCallback) error {
+	return consumeCodexSSE(r, callback)
+}

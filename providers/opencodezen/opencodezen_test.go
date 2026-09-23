@@ -2,6 +2,7 @@ package opencodezen
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"hekato-go/providers"
@@ -51,5 +52,29 @@ func TestStaticModelsExcludeSystemOneJev(t *testing.T) {
 		if model.ModelId == "jev-1.13-free" || model.ModelId == "jev-1.13" {
 			t.Fatalf("SystemOne model %q must not be exposed as a chat model", model.ModelId)
 		}
+	}
+}
+
+func TestMuseSparkUsesResponsesTransport(t *testing.T) {
+	if !usesResponsesTransport("muse-spark-1.3-contributor-free") || !usesResponsesTransport(" Muse-Spark-1.2 ") {
+		t.Fatal("muse-spark must go over /responses")
+	}
+	if usesResponsesTransport("nemotron-3.5-lightning-free") {
+		t.Fatal("chat models stay on /chat/completions")
+	}
+	body, err := marshalResponsesRequest(&providers.ResponsesRequest{Model: "muse-spark-1.3-contributor-free", Tools: InjectFingerprintResponsesTools(nil)}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "tool_choice") || !strings.Contains(string(body), `"name":"bash"`) || !strings.Contains(string(body), `"stream":true`) {
+		t.Fatalf("zen responses frame wrong: %s", body)
+	}
+	var seen []string
+	cb := dropFingerprintCalls(&providers.StreamCallback{OnToolUse: func(tu providers.ToolUse) { seen = append(seen, tu.Name) }})
+	cb.OnToolUse(providers.ToolUse{Name: "bash"})
+	cb.OnToolUse(providers.ToolUse{Name: "Read"})
+	cb.OnToolUse(providers.ToolUse{Name: "get_weather"})
+	if len(seen) != 1 || seen[0] != "get_weather" {
+		t.Fatalf("fingerprint calls must be dropped, got %v", seen)
 	}
 }

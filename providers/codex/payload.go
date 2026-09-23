@@ -18,13 +18,13 @@ import (
 // on drift — the pair `codex-auto` -> `gpt-5.3-codex` in particular masks a
 // real 400 for callers hard-coded to the router-side alias.
 var codexModelMap = map[string]string{
-	"codex-auto":         "gpt-5.3-codex",
+	"codex-auto":          "gpt-5.3-codex",
 	"codex-gpt-5.5-xhigh": "gpt-5.5-xhigh",
-	"gpt-5.5-xhigh":      "gpt-5.5-xhigh",
-	"codex-gpt-5.5":      "gpt-5.5",
-	"codex-gpt-5.4":      "gpt-5.4",
-	"codex-gpt-5.3":      "gpt-5.3-codex",
-	"codex-gpt-5.2":      "gpt-5.2",
+	"gpt-5.5-xhigh":       "gpt-5.5-xhigh",
+	"codex-gpt-5.5":       "gpt-5.5",
+	"codex-gpt-5.4":       "gpt-5.4",
+	"codex-gpt-5.3":       "gpt-5.3-codex",
+	"codex-gpt-5.2":       "gpt-5.2",
 }
 
 // resolveCodexModel maps a request model to the Codex slug. Empty input
@@ -326,4 +326,28 @@ func orRandomCallID(id string) string {
 		return "call_synthetic"
 	}
 	return "call_" + hex.EncodeToString(buf[:])
+}
+
+// ConvertChatToResponses turns a Chat Completions request into a plain
+// Responses request: system turns become instructions, the rest become typed
+// input items, tools go flat. The model ID is kept verbatim and no reasoning
+// block is added; callers that need Codex aliases use buildCodexPayload.
+func ConvertChatToResponses(req *providers.OpenAIRequest) *providers.ResponsesRequest {
+	instructions, items := splitOpenAIMessages(req.Messages)
+	input, err := json.Marshal(items)
+	if err != nil {
+		input = json.RawMessage("[]")
+	}
+	out := &providers.ResponsesRequest{
+		Model:        req.Model,
+		Input:        input,
+		Instructions: instructions,
+		Tools:        providers.ToolsFromOpenAI(req.Tools),
+		Stream:       req.Stream,
+	}
+	if req.MaxTokens > 0 {
+		mt := req.MaxTokens
+		out.MaxOutputTokens = &mt
+	}
+	return out
 }
