@@ -14,7 +14,7 @@ import (
 
 func init() {
 	providers.RegisterAdminRoutes(map[string]providers.RouteHandler{
-		"opencodego/import": importOpenCodeGo,
+		"POST /auth/opencodego/import": importOpenCodeGo,
 	})
 }
 

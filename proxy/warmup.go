@@ -178,7 +178,9 @@ func (h *Handler) warmupOne(account *config.Account, probe, recover bool) warmup
 		if err != nil {
 			return err
 		}
-		config.UpdateAccountInfo(account.ID, *info)
+		if info != nil {
+			config.UpdateAccountInfo(account.ID, *info)
+		}
 		return nil
 	}); err != nil {
 		return h.finishWarmup(res, account, err, false)

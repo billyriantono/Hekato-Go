@@ -3289,7 +3289,9 @@ func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 				failCount++
 				continue
 			}
-			config.UpdateAccountInfo(id, *info)
+			if info != nil {
+				config.UpdateAccountInfo(id, *info)
+			}
 			successCount++
 		}
 		h.pool.Reload()
@@ -4034,11 +4036,12 @@ func (h *Handler) apiRefreshAccount(w http.ResponseWriter, r *http.Request, id s
 		}
 	}
 
-	// 保存到配置
-	if err := config.UpdateAccountInfo(id, *info); err != nil {
-		w.WriteHeader(500)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-		return
+	if info != nil {
+		if err := config.UpdateAccountInfo(id, *info); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
