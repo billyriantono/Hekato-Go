@@ -2,7 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
-	"kiro-go/config"
+	"hekato-go/config"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -72,6 +72,7 @@ func TestAuthenticateRejectsDisabledKey(t *testing.T) {
 	r := newAuthTestRequest(t, "Authorization", "Bearer sk-off")
 	entry, err := h.authenticate(r)
 	if err == nil {
+
 		t.Fatalf("expected disabled key to be rejected, got entry=%v", entry)
 	}
 	ae, ok := err.(*authError)
@@ -312,20 +313,50 @@ func TestRecordSuccessForApiKeyEmptyIDIsNoop(t *testing.T) {
 // even after keys exist in the config — e.g. an operator drafted some keys
 // but hasn't flipped the gate yet, or the legacy migration left a disabled
 // entry behind.
-func TestAuthenticateMasterSwitchOffPassesThrough(t *testing.T) {
+func TestAuthenticateMasterSwitchOffPassesThroughAndAttributesValidKey(t *testing.T) {
 	mustInitConfig(t)
-	if _, err := config.AddApiKey(config.ApiKeyEntry{Name: "drafted", Key: "sk-drafted", Enabled: true}); err != nil {
-		t.Fatalf("seed: %v", err)
+	created, err := config.AddApiKey(config.ApiKeyEntry{
+		Name: "tracked", Key: "sk-tracked", Enabled: true, TokenLimit: 1, ConcurrencyLimit: 1,
+	})
+	if err != nil {
+		t.Fatalf("seed enabled key: %v", err)
 	}
-	// RequireApiKey defaults to false — do not flip it on.
+	if _, err := config.AddApiKey(config.ApiKeyEntry{Name: "disabled", Key: "sk-disabled", Enabled: false}); err != nil {
+		t.Fatalf("seed disabled key: %v", err)
+	}
+	if err := config.RecordApiKeyUsage(created.ID, 1, 0); err != nil {
+		t.Fatalf("exhaust token limit: %v", err)
+	}
+	// RequireApiKey defaults to false — missing, invalid, and disabled keys stay anonymous.
+	h := &Handler{limiter: newKeyLimiter()}
+	for _, req := range []*http.Request{
+		newAuthTestRequest(t, "", ""),
+		newAuthTestRequest(t, "Authorization", "Bearer sk-invalid"),
+		newAuthTestRequest(t, "X-Api-Key", "sk-disabled"),
+	} {
+		if entry, err := h.authenticate(req); err != nil || entry != nil {
+			t.Fatalf("expected anonymous open access, got entry=%v err=%v", entry, err)
+		}
+	}
 
-	h := &Handler{}
-	if entry, err := h.authenticate(newAuthTestRequest(t, "", "")); err != nil || entry != nil {
-		t.Fatalf("expected open access without entry, got entry=%v err=%v", entry, err)
+	request := newAuthTestRequest(t, "Authorization", "Bearer sk-tracked")
+	entry, err := h.authenticate(request)
+	if err != nil || entry == nil || entry.ID != created.ID {
+		t.Fatalf("expected valid supplied key to be attributed, got entry=%v err=%v", entry, err)
 	}
-	if entry, err := h.authenticate(newAuthTestRequest(t, "Authorization", "Bearer sk-anything")); err != nil || entry != nil {
-		t.Fatalf("expected provided key to be ignored when gate is off, got entry=%v err=%v", entry, err)
+
+	// With the master gate off, context attribution remains active but quota and
+	// concurrency enforcement do not. Admit twice without releasing the first.
+	admitted, release, ae := h.admit(request)
+	if ae != nil || apiKeyIDFromContext(admitted.Context()) != created.ID {
+		t.Fatalf("first admit did not attach key context: request=%v err=%v", admitted, ae)
 	}
+	defer release()
+	admittedAgain, releaseAgain, ae := h.admit(request)
+	if ae != nil || apiKeyIDFromContext(admittedAgain.Context()) != created.ID {
+		t.Fatalf("second admit should bypass disabled-gate limits: request=%v err=%v", admittedAgain, ae)
+	}
+	defer releaseAgain()
 }
 
 // When auth is required but no keys are configured, every request must be
@@ -344,5 +375,80 @@ func TestAuthenticateRequiredWithoutKeysFailsClosed(t *testing.T) {
 	}
 	if _, err := h.authenticate(newAuthTestRequest(t, "Authorization", "Bearer anything")); err == nil {
 		t.Fatalf("expected provided-key path to also fail closed when nothing is configured")
+	}
+}
+
+func TestAdminApiKeyDetailRevealsOnlyRequestedKey(t *testing.T) {
+	mustInitConfig(t)
+	config.SetPassword("admin-secret")
+	created, err := config.AddApiKey(config.ApiKeyEntry{Name: "main", Key: "sk-copyable", Enabled: true})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	h := &Handler{}
+	authorizedRequest := func(path string) *http.Request {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("X-Admin-Password", "admin-secret")
+		return req
+	}
+
+	listRec := httptest.NewRecorder()
+	h.handleAdminAPI(listRec, authorizedRequest("/admin/api/api-keys"))
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", listRec.Code, listRec.Body.String())
+	}
+	if strings.Contains(listRec.Body.String(), created.Key) {
+		t.Fatalf("list response exposed cleartext key: %s", listRec.Body.String())
+	}
+	var listPayload struct {
+		APIKeys []map[string]interface{} `json:"apiKeys"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listPayload); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(listPayload.APIKeys) != 1 {
+		t.Fatalf("list returned %d keys, want 1", len(listPayload.APIKeys))
+	}
+	if _, ok := listPayload.APIKeys[0]["key"]; ok {
+		t.Fatalf("list response included key field: %s", listRec.Body.String())
+	}
+	if got := listPayload.APIKeys[0]["keyMasked"]; got != config.MaskApiKey(created.Key) {
+		t.Fatalf("keyMasked = %v, want %q", got, config.MaskApiKey(created.Key))
+	}
+
+	unauthorizedRec := httptest.NewRecorder()
+	unauthorizedReq := httptest.NewRequest(http.MethodGet, "/admin/api/api-keys/"+created.ID, nil)
+	h.handleAdminAPI(unauthorizedRec, unauthorizedReq)
+	if unauthorizedRec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized detail status = %d, want %d", unauthorizedRec.Code, http.StatusUnauthorized)
+	}
+	if strings.Contains(unauthorizedRec.Body.String(), created.Key) {
+		t.Fatalf("unauthorized detail exposed cleartext key: %s", unauthorizedRec.Body.String())
+	}
+
+	detailRec := httptest.NewRecorder()
+	h.handleAdminAPI(detailRec, authorizedRequest("/admin/api/api-keys/"+created.ID))
+	if detailRec.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, body = %s", detailRec.Code, detailRec.Body.String())
+	}
+	if got := detailRec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	var detail struct {
+		ID  string `json:"id"`
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(detailRec.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("decode detail response: %v", err)
+	}
+	if detail.ID != created.ID || detail.Key != created.Key {
+		t.Fatalf("detail = %+v, want id %q and exact stored key", detail, created.ID)
+	}
+
+	missingRec := httptest.NewRecorder()
+	h.handleAdminAPI(missingRec, authorizedRequest("/admin/api/api-keys/missing"))
+	if missingRec.Code != http.StatusNotFound {
+		t.Fatalf("missing detail status = %d, want %d", missingRec.Code, http.StatusNotFound)
 	}
 }

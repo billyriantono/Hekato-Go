@@ -14,9 +14,11 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"kiro-go/logger"
+	"hash/fnv"
+	"hekato-go/logger"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -63,6 +65,13 @@ type Account struct {
 	IssuerURL     string `json:"issuerUrl,omitempty"`     // External IdP OIDC issuer URL
 	Scopes        string `json:"scopes,omitempty"`        // Space-separated scopes granted by the external IdP
 
+	// OpenAI / Anthropic-compatible upstream (Vercel Gateway, Azure AI, Anthropic Platform, OpenRouter, ...).
+	// BaseURL is the vendor root (no trailing slash); CompatAPIKey is sent as Bearer (OpenAI) or
+	// x-api-key (Anthropic). CompatProtocol mirrors the provider kind for clarity in the UI.
+	BaseURL        string `json:"baseUrl,omitempty"`
+	CompatAPIKey   string `json:"compatApiKey,omitempty"`
+	CompatProtocol string `json:"compatProtocol,omitempty"`
+
 	// Per-account outbound override. Relay takes precedence over ProxyURL; when both
 	// are empty the account inherits the global outbound setting.
 	ProxyURL    string `json:"proxyURL,omitempty"`
@@ -71,6 +80,12 @@ type Account struct {
 
 	// Priority weight for load balancing (higher = more requests)
 	Weight int `json:"weight,omitempty"` // 0 or 1 = normal, 2+ = higher priority
+	// ProbeModel is the model used for this account's Test button and warmup
+	// probe ("" = global default test model, else a cheap advertised model).
+	ProbeModel string `json:"probeModel,omitempty"`
+	// ExtraModels are operator-added model IDs for this account, merged into the
+	// provider's advertised list (for models a catalog does not know yet).
+	ExtraModels []string `json:"extraModels,omitempty"`
 
 	// Upstream Overages state (mirrored from AWS Q `setUserPreference` / `getUsageLimits`).
 	// OverageStatus is the only switch that decides whether to keep dispatching once UsageLimit is reached.
@@ -120,6 +135,11 @@ type Account struct {
 	LastUsed     int64   `json:"lastUsed,omitempty"`     // Last request timestamp
 	TotalTokens  int     `json:"totalTokens,omitempty"`  // Cumulative tokens processed
 	TotalCredits float64 `json:"totalCredits,omitempty"` // Cumulative credits consumed
+
+	// Warmup: last health check outcome ("ok" / "error"), its error text, and when.
+	WarmupStatus string `json:"warmupStatus,omitempty"`
+	WarmupError  string `json:"warmupError,omitempty"`
+	LastWarmup   int64  `json:"lastWarmup,omitempty"`
 }
 
 // PromptFilterRule defines a single custom prompt sanitization rule.
@@ -149,6 +169,13 @@ type ApiKeyEntry struct {
 	// Limits (0 = unlimited)
 	TokenLimit  int64   `json:"tokenLimit,omitempty"`
 	CreditLimit float64 `json:"creditLimit,omitempty"`
+	// Rate limits (0 = unlimited): max requests per rolling minute, max in-flight requests.
+	RPMLimit         int64 `json:"rpmLimit,omitempty"`
+	ConcurrencyLimit int64 `json:"concurrencyLimit,omitempty"`
+	// AllowedModels restricts which model IDs this key may request (empty =
+	// every model). Entries match case-insensitively; a trailing "*" is a
+	// prefix wildcard ("claude-*"). "auto" allows the virtual auto model.
+	AllowedModels []string `json:"allowedModels,omitempty"`
 
 	// Cumulative usage (never auto-reset)
 	TokensUsed    int64   `json:"tokensUsed,omitempty"`
@@ -192,6 +219,9 @@ type Config struct {
 	//         "http://host:port",  "http://user:pass@host:port"
 	// Leave empty to connect directly.
 	ProxyURL string `json:"proxyURL,omitempty"`
+	// ProxyPool: accounts with no ProxyURL/RelayURL of their own are pinned to one
+	// of these (hash of account ID), so each account always egresses from the same IP.
+	ProxyPool []string `json:"proxyPool,omitempty"`
 
 	// Egress relay: an alternative to ProxyURL. The relay only routes traffic when
 	// RelayEnabled is true (the operator selects "Egress Relay" as the outbound
@@ -226,6 +256,26 @@ type Config struct {
 	// Accepted values: "debug", "info", "warn", "error". Defaults to "info".
 	// Can be overridden by the LOG_LEVEL environment variable.
 	LogLevel string `json:"logLevel,omitempty"`
+
+	// AccountRefreshMinutes: how often account tokens and quotas are re-checked
+	// upstream. 0 = default (ACCOUNT_REFRESH_MINUTES env or 30).
+	AccountRefreshMinutes int `json:"accountRefreshMinutes,omitempty"`
+
+	// AutoRoute configures the virtual "auto" model router (nil = defaults, disabled).
+	AutoRoute *AutoRouteConfig `json:"autoRoute,omitempty"`
+
+	// Warmup options: WarmupProbe sends a tiny chat request to each account on
+	// every cycle (verifies inference, not just quota); WarmupRecover re-enables
+	// accounts that were auto-disabled by failover once they pass a check.
+	WarmupProbe   bool `json:"warmupProbe,omitempty"`
+	WarmupRecover bool `json:"warmupRecover,omitempty"`
+
+	// TestModel is the default model for the account Test button and the warmup
+	// probe ("" = first model the account advertises).
+	TestModel string `json:"testModel,omitempty"`
+	// CustomModelIDs adds model IDs to a provider's static catalog without a
+	// rebuild, keyed by provider kind (e.g. "codebuddy").
+	CustomModelIDs map[string][]string `json:"customModelIds,omitempty"`
 
 	// Global statistics (persisted across restarts)
 	TotalRequests   int     `json:"totalRequests,omitempty"`   // Total API requests received
@@ -271,6 +321,7 @@ var (
 // import source for an existing config.json.
 func Init(path string) error {
 	cfgPath = path
+	initCrypto()
 	st, err := newStore(path)
 	if err != nil {
 		return err
@@ -292,6 +343,9 @@ func Load() error {
 
 	loaded, err := store.Load()
 	if err != nil {
+		return err
+	}
+	if err := openConfig(loaded); err != nil {
 		return err
 	}
 
@@ -418,7 +472,7 @@ func Save() error {
 	if store == nil {
 		store = &jsonStore{path: cfgPath}
 	}
-	return store.Save(cfg)
+	return store.Save(sealConfig(cfg))
 }
 
 // SetPassword updates the admin password.
@@ -673,6 +727,24 @@ func UpdateAccountToken(id, accessToken, refreshToken string, expiresAt int64) e
 				cfg.Accounts[i].RefreshToken = refreshToken
 			}
 			cfg.Accounts[i].ExpiresAt = expiresAt
+			return Save()
+		}
+	}
+	return nil
+}
+
+// UpdateAccountUserId persists a fresh provider-side user id (e.g. Codex's
+// chatgpt_account_id, decoded from the refreshed id/access JWT). No-op if the
+// account is missing or the value is unchanged.
+func UpdateAccountUserId(id, userId string) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	for i, a := range cfg.Accounts {
+		if a.ID == id {
+			if cfg.Accounts[i].UserId == userId {
+				return nil
+			}
+			cfg.Accounts[i].UserId = userId
 			return Save()
 		}
 	}
@@ -951,6 +1023,37 @@ func GetProxyURL() string {
 	return cfg.ProxyURL
 }
 
+// PoolProxyFor returns the proxy pinned to an account from the global ProxyPool,
+// or "" when the pool is empty. Same account → same proxy (FNV-1a of the ID).
+func PoolProxyFor(accountID string) string {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil || len(cfg.ProxyPool) == 0 {
+		return ""
+	}
+	h := fnv.New32a()
+	h.Write([]byte(accountID))
+	return cfg.ProxyPool[int(h.Sum32()%uint32(len(cfg.ProxyPool)))]
+}
+
+// GetProxyPool returns a copy of the global proxy pool.
+func GetProxyPool() []string {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return nil
+	}
+	return append([]string(nil), cfg.ProxyPool...)
+}
+
+// UpdateProxyPool replaces the global proxy pool.
+func UpdateProxyPool(urls []string) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.ProxyPool = urls
+	return Save()
+}
+
 // UpdateProxySettings 更新出站代理配置
 func UpdateProxySettings(proxyURL string) error {
 	cfgLock.Lock()
@@ -1029,6 +1132,119 @@ func UpdateAllowOverUsage(allow bool) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	cfg.AllowOverUsage = allow
+	return Save()
+}
+
+// UpdateAccountWarmup records the outcome of a warmup check for an account.
+func UpdateAccountWarmup(id, status, errText string, at int64) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	for i := range cfg.Accounts {
+		if cfg.Accounts[i].ID == id {
+			cfg.Accounts[i].WarmupStatus = status
+			cfg.Accounts[i].WarmupError = errText
+			cfg.Accounts[i].LastWarmup = at
+			return Save()
+		}
+	}
+	return nil
+}
+
+// RecoverAccount clears an automatic ban and re-enables the account.
+func RecoverAccount(id string) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	for i := range cfg.Accounts {
+		if cfg.Accounts[i].ID == id {
+			cfg.Accounts[i].Enabled = true
+			cfg.Accounts[i].BanStatus = "ACTIVE"
+			cfg.Accounts[i].BanReason = ""
+			cfg.Accounts[i].BanTime = 0
+			return Save()
+		}
+	}
+	return nil
+}
+
+// GetWarmupOptions returns (probe, recover).
+func GetWarmupOptions() (bool, bool) {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return false, false
+	}
+	return cfg.WarmupProbe, cfg.WarmupRecover
+}
+
+func UpdateWarmupOptions(probe, recover bool) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.WarmupProbe = probe
+	cfg.WarmupRecover = recover
+	return Save()
+}
+
+func GetTestModel() string {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return ""
+	}
+	return cfg.TestModel
+}
+
+func UpdateTestModel(model string) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.TestModel = strings.TrimSpace(model)
+	return Save()
+}
+
+// GetCustomModelIDs returns operator-added model IDs for a provider kind.
+func GetCustomModelIDs(provider string) []string {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil || cfg.CustomModelIDs == nil {
+		return nil
+	}
+	return append([]string(nil), cfg.CustomModelIDs[provider]...)
+}
+
+func UpdateCustomModelIDs(provider string, ids []string) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	if cfg.CustomModelIDs == nil {
+		cfg.CustomModelIDs = map[string][]string{}
+	}
+	clean := ids[:0:0]
+	for _, id := range ids {
+		if id = strings.TrimSpace(id); id != "" {
+			clean = append(clean, id)
+		}
+	}
+	if len(clean) == 0 {
+		delete(cfg.CustomModelIDs, provider)
+	} else {
+		cfg.CustomModelIDs[provider] = clean
+	}
+	return Save()
+}
+
+// GetAccountRefreshMinutes returns the configured refresh interval (0 = unset).
+func GetAccountRefreshMinutes() int {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return 0
+	}
+	return cfg.AccountRefreshMinutes
+}
+
+// UpdateAccountRefreshMinutes persists the refresh interval (minutes, >= 1; 0 resets to default).
+func UpdateAccountRefreshMinutes(minutes int) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.AccountRefreshMinutes = minutes
 	return Save()
 }
 

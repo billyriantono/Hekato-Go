@@ -6,8 +6,8 @@ package providers
 
 import (
 	"fmt"
-	"kiro-go/config"
-	"kiro-go/egress"
+	"hekato-go/config"
+	"hekato-go/egress"
 	"net/http"
 	"net/url"
 	"sync"
@@ -27,6 +27,13 @@ func init() {
 }
 
 func clientForAccount(account *config.Account, rest bool) *http.Client {
+	if account != nil && account.ProxyURL == "" && account.RelayURL == "" {
+		if pooled := config.PoolProxyFor(account.ID); pooled != "" {
+			cp := *account
+			cp.ProxyURL = pooled
+			account = &cp
+		}
+	}
 	if account == nil || (account.ProxyURL == "" && account.RelayURL == "") {
 		if rest {
 			return restClientStore.Load()

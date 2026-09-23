@@ -97,6 +97,8 @@ var accountColumns = []string{
 	"usage_current", "usage_limit", "usage_percent", "next_reset_date", "last_refresh",
 	"trial_usage_current", "trial_usage_limit", "trial_usage_percent", "trial_status", "trial_expires_at",
 	"request_count", "error_count", "last_used", "total_tokens", "total_credits",
+	"warmup_status", "warmup_error", "last_warmup", "probe_model", "extra_models",
+	"base_url", "compat_api_key", "compat_protocol",
 }
 
 func accountValues(a *Account) []any {
@@ -112,12 +114,16 @@ func accountValues(a *Account) []any {
 		a.UsageCurrent, a.UsageLimit, a.UsagePercent, a.NextResetDate, a.LastRefresh,
 		a.TrialUsageCurrent, a.TrialUsageLimit, a.TrialUsagePercent, a.TrialStatus, a.TrialExpiresAt,
 		a.RequestCount, a.ErrorCount, a.LastUsed, a.TotalTokens, a.TotalCredits,
+		a.WarmupStatus, a.WarmupError, a.LastWarmup, a.ProbeModel, strings.Join(a.ExtraModels, "\n"),
+		a.BaseURL, a.CompatAPIKey, a.CompatProtocol,
 	}
 }
 
 func scanAccount(rows *sql.Rows) (Account, error) {
 	var a Account
 	var enabled int
+	var extraModels string
+	var baseURL, compatKey, compatProto sql.NullString
 	dest := []any{
 		&a.ID, &a.Email, &a.UserId, &a.Nickname,
 		&a.AccessToken, &a.RefreshToken, &a.ClientID, &a.ClientSecret,
@@ -130,37 +136,50 @@ func scanAccount(rows *sql.Rows) (Account, error) {
 		&a.UsageCurrent, &a.UsageLimit, &a.UsagePercent, &a.NextResetDate, &a.LastRefresh,
 		&a.TrialUsageCurrent, &a.TrialUsageLimit, &a.TrialUsagePercent, &a.TrialStatus, &a.TrialExpiresAt,
 		&a.RequestCount, &a.ErrorCount, &a.LastUsed, &a.TotalTokens, &a.TotalCredits,
+		&a.WarmupStatus, &a.WarmupError, &a.LastWarmup, &a.ProbeModel, &extraModels,
+		&baseURL, &compatKey, &compatProto,
 	}
 	if err := rows.Scan(dest...); err != nil {
 		return Account{}, err
 	}
 	a.Enabled = enabled != 0
+	a.BaseURL, a.CompatAPIKey, a.CompatProtocol = baseURL.String, compatKey.String, compatProto.String
+	if extraModels != "" {
+		a.ExtraModels = strings.Split(extraModels, "\n")
+	}
 	return a, nil
 }
 
 var apiKeyColumns = []string{
 	"id", "name", "key", "enabled", "migrated", "created_at", "last_used_at",
 	"token_limit", "credit_limit", "tokens_used", "credits_used", "requests_count",
+	"rpm_limit", "concurrency_limit", "allowed_models",
 }
 
 func apiKeyValues(k *ApiKeyEntry) []any {
 	return []any{
 		k.ID, k.Name, k.Key, boolToInt(k.Enabled), boolToInt(k.Migrated), k.CreatedAt, k.LastUsedAt,
 		k.TokenLimit, k.CreditLimit, k.TokensUsed, k.CreditsUsed, k.RequestsCount,
+		k.RPMLimit, k.ConcurrencyLimit, strings.Join(k.AllowedModels, "\n"),
 	}
 }
 
 func scanApiKey(rows *sql.Rows) (ApiKeyEntry, error) {
 	var k ApiKeyEntry
 	var enabled, migrated int
+	var allowed sql.NullString
 	if err := rows.Scan(
 		&k.ID, &k.Name, &k.Key, &enabled, &migrated, &k.CreatedAt, &k.LastUsedAt,
 		&k.TokenLimit, &k.CreditLimit, &k.TokensUsed, &k.CreditsUsed, &k.RequestsCount,
+		&k.RPMLimit, &k.ConcurrencyLimit, &allowed,
 	); err != nil {
 		return ApiKeyEntry{}, err
 	}
 	k.Enabled = enabled != 0
 	k.Migrated = migrated != 0
+	if allowed.String != "" {
+		k.AllowedModels = strings.Split(allowed.String, "\n")
+	}
 	return k, nil
 }
 
@@ -188,6 +207,9 @@ func (s *sqlStore) migrate() error {
 			trial_usage_current DOUBLE PRECISION, trial_usage_limit DOUBLE PRECISION,
 			trial_usage_percent DOUBLE PRECISION, trial_status TEXT, trial_expires_at BIGINT,
 			request_count BIGINT, error_count BIGINT, last_used BIGINT, total_tokens BIGINT, total_credits DOUBLE PRECISION,
+			warmup_status TEXT DEFAULT '', warmup_error TEXT DEFAULT '', last_warmup BIGINT DEFAULT 0,
+			probe_model TEXT DEFAULT '', extra_models TEXT DEFAULT '',
+			base_url TEXT DEFAULT '', compat_api_key TEXT DEFAULT '', compat_protocol TEXT DEFAULT '',
 			position BIGINT
 		)`,
 		`CREATE TABLE IF NOT EXISTS api_keys (
@@ -196,7 +218,21 @@ func (s *sqlStore) migrate() error {
 			created_at BIGINT, last_used_at BIGINT,
 			token_limit BIGINT, credit_limit DOUBLE PRECISION,
 			tokens_used BIGINT, credits_used DOUBLE PRECISION, requests_count BIGINT,
+			rpm_limit BIGINT DEFAULT 0, concurrency_limit BIGINT DEFAULT 0,
+			allowed_models TEXT DEFAULT '',
 			position BIGINT
+		)`,
+		`CREATE TABLE IF NOT EXISTS runtime_blobs (
+			key TEXT PRIMARY KEY,
+			data TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS metrics_minutes (
+			minute BIGINT PRIMARY KEY,
+			data TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS request_logs (
+			ts BIGINT PRIMARY KEY,
+			data TEXT
 		)`,
 		`CREATE TABLE IF NOT EXISTS prompt_filter_rules (
 			id TEXT PRIMARY KEY,
@@ -209,11 +245,30 @@ func (s *sqlStore) migrate() error {
 			return fmt.Errorf("migrate: %w", err)
 		}
 	}
-	for _, col := range []string{"relay_url", "relay_secret"} {
-		if _, err := s.db.Exec(`SELECT ` + col + ` FROM accounts LIMIT 0`); err != nil {
-			if _, err := s.db.Exec(`ALTER TABLE accounts ADD COLUMN ` + col + ` TEXT`); err != nil {
-				return fmt.Errorf("migrate accounts.%s: %w", col, err)
+	addColumn := func(table, col, typ string) error {
+		if _, err := s.db.Exec(`SELECT ` + col + ` FROM ` + table + ` LIMIT 0`); err != nil {
+			if _, err := s.db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + col + ` ` + typ); err != nil {
+				return fmt.Errorf("migrate %s.%s: %w", table, col, err)
 			}
+		}
+		return nil
+	}
+	for _, col := range []string{"relay_url", "relay_secret"} {
+		if err := addColumn("accounts", col, "TEXT"); err != nil {
+			return err
+		}
+	}
+	for _, col := range []string{"rpm_limit", "concurrency_limit"} {
+		if err := addColumn("api_keys", col, "BIGINT DEFAULT 0"); err != nil {
+			return err
+		}
+	}
+	if err := addColumn("api_keys", "allowed_models", "TEXT DEFAULT ''"); err != nil {
+		return err
+	}
+	for col, typ := range map[string]string{"warmup_status": "TEXT DEFAULT ''", "warmup_error": "TEXT DEFAULT ''", "last_warmup": "BIGINT DEFAULT 0", "probe_model": "TEXT DEFAULT ''", "extra_models": "TEXT DEFAULT ''", "base_url": "TEXT DEFAULT ''", "compat_api_key": "TEXT DEFAULT ''", "compat_protocol": "TEXT DEFAULT ''"} {
+		if err := addColumn("accounts", col, typ); err != nil {
+			return err
 		}
 	}
 	return nil

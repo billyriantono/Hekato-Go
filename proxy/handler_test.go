@@ -2,10 +2,10 @@ package proxy
 
 import (
 	"encoding/json"
-	"kiro-go/config"
-	accountpool "kiro-go/pool"
-	"kiro-go/providers"
-	"kiro-go/providers/kiro"
+	"hekato-go/config"
+	accountpool "hekato-go/pool"
+	"hekato-go/providers"
+	"hekato-go/providers/kiro"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -98,7 +98,7 @@ func TestClaudeNonStreamRetriesNextAccountAfterPreResponseFailure(t *testing.T) 
 	}
 
 	rec := httptest.NewRecorder()
-	h.handleClaudeNonStream(rec, req, "claude-sonnet-4.5", false, claudeThinkingResponseOptions{}, 1, nil, "")
+	h.handleClaudeNonStream(rec, req, "claude-sonnet-4.5", false, claudeThinkingResponseOptions{}, 1, nil, "", "")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected retry to succeed, status=%d body=%s", rec.Code, rec.Body.String())
@@ -478,5 +478,18 @@ func TestBuildAnthropicModelsResponseGeneratesThinkingVariants(t *testing.T) {
 	}
 	if supportsImage, ok := models[0]["supports_image"].(bool); !ok || !supportsImage {
 		t.Fatalf("expected image capability to be preserved, got %#v", models[0]["supports_image"])
+	}
+}
+
+func TestProbeModelForUsesConfiguredModelWhenAdvertised(t *testing.T) {
+	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	if err := config.UpdateTestModel("claude-opus-4.8"); err != nil {
+		t.Fatalf("UpdateTestModel: %v", err)
+	}
+	account := &config.Account{ProviderKind: "codebuddy"}
+	if got := probeModelFor(account); got != "claude-opus-4.8" {
+		t.Fatalf("probe model = %q, want configured model", got)
 	}
 }

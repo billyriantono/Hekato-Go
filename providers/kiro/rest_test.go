@@ -1,10 +1,10 @@
 package kiro
 
 import (
+	"hekato-go/auth"
+	"hekato-go/config"
+	"hekato-go/providers"
 	"io"
-	"kiro-go/auth"
-	"kiro-go/config"
-	"kiro-go/providers"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"

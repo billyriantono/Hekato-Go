@@ -2,7 +2,7 @@ package kiro
 
 import (
 	"fmt"
-	"kiro-go/config"
+	"hekato-go/config"
 	"net/http"
 )
 

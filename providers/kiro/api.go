@@ -8,10 +8,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"hekato-go/config"
+	"hekato-go/logger"
+	"hekato-go/providers"
 	"io"
-	"kiro-go/config"
-	"kiro-go/logger"
-	"kiro-go/providers"
 	"net/http"
 	"net/url"
 	"strings"
@@ -95,7 +95,7 @@ func getSortedEndpoints(preferred string) []Endpoint {
 	return result
 }
 
-// CallKiroAPI calls the Kiro streaming API, trying each configured endpoint with automatic fallback.
+// CallAPI calls the Kiro streaming API, trying each configured endpoint with automatic fallback.
 func CallAPI(account *config.Account, payload *providers.KiroPayload, callback *providers.StreamCallback) error {
 	originalProfileArn := ""
 	if payload != nil {
@@ -164,11 +164,14 @@ func CallAPI(account *config.Account, payload *providers.KiroPayload, callback *
 		headerValues := buildStreamingHeaderValues(account, host)
 
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "*/*")
+		req.Header.Set("Accept", "application/vnd.amazon.eventstream")
 		if ep.AmzTarget != "" {
 			req.Header.Set("X-Amz-Target", ep.AmzTarget)
 		}
 		applyKiroBaseHeaders(req, account, headerValues)
+		if payload.ProfileArn != "" {
+			req.Header.Set("x-amzn-codewhisperer-profile-arn", payload.ProfileArn)
+		}
 		req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
 		req.Header.Set("x-amzn-codewhisperer-optout", "true")
 		req.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
@@ -262,8 +265,18 @@ func parseEventStream(body io.Reader, callback *providers.StreamCallback) error 
 			continue
 		}
 
-		eventType := extractEventType(msgBuf[0:headersLength])
+		hdr := extractEventHeaders(msgBuf[0:headersLength])
+		eventType := hdr.eventType
 		payloadBytes := msgBuf[headersLength : len(msgBuf)-4]
+
+		// Error / exception frames: the gateway reports throttling, quota and
+		// validation failures inside the stream with :message-type=error|exception.
+		if hdr.messageType == "error" || hdr.messageType == "exception" {
+			if currentToolUse != nil {
+				finishToolUse(currentToolUse, callback)
+			}
+			return eventStreamError(hdr, payloadBytes)
+		}
 		if len(payloadBytes) == 0 {
 			continue
 		}
@@ -302,6 +315,10 @@ func parseEventStream(body io.Reader, callback *providers.StreamCallback) error 
 				if callback.OnContextUsage != nil {
 					callback.OnContextUsage(pct)
 				}
+			}
+		case "messageStopEvent", "metadataEvent", "MetadataEvent":
+			if reason := normalizeStopReason(event); reason != "" && callback.OnStopReason != nil {
+				callback.OnStopReason(reason)
 			}
 		}
 	}
@@ -526,7 +543,81 @@ func firstBoolField(m map[string]interface{}, keys ...string) bool {
 }
 
 // extractEventType extracts the event type string from AWS Event Stream message headers.
+// eventHeaders holds the AWS event-stream frame headers the parser cares about.
+type eventHeaders struct {
+	eventType, messageType, exceptionType, errorCode, errorMessage string
+}
+
+// eventStreamError converts an error/exception frame into a typed upstream
+// error so failover classifies it by status (429 throttling, 403 auth, 400
+// validation) instead of by message wording.
+func eventStreamError(hdr eventHeaders, payload []byte) error {
+	kind := hdr.exceptionType
+	if kind == "" {
+		kind = hdr.errorCode
+	}
+	msg := hdr.errorMessage
+	if len(payload) > 0 {
+		var body map[string]interface{}
+		if json.Unmarshal(payload, &body) == nil {
+			if m, ok := body["message"].(string); ok && m != "" {
+				msg = m
+			}
+		} else if msg == "" {
+			msg = string(payload)
+		}
+	}
+	lower := strings.ToLower(kind + " " + msg)
+	status := 500
+	switch {
+	case strings.Contains(lower, "throttl"), strings.Contains(lower, "quota"), strings.Contains(lower, "too many requests"):
+		status = 429
+	case strings.Contains(lower, "accessdenied"), strings.Contains(lower, "unauthorized"), strings.Contains(lower, "forbidden"):
+		status = 403
+	case strings.Contains(lower, "validation"), strings.Contains(lower, "invalid"):
+		status = 400
+	}
+	if kind == "" {
+		kind = hdr.messageType
+	}
+	return providers.Errorf(status, "kiro eventstream %s: %s", kind, msg)
+}
+
+// normalizeStopReason reads stopReason from messageStopEvent / metadataEvent
+// payloads and maps it to Anthropic vocabulary.
+func normalizeStopReason(event map[string]interface{}) string {
+	src := event
+	for _, k := range []string{"metadataEvent", "metadata"} {
+		if inner, ok := event[k].(map[string]interface{}); ok {
+			src = inner
+			break
+		}
+	}
+	raw, _ := src["stopReason"].(string)
+	if raw == "" {
+		raw, _ = src["stop_reason"].(string)
+	}
+	norm := strings.ToLower(strings.TrimSpace(raw))
+	norm = strings.NewReplacer(" ", "_", "-", "_").Replace(norm)
+	switch norm {
+	case "":
+		return ""
+	case "endturn", "end_turn", "stop", "stop_sequence":
+		return "end_turn"
+	case "tooluse", "tool_use", "tool_calls":
+		return "tool_use"
+	case "maxtokens", "max_tokens", "max_output_tokens", "length":
+		return "max_tokens"
+	}
+	return norm
+}
+
 func extractEventType(headers []byte) string {
+	return extractEventHeaders(headers).eventType
+}
+
+func extractEventHeaders(headers []byte) eventHeaders {
+	var out eventHeaders
 	offset := 0
 	for offset < len(headers) {
 		if offset >= len(headers) {
@@ -556,8 +647,17 @@ func extractEventType(headers []byte) string {
 			}
 			value := string(headers[offset : offset+valueLen])
 			offset += valueLen
-			if name == ":event-type" {
-				return value
+			switch name {
+			case ":event-type":
+				out.eventType = value
+			case ":message-type":
+				out.messageType = value
+			case ":exception-type":
+				out.exceptionType = value
+			case ":error-code":
+				out.errorCode = value
+			case ":error-message":
+				out.errorMessage = value
 			}
 			continue
 		}
@@ -576,5 +676,5 @@ func extractEventType(headers []byte) string {
 			break
 		}
 	}
-	return ""
+	return out
 }

@@ -3,7 +3,10 @@
 package pool
 
 import (
-	"kiro-go/config"
+	"encoding/json"
+	"hekato-go/config"
+	"hekato-go/logger"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +24,7 @@ type AccountPool struct {
 	cooldowns     map[string]time.Time       // 账号冷却时间
 	errorCounts   map[string]int             // 连续错误计数
 	modelLists    map[string]map[string]bool // accountID → set of modelIDs (from ListAvailableModels)
+	modelDenies   map[string]map[string]bool // accountID → models upstream rejected as unknown
 }
 
 var (
@@ -35,6 +39,7 @@ func GetPool() *AccountPool {
 			cooldowns:   make(map[string]time.Time),
 			errorCounts: make(map[string]int),
 			modelLists:  make(map[string]map[string]bool),
+			modelDenies: make(map[string]map[string]bool),
 		}
 		pool.Reload()
 	})
@@ -142,6 +147,9 @@ func (p *AccountPool) GetNextExcluding(excluded map[string]bool) *config.Account
 }
 
 // SetModelList 缓存账号支持的模型集合（由 handler 在刷新后调用）
+// Learned rejections (DenyModel) survive periodic refreshes so a static
+// catalog entry upstream no longer serves is not retried every cycle; an
+// operator-triggered refresh clears them via ClearModelDenies.
 func (p *AccountPool) SetModelList(accountID string, modelIDs []string) {
 	set := make(map[string]bool, len(modelIDs))
 	for _, id := range modelIDs {
@@ -149,6 +157,105 @@ func (p *AccountPool) SetModelList(accountID string, modelIDs []string) {
 	}
 	p.mu.Lock()
 	p.modelLists[accountID] = set
+	if len(modelIDs) == 0 {
+		delete(p.modelDenies, accountID)
+	}
+	p.mu.Unlock()
+}
+
+// ClearModelDenies forgets models learned as unsupported for the account.
+func (p *AccountPool) ClearModelDenies(accountID string) {
+	p.mu.Lock()
+	delete(p.modelDenies, accountID)
+	p.mu.Unlock()
+}
+
+// modelListsBlobKey stores the last known per-account model lists so a
+// restart routes correctly before the first live fetch completes.
+const modelListsBlobKey = "model-lists"
+
+// PersistModelLists saves the current per-account model lists (no-op when
+// store is nil or nothing is cached).
+func (p *AccountPool) PersistModelLists(store config.BlobStore) {
+	if store == nil {
+		return
+	}
+	p.mu.RLock()
+	out := make(map[string][]string, len(p.modelLists))
+	for id, set := range p.modelLists {
+		if len(set) == 0 {
+			continue
+		}
+		ids := make([]string, 0, len(set))
+		for m := range set {
+			ids = append(ids, m)
+		}
+		sort.Strings(ids)
+		out[id] = ids
+	}
+	p.mu.RUnlock()
+	if len(out) == 0 {
+		return
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		return
+	}
+	if err := store.SaveBlob(modelListsBlobKey, string(data)); err != nil {
+		logger.Warnf("[Pool] persist model lists: %v", err)
+	}
+}
+
+// RestoreModelLists loads persisted lists for accounts that still exist and
+// have no list yet.
+func (p *AccountPool) RestoreModelLists(store config.BlobStore) {
+	if store == nil {
+		return
+	}
+	data, err := store.LoadBlob(modelListsBlobKey)
+	if err != nil || data == "" {
+		return
+	}
+	var saved map[string][]string
+	if json.Unmarshal([]byte(data), &saved) != nil {
+		return
+	}
+	known := map[string]bool{}
+	for _, a := range config.GetAccounts() {
+		known[a.ID] = true
+	}
+	restored := 0
+	for id, ids := range saved {
+		if !known[id] || len(ids) == 0 {
+			continue
+		}
+		p.mu.RLock()
+		_, has := p.modelLists[id]
+		p.mu.RUnlock()
+		if has {
+			continue
+		}
+		p.SetModelList(id, ids)
+		restored++
+	}
+	if restored > 0 {
+		logger.Infof("[Pool] restored model lists for %d accounts", restored)
+	}
+}
+
+// DenyModel records that upstream rejected model for this account (e.g.
+// "model service info not found"), so routing stops sending it there until the
+// account's model list is refreshed.
+func (p *AccountPool) DenyModel(accountID, model string) {
+	key := strings.ToLower(strings.TrimSpace(model))
+	if accountID == "" || key == "" {
+		return
+	}
+	p.mu.Lock()
+	if p.modelDenies[accountID] == nil {
+		p.modelDenies[accountID] = map[string]bool{}
+	}
+	p.modelDenies[accountID][key] = true
 	p.mu.Unlock()
 }
 
@@ -183,6 +290,9 @@ func (p *AccountPool) modelKnownAnywhere(modelKey string) bool {
 // 若该账号尚无模型列表（冷启动）：仅当该模型在所有账号中都未知时才乐观放行；
 // 若已有其他账号声明支持该模型，则空列表账号视为不支持。
 func (p *AccountPool) accountHasModel(accountID, modelKey string, modelKnown bool) bool {
+	if p.modelDenies[accountID][modelKey] {
+		return false
+	}
 	list, ok := p.modelLists[accountID]
 	if !ok || len(list) == 0 {
 		return !modelKnown
@@ -280,6 +390,41 @@ func (p *AccountPool) GetNextForModelExcluding(model string, excluded map[string
 	return best
 }
 
+// GetForModelByID returns the account with the given ID only if it is currently
+// routable for model (enabled, not cooling down, token fresh, quota ok, passes
+// filter). Used for conversation affinity; nil means "pick another".
+func (p *AccountPool) GetForModelByID(id, model string, filter AccountFilter) *config.Account {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	modelKey := strings.ToLower(strings.TrimSpace(model))
+	modelKnown := p.modelKnownAnywhere(modelKey)
+	now := time.Now()
+	allowOverUsage := config.GetAllowOverUsage()
+	for i := range p.accounts {
+		acc := &p.accounts[i]
+		if acc.ID != id {
+			continue
+		}
+		if filter != nil && !filter(acc) {
+			return nil
+		}
+		if !p.accountHasModel(acc.ID, modelKey, modelKnown) {
+			return nil
+		}
+		if cooldown, ok := p.cooldowns[acc.ID]; ok && now.Before(cooldown) {
+			return nil
+		}
+		if acc.ExpiresAt > 0 && now.Unix() > acc.ExpiresAt-tokenRefreshSkewSeconds {
+			return nil
+		}
+		if isQuotaBlocked(*acc, allowOverUsage) {
+			return nil
+		}
+		return acc
+	}
+	return nil
+}
+
 // GetByID 根据 ID 获取账号
 func (p *AccountPool) GetByID(id string) *config.Account {
 	p.mu.RLock()
@@ -298,6 +443,17 @@ func (p *AccountPool) RecordSuccess(id string) {
 	defer p.mu.Unlock()
 	delete(p.cooldowns, id)
 	p.errorCounts[id] = 0
+}
+
+// SetCooldown parks the account until `until` (e.g. a provider stated when a
+// monthly cap resets). Earlier/zero times are ignored.
+func (p *AccountPool) SetCooldown(id string, until time.Time) {
+	if until.Before(time.Now()) {
+		return
+	}
+	p.mu.Lock()
+	p.cooldowns[id] = until
+	p.mu.Unlock()
 }
 
 // RecordError 记录请求错误，设置冷却

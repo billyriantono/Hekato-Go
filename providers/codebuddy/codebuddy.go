@@ -9,10 +9,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"hekato-go/config"
+	"hekato-go/logger"
+	"hekato-go/providers"
 	"io"
-	"kiro-go/config"
-	"kiro-go/logger"
-	"kiro-go/providers"
 	"net/http"
 	"strings"
 	"time"
@@ -47,48 +47,73 @@ type codeBuddyModel struct {
 	Image   bool
 }
 
+// Static catalogs: CodeBuddy exposes no model-list endpoint (every /models
+// path answers 404), so this mirrors the IDs its web client offers. Operators
+// can add newer IDs without a rebuild via Settings → Custom model IDs.
 var codeBuddyGlobalModels = []codeBuddyModel{
-	{ID: "gemini-3.1-pro", OwnedBy: "google"},
-	{ID: "gemini-3.1-flash-lite", OwnedBy: "google"},
-	{ID: "gemini-3.0-flash", OwnedBy: "google"},
-	{ID: "gemini-2.5-pro", OwnedBy: "google"},
-	{ID: "gemini-2.5-flash", OwnedBy: "google"},
-	{ID: "gpt-5.5", OwnedBy: "openai"},
-	{ID: "gpt-5.4", OwnedBy: "openai"},
-	{ID: "gpt-5.2", OwnedBy: "openai"},
+	// Anthropic / OpenAI / Google lineup (etteum-pool catalog, 2026-09) plus the
+	// shared CN lineup 9router's intl registry lists. gemini-3.1-flash-lite was
+	// removed: upstream answers "model service info not found" (code 11102).
+	{ID: "claude-opus-4.8", OwnedBy: "anthropic", Image: true},
+	{ID: "claude-opus-4.8-1m", OwnedBy: "anthropic", Image: true},
+	{ID: "claude-opus-4.7", OwnedBy: "anthropic", Image: true},
+	{ID: "claude-opus-4.7-1m", OwnedBy: "anthropic", Image: true},
+	{ID: "claude-opus-4.6", OwnedBy: "anthropic", Image: true},
+	{ID: "claude-sonnet-4.6", OwnedBy: "anthropic", Image: true},
+	{ID: "gpt-5.5", OwnedBy: "openai", Image: true},
+	{ID: "gpt-5.5-xhigh", OwnedBy: "openai", Image: true},
+	{ID: "gpt-5.4", OwnedBy: "openai", Image: true},
 	{ID: "gpt-5.3-codex", OwnedBy: "openai"},
+	{ID: "gpt-5.2", OwnedBy: "openai", Image: true},
 	{ID: "gpt-5.2-codex", OwnedBy: "openai"},
-	{ID: "gpt-5.1", OwnedBy: "openai"},
+	{ID: "gpt-5.1", OwnedBy: "openai", Image: true},
 	{ID: "gpt-5.1-codex", OwnedBy: "openai"},
 	{ID: "gpt-5.1-codex-max", OwnedBy: "openai"},
 	{ID: "gpt-5.1-codex-mini", OwnedBy: "openai"},
-	{ID: "deepseek-v3-2-volc", OwnedBy: "deepseek"},
-	{ID: "claude-opus-4.6", OwnedBy: "anthropic"},
-	{ID: "claude-opus-4.7-1m", OwnedBy: "anthropic"},
+	{ID: "gemini-3.5-flash", OwnedBy: "google", Image: true},
+	{ID: "gemini-3.1-pro", OwnedBy: "google", Image: true},
+	{ID: "gemini-3.0-flash", OwnedBy: "google", Image: true},
+	{ID: "gemini-2.5-pro", OwnedBy: "google", Image: true},
+	{ID: "gemini-2.5-flash", OwnedBy: "google", Image: true},
+	{ID: "glm-5.2", OwnedBy: "zhipu"},
+	{ID: "glm-5.1", OwnedBy: "zhipu"},
+	{ID: "glm-5.0-turbo", OwnedBy: "zhipu"},
+	{ID: "glm-5v-turbo", OwnedBy: "zhipu", Image: true},
+	{ID: "minimax-m3", OwnedBy: "minimax"},
+	{ID: "minimax-m2.7", OwnedBy: "minimax"},
+	{ID: "kimi-k2.7", OwnedBy: "moonshot"},
+	{ID: "kimi-k2.6", OwnedBy: "moonshot"},
 	{ID: "kimi-k2.5", OwnedBy: "moonshot"},
+	{ID: "hy3-preview", OwnedBy: "tencent"},
+	{ID: "deepseek-v4-pro", OwnedBy: "deepseek"},
+	{ID: "deepseek-v4.1-flash", OwnedBy: "deepseek"},
+	{ID: "deepseek-v3-2-volc", OwnedBy: "deepseek"},
 }
 
 var codeBuddyCNModels = []codeBuddyModel{
+	// Verified 2026-09-23 by probing www.codebuddy.cn: every ID below answers
+	// the chat endpoint; glm-4.x, glm-5.0, hunyuan-image and all Claude / GPT /
+	// Gemini IDs return "service info not found" and were dropped.
 	{ID: "auto", OwnedBy: "enowxlabs"},
+	{ID: "glm-5.3", OwnedBy: "zhipu"},
+	{ID: "glm-5.3-flash", OwnedBy: "zhipu"},
 	{ID: "glm-5.2", OwnedBy: "zhipu"},
 	{ID: "glm-5.1", OwnedBy: "zhipu"},
-	{ID: "glm-5.0", OwnedBy: "zhipu"},
 	{ID: "glm-5.0-turbo", OwnedBy: "zhipu"},
-	{ID: "glm-5v-turbo", OwnedBy: "zhipu"},
-	{ID: "glm-4.7", OwnedBy: "zhipu"},
-	{ID: "glm-4.6", OwnedBy: "zhipu"},
-	{ID: "glm-4.6v", OwnedBy: "zhipu"},
-	{ID: "hunyuan-image-v3.0", OwnedBy: "tencent", Image: true},
-	{ID: "deepseek-v4-pro", OwnedBy: "deepseek"},
-	{ID: "deepseek-v4-flash", OwnedBy: "deepseek"},
-	{ID: "deepseek-r1", OwnedBy: "deepseek"},
+	{ID: "glm-5v-turbo", OwnedBy: "zhipu", Image: true},
+	{ID: "kimi-k3-1", OwnedBy: "moonshot"},
 	{ID: "kimi-k2.7", OwnedBy: "moonshot"},
 	{ID: "kimi-k2.6", OwnedBy: "moonshot"},
 	{ID: "kimi-k2.5", OwnedBy: "moonshot"},
 	{ID: "minimax-m3", OwnedBy: "minimax"},
 	{ID: "minimax-m2.7", OwnedBy: "minimax"},
+	{ID: "deepseek-v4-pro", OwnedBy: "deepseek"},
+	{ID: "deepseek-v4.1-flash", OwnedBy: "deepseek"},
+	{ID: "deepseek-v3-2-volc", OwnedBy: "deepseek"},
+	{ID: "deepseek-r1", OwnedBy: "deepseek"},
+	{ID: "hy4-preview", OwnedBy: "tencent"},
+	{ID: "hy3", OwnedBy: "tencent"},
 	{ID: "hy3-preview", OwnedBy: "tencent"},
-	{ID: "claude-haiku-4.5", OwnedBy: "anthropic"},
 }
 
 func variantForAccount(account *config.Account) codeBuddyVariant {
@@ -143,16 +168,25 @@ func applyCodeBuddyHeaders(h http.Header, v codeBuddyVariant, token string) {
 	h.Set("X-Product", "SaaS")
 	h.Set("User-Agent", codeBuddyUserAgent)
 	h.Set("Authorization", codeBuddyAuthHeader(token))
-	// API-key mode expects both Bearer auth and X-API-Key (OAuth mode uses only
-	// Authorization). Supplying both matches CodeBuddy API-key clients and is safe
-	// for the API-key accounts this proxy imports.
-	h.Set("X-API-Key", strings.TrimSpace(token))
+	// API-key mode expects both Bearer auth and X-API-Key. OAuth/session tokens
+	// are JWTs ("eyJ..."); sending one as X-API-Key makes CodeBuddy look it up as
+	// an API key and answer 401 {"message":"not_found"}, so only real keys get it.
+	if tok := strings.TrimSpace(token); !isJWT(tok) {
+		h.Set("X-API-Key", tok)
+	}
 	h.Set("b3", traceID+"-"+spanID+"-1-"+parentSpanID)
 	h.Set("X-B3-TraceId", traceID)
 	h.Set("X-B3-ParentSpanId", parentSpanID)
 	h.Set("X-B3-SpanId", spanID)
 	h.Set("X-B3-Sampled", "1")
 }
+
+// isJWT reports whether a token looks like a JSON Web Token (three dot-separated
+// base64url segments starting with the "{" header prefix "eyJ").
+func isJWT(token string) bool {
+	return strings.HasPrefix(token, "eyJ") && strings.Count(token, ".") == 2
+}
+
 func codeBuddyTraceID() string {
 	return strings.ReplaceAll(uuid.NewString(), "-", "")
 }
@@ -162,7 +196,9 @@ func ModelsForAccount(account *config.Account) []providers.ModelInfo {
 		src = codeBuddyCNModels
 	}
 	out := make([]providers.ModelInfo, 0, len(src))
+	seen := map[string]bool{}
 	for _, m := range src {
+		seen[strings.ToLower(m.ID)] = true
 		inputTypes := []string{"text"}
 		if m.Image {
 			inputTypes = append(inputTypes, "image")
@@ -172,6 +208,13 @@ func ModelsForAccount(account *config.Account) []providers.ModelInfo {
 			ModelName:  m.ID,
 			InputTypes: inputTypes,
 		})
+	}
+	for _, id := range config.GetCustomModelIDs("codebuddy") {
+		if seen[strings.ToLower(id)] {
+			continue
+		}
+		seen[strings.ToLower(id)] = true
+		out = append(out, providers.ModelInfo{ModelId: id, ModelName: id, InputTypes: []string{"text"}})
 	}
 	return out
 }
@@ -260,6 +303,7 @@ func parseCodeBuddySSE(body io.Reader, callback *providers.StreamCallback) error
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	toolStates := map[int]*codeBuddyToolDeltaState{}
 	var inputTokens, outputTokens int
+	var credits float64
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -284,6 +328,9 @@ func parseCodeBuddySSE(body io.Reader, callback *providers.StreamCallback) error
 			if v, ok := providers.ReadTokenNumber(usage, "completion_tokens", "completionTokens", "output_tokens", "outputTokens"); ok {
 				outputTokens = v
 			}
+			if c := codeBuddyCredit(usage); c > 0 {
+				credits = c
+			}
 		}
 		choices, _ := evt["choices"].([]interface{})
 		for _, rawChoice := range choices {
@@ -300,10 +347,28 @@ func parseCodeBuddySSE(body io.Reader, callback *providers.StreamCallback) error
 		return err
 	}
 	flushCodeBuddyTools(toolStates, callback)
+	if credits > 0 && callback.OnCredits != nil {
+		callback.OnCredits(credits)
+	}
 	if callback.OnComplete != nil {
 		callback.OnComplete(inputTokens, outputTokens)
 	}
 	return nil
+}
+
+// codeBuddyCredit reads the per-call credit charge CodeBuddy reports in the
+// final usage object ("credit"; 0 on free-promo models).
+func codeBuddyCredit(usage map[string]interface{}) float64 {
+	for _, k := range []string{"credit", "credits", "credit_used", "creditsUsed"} {
+		switch v := usage[k].(type) {
+		case float64:
+			return v
+		case json.Number:
+			f, _ := v.Float64()
+			return f
+		}
+	}
+	return 0
 }
 
 func dispatchCodeBuddyDelta(delta map[string]interface{}, toolStates map[int]*codeBuddyToolDeltaState, callback *providers.StreamCallback) {
@@ -402,6 +467,9 @@ func parseCodeBuddyJSON(body io.Reader, callback *providers.StreamCallback) erro
 			}
 		}
 	}
+	if c := codeBuddyCredit(out.Usage); c > 0 && callback.OnCredits != nil {
+		callback.OnCredits(c)
+	}
 	if callback.OnComplete != nil {
 		inTok, _ := providers.ReadTokenNumber(out.Usage, "prompt_tokens", "promptTokens", "input_tokens", "inputTokens")
 		outTok, _ := providers.ReadTokenNumber(out.Usage, "completion_tokens", "completionTokens", "output_tokens", "outputTokens")
@@ -414,30 +482,31 @@ const codeBuddyCNMainSubProduct = "sp_tcaca_codebuddy_ide"
 
 func FetchUsage(account *config.Account) (*config.AccountInfo, error) {
 	info := &config.AccountInfo{LastRefresh: time.Now().Unix()}
-	if variantForAccount(account).Name != codeBuddyCN.Name {
+	if variantForAccount(account).Name == codeBuddyCN.Name {
+		info.SubscriptionType = "CODEBUDDY_CN"
+		info.SubscriptionTitle = "CodeBuddy China"
+	} else {
 		info.SubscriptionType = "CODEBUDDY"
 		info.SubscriptionTitle = "CodeBuddy Global"
-		return info, nil
 	}
-	limit, used, remain, err := fetchCodeBuddyCNCredits(account)
+	// Both regions expose the same billing endpoint and response shape
+	// (/v2/billing/meter/get-user-resource → data.Response.Data.Accounts[]).
+	limit, used, _, err := fetchCodeBuddyCredits(account)
 	if err != nil {
 		return nil, err
 	}
-	info.SubscriptionType = "CODEBUDDY_CN"
-	info.SubscriptionTitle = "CodeBuddy China"
 	info.UsageCurrent = used
 	info.UsageLimit = limit
 	if limit > 0 {
 		info.UsagePercent = used / limit
 	}
-	_ = remain
 	return info, nil
 }
 
-func fetchCodeBuddyCNCredits(account *config.Account) (limit, used, remain float64, err error) {
+func fetchCodeBuddyCredits(account *config.Account) (limit, used, remain float64, err error) {
 	token := codeBuddyToken(account)
 	if token == "" {
-		return 0, 0, 0, fmt.Errorf("codebuddy-cn: api key is required")
+		return 0, 0, 0, fmt.Errorf("codebuddy: api key is required")
 	}
 	v := variantForAccount(account)
 	now := time.Now()
@@ -465,7 +534,7 @@ func fetchCodeBuddyCNCredits(account *config.Account) (limit, used, remain float
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
-		return 0, 0, 0, fmt.Errorf("codebuddy-cn credits (HTTP %d)", resp.StatusCode)
+		return 0, 0, 0, fmt.Errorf("codebuddy credits (HTTP %d)", resp.StatusCode)
 	}
 
 	var out struct {
@@ -490,7 +559,7 @@ func fetchCodeBuddyCNCredits(account *config.Account) (limit, used, remain float
 		return 0, 0, 0, err
 	}
 	if out.Code != 0 {
-		return 0, 0, 0, fmt.Errorf("codebuddy-cn credits (code=%d)", out.Code)
+		return 0, 0, 0, fmt.Errorf("codebuddy credits (code=%d)", out.Code)
 	}
 
 	for _, a := range out.Data.Response.Data.Accounts {

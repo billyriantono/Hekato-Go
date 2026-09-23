@@ -4,7 +4,7 @@
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat&logo=docker)](https://www.docker.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Hekato-Go is a multi-provider OpenAI / Anthropic compatible API gateway for Kiro and CodeBuddy accounts.
+Hekato-Go is a multi-provider OpenAI / Anthropic compatible AI gateway: one endpoint in front of pools of Kiro, CodeBuddy, Grok, OpenCode Zen and OpenCode Go accounts, with load balancing, smart routing, per-key limits and an operations dashboard.
 
 [English](README.md) | [中文](README_CN.md)
 
@@ -20,14 +20,20 @@ If this project helps you, a Star would mean a lot.
 ## Features
 
 - Anthropic `/v1/messages` & OpenAI `/v1/chat/completions`
-- Multi-provider upstream routing: Kiro + CodeBuddy Global / China
-- Separate request conversion paths for Kiro and CodeBuddy
+- Multi-provider upstream routing: Kiro, CodeBuddy Global / China, Grok (xAI), OpenCode Zen (free), OpenCode Go (subscription)
+- Provider-neutral request layer: every client format is parsed once into a neutral form and each provider serializes from it, so adding an upstream is a new package plus one registration file
+- Virtual `auto` model: requests are classified by complexity and routed to the best account/model by a learning bandit (see Auto routing)
 - Multi-account pool with round-robin load balancing
 - Auto token refresh, SSE streaming, Web admin panel
 - Multiple Kiro auth methods: AWS Builder ID, IAM Identity Center (Enterprise SSO), SSO Token, local cache, credentials JSON
-- CodeBuddy API-key account onboarding
+- CodeBuddy onboarding with API keys, JWT session tokens, or token JSON (`access_token` / `refresh_token` / `uid`), pasted or uploaded, many at once; sessions with a refresh token are renewed automatically
 - Usage tracking, account import/export, i18n (CN / EN)
-- Support configuring outbound proxy (SOCKS5 / HTTP)
+- Support configuring outbound proxy (SOCKS5 / HTTP), plus a proxy pool that pins each account to a stable egress IP
+- Per-API-key limits: token / credit quotas, requests per minute, max concurrent requests
+- Conversation affinity: multi-turn sessions stick to the same upstream account so prompt caches stay warm
+- Optional AES-256-GCM encryption of stored credentials (`ENCRYPTION_KEY`)
+- Modern React admin dashboard (Vite + Tailwind + shadcn/ui + TanStack) with ops metrics (throughput, latency p50/p95, tokens, per-model / per-account breakdowns) persisted across restarts
+- Public self-service usage page at `/usage`
 
 ## Quick Start
 
@@ -60,6 +66,8 @@ cd Hekato-Go
 go build -o hekato-go .
 ./hekato-go
 ```
+
+The Go module is `hekato-go`; the admin dashboard bundle is committed under `web/` so no Node toolchain is needed to build or run. See "Admin Dashboard (development)" to rebuild it.
 
 ### Deploy on Zeabur
 
@@ -127,6 +135,8 @@ The setting takes effect immediately without restarting.
 | `KIRO_SSO_CALLBACK_BIND` | Bind address for the temporary Enterprise SSO callback listener. Useful in Docker when publishing the callback port. | loopback only |
 | `KIRO_PROFILE_REGIONS` | Optional comma-separated region override for Kiro profile/usage probing. | built-in regions |
 | `LOG_LEVEL` | Log verbosity: `debug`, `info`, `warn`, or `error`. | `info` |
+| `ENCRYPTION_KEY` | When set, account tokens, client secrets, relay secrets, API key values and the admin password are stored encrypted (AES-256-GCM). Existing plaintext data is sealed on the next save. Removing the key later makes the config unreadable, so keep it safe. | - |
+| `ACCOUNT_REFRESH_MINUTES` | Fallback for how often every account's token and quota/credits are re-checked upstream. The value set in the dashboard (Settings → General) takes precedence. | `30` |
 
 ### Storage Backends
 
@@ -145,6 +155,52 @@ DATABASE_URL=postgres://user:pass@postgres:5432/hekato?sslmode=disable
 ```
 
 When SQL storage is enabled for the first time, an existing `config.json` is used as the migration seed so current accounts/settings can be carried over.
+
+## Auto routing
+
+Enable it under Settings → Auto Routing, then send requests with `"model": "auto"`. Each request is classified by local signals (input tokens, tool count, turns, images, thinking) into a fast / balanced / strong tier. Inside the tier, every (account, model) pair the pool advertises is a candidate; a Thompson-sampling bandit over decayed success/failure, weighted by observed latency and remaining account quota, picks one. Quality and Cost sliders shift the tier, Speed weights latency, Explore sets the random-exploration rate. Tier membership is configured as substring patterns (`haiku`, `sonnet`, `opus`) or exact model IDs. Conversations already pinned to an account keep their model so upstream prompt caches stay warm. The resolved model is returned in `X-Hekato-Routed-Model`, and the last 200 decisions with the learned per-candidate stats are shown in the dashboard. When disabled, `auto` is passed through to the upstream unchanged.
+
+## Ops metrics
+
+The gateway keeps per-minute metrics (requests, errors, tokens, credits, latency histogram, per-model / per-account / per-endpoint counters) for 7 days. They are persisted through the active storage backend (a `metrics_minutes` table on SQLite/Postgres, or `metrics.json` beside `config.json`), restored at startup, flushed every 30 seconds and on graceful shutdown (SIGINT/SIGTERM). The Overview page shows them with 1h / 6h / 24h / 7d ranges.
+
+## Documentation site
+
+Every gateway serves its own documentation at `/docs`: endpoint reference, model names and thinking mode, the `auto` model, limits, and step-by-step setup guides for Claude Code, Codex CLI, Cursor, Cline / Roo Code, Continue, Aider, the OpenAI and Anthropic SDKs, LangChain, Open WebUI / LibreChat and curl. Snippets are pre-filled with the gateway's own base URL.
+
+## Warmup (account health checks)
+
+On every account refresh cycle (Settings → General → refresh interval) the gateway warms up the pool: it refreshes expiring tokens, re-fetches quota and credits, optionally sends a tiny "Say OK" chat probe to confirm inference actually works (**Inference probe**), and re-enables accounts that failover had auto-disabled once they pass again (**Auto-recover banned accounts**). Accounts are checked 5 at a time with retries on transient errors. Results (status, error, time) are shown per account, and a warmup can be triggered on demand from the Accounts page or `POST /admin/api/warmup`.
+
+## Self-service usage check
+
+Users can open `/usage` on the gateway, paste their own API key, and see that key's quota, limits and usage. The page calls `GET /v1/usage` with the key as `Authorization: Bearer`; no admin credentials are involved.
+
+## Rate Limiting & Routing
+
+Each API key can carry a token quota, a credit quota, a requests-per-minute limit and a max-concurrent-requests limit (0 = unlimited). Requests over a limit get `429` with `Retry-After`. Limits are configured per key in the admin panel.
+
+Multi-turn conversations are pinned to the upstream account that served the first turn (keyed by model + system prompt + first user message, 5 minute sliding TTL), so upstream prompt caches are reused instead of being spread round-robin across accounts. If that account is cooling down or excluded, routing falls back to weighted round-robin and re-pins.
+
+## Adding an upstream provider
+
+1. Create `providers/<name>/` with the transport (`Call`), a `FromNeutral` serializer from `providers.NeutralChat`, model listing, usage fetch, and any admin auth routes registered via `providers.RegisterAdminRoutes` in `init()`.
+2. Add the provider kind and account classification in `config/provider.go`.
+3. Add `proxy/provider_<name>.go` calling `registerAdapter` with `chatFromClaude`, `chatFromOpenAI`, optional `responses`, `listModels`, `fetchUsage`.
+4. Add the add-account flow in `dashboard/src/pages/accounts/add-account-dialog.tsx`.
+
+The handlers, pool, rate limiting, affinity, auto routing and metrics never reference a provider directly.
+
+## Admin Dashboard (development)
+
+The dashboard source lives in `dashboard/` (Vite + React + TypeScript). The built output is committed to `web/` so the Go binary needs no Node toolchain at runtime.
+
+```bash
+cd dashboard
+pnpm install
+pnpm dev      # dev server on :5173, proxies /admin/api to :8080
+pnpm build    # writes the production bundle into ../web
+```
 
 ## Contributing
 

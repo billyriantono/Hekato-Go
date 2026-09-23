@@ -1,6 +1,6 @@
 package proxy
 
-import "kiro-go/providers"
+import "hekato-go/providers"
 
 // ClaudeToNeutral parses a Claude request into the provider-neutral NeutralChat. It reuses
 // the shared extraction/normalization helpers (system prompt filters, thinking

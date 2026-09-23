@@ -5,14 +5,18 @@ package proxy
 
 import (
 	"encoding/json"
-	"kiro-go/config"
-	"kiro-go/providers"
-	"kiro-go/providers/codebuddy"
+	"hekato-go/config"
+	"hekato-go/providers"
+	"hekato-go/providers/codebuddy"
 	"strings"
 )
 
 func isCodeBuddyAccount(account *config.Account) bool {
 	return mustBeProvider(account, providerCodeBuddy)
+}
+
+func isCodexAccount(account *config.Account) bool {
+	return mustBeProvider(account, providerCodex)
 }
 
 // ClaudeToCodeBuddy converts a Claude request to CodeBuddy's native
@@ -65,17 +69,28 @@ func openAIToNeutral(req *OpenAIRequest) *providers.NeutralChat {
 			nc.Messages = append(nc.Messages, assistant)
 		case "tool":
 			// A tool result answers a prior assistant tool call; carry it as a
-			// user turn's ToolResult so FromNeutral re-emits it as a `tool` message.
+			// user turn's ToolResult (serializers re-emit it in their own shape).
+			// Images inside a tool result ride along as the turn's images.
+			cleanText, toolImages := extractOpenAIUserContent(msg.Content)
+			content := extractOpenAIMessageText(msg.Content)
+			if len(toolImages) > 0 {
+				content = strings.TrimSpace(cleanText)
+				if content == "" {
+					content = toolResultImagePlaceholder
+				}
+			}
 			nc.Messages = append(nc.Messages, providers.NeutralMessage{
-				Role: "user",
+				Role:   "user",
+				Images: toolImages,
 				ToolResults: []providers.ToolResult{{
 					ToolUseID: msg.ToolCallID,
-					Content:   []providers.ResultContent{{Text: extractOpenAIMessageText(msg.Content)}},
+					Content:   []providers.ResultContent{{Text: content}},
 					Status:    "success",
 				}},
 			})
 		default: // "user" and anything else
 			text, images := extractOpenAIUserContent(msg.Content)
+			text = normalizeUserContent(text, len(images) > 0)
 			nc.Messages = append(nc.Messages, providers.NeutralMessage{Role: "user", Text: text, Images: images})
 		}
 	}

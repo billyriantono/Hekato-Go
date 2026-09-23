@@ -2,8 +2,8 @@
 package auth
 
 import (
-	"kiro-go/config"
-	"kiro-go/egress"
+	"hekato-go/config"
+	"hekato-go/egress"
 	"net/http"
 	"net/url"
 	"sync"
@@ -41,6 +41,13 @@ func GetAuthClientForProxy(proxyURL string) *http.Client {
 
 // GetAuthClientForAccount applies the account relay/proxy override, or inherits global settings.
 func GetAuthClientForAccount(account *config.Account) *http.Client {
+	if account != nil && account.ProxyURL == "" && account.RelayURL == "" {
+		if pooled := config.PoolProxyFor(account.ID); pooled != "" {
+			cp := *account
+			cp.ProxyURL = pooled
+			account = &cp
+		}
+	}
 	if account == nil || (account.ProxyURL == "" && account.RelayURL == "") {
 		return httpClient()
 	}

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"hekato-go/providers/kiro"
 	"testing"
 )
 
@@ -47,7 +48,7 @@ func TestConvertOpenAIToolsEmitsNonEmptyNames(t *testing.T) {
 		mustTool(t, `{"type":"function","name":"exec_command","parameters":{"type":"object"}}`),
 		mustTool(t, `{"type":"function","function":{"name":"update_plan","parameters":{"type":"object"}}}`),
 	}
-	wrappers := convertOpenAITools(tools)
+	wrappers, nameMap := kiro.ConvertTools(openAIToNeutral(&OpenAIRequest{Tools: tools}).Tools)
 	if len(wrappers) != 2 {
 		t.Fatalf("expected 2 tool wrappers, got %d", len(wrappers))
 	}
@@ -56,11 +57,12 @@ func TestConvertOpenAIToolsEmitsNonEmptyNames(t *testing.T) {
 			t.Fatalf("tool %d has empty name", i)
 		}
 	}
-	if wrappers[0].ToolSpecification.Name != "exec_command" {
-		t.Fatalf("expected exec_command preserved, got %q", wrappers[0].ToolSpecification.Name)
+	// Names are sanitized to camelCase for Kiro and mapped back for the client.
+	if wrappers[0].ToolSpecification.Name != "execCommand" || nameMap["execCommand"] != "exec_command" {
+		t.Fatalf("expected execCommand mapped to exec_command, got %q / %v", wrappers[0].ToolSpecification.Name, nameMap)
 	}
-	if wrappers[1].ToolSpecification.Name != "update_plan" {
-		t.Fatalf("expected update_plan preserved, got %q", wrappers[1].ToolSpecification.Name)
+	if wrappers[1].ToolSpecification.Name != "updatePlan" || nameMap["updatePlan"] != "update_plan" {
+		t.Fatalf("expected updatePlan mapped to update_plan, got %q / %v", wrappers[1].ToolSpecification.Name, nameMap)
 	}
 }
 

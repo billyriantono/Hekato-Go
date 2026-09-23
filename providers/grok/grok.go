@@ -8,9 +8,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"hekato-go/config"
+	"hekato-go/providers"
 	"io"
-	"kiro-go/config"
-	"kiro-go/providers"
 	"net/http"
 	"strings"
 	"time"
@@ -115,7 +115,7 @@ func CallOpenAI(account *config.Account, req *providers.OpenAIRequest, callback 
 	for _, suffix := range []string{"-high", "-medium", "-low"} {
 		model = strings.TrimSuffix(model, suffix)
 	}
-	grokReq := &providers.ResponsesRequest{Model: model, Input: input, Stream: req.Stream, Tools: req.Tools}
+	grokReq := &providers.ResponsesRequest{Model: model, Input: input, Stream: req.Stream, Tools: providers.ToolsFromOpenAI(req.Tools)}
 	if req.MaxTokens > 0 {
 		grokReq.MaxOutputTokens = &req.MaxTokens
 	}

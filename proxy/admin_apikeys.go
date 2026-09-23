@@ -2,41 +2,50 @@ package proxy
 
 import (
 	"encoding/json"
-	"kiro-go/config"
+	"hekato-go/config"
 	"net/http"
+	"strings"
 )
 
-// apiKeyView is the response payload for listing/inspecting API keys. The Key field
-// is masked so admins can identify entries without exposing the secret.
+// apiKeyView is the response payload for listing/inspecting API keys. Key is
+// populated only by the authenticated single-key detail endpoint; list and
+// mutation metadata responses expose only KeyMasked.
 type apiKeyView struct {
-	ID            string  `json:"id"`
-	Name          string  `json:"name,omitempty"`
-	KeyMasked     string  `json:"keyMasked"`
-	Enabled       bool    `json:"enabled"`
-	Migrated      bool    `json:"migrated,omitempty"`
-	CreatedAt     int64   `json:"createdAt"`
-	LastUsedAt    int64   `json:"lastUsedAt,omitempty"`
-	TokenLimit    int64   `json:"tokenLimit,omitempty"`
-	CreditLimit   float64 `json:"creditLimit,omitempty"`
-	TokensUsed    int64   `json:"tokensUsed"`
-	CreditsUsed   float64 `json:"creditsUsed"`
-	RequestsCount int64   `json:"requestsCount"`
+	ID               string   `json:"id"`
+	Name             string   `json:"name,omitempty"`
+	Key              string   `json:"key,omitempty"`
+	KeyMasked        string   `json:"keyMasked"`
+	Enabled          bool     `json:"enabled"`
+	Migrated         bool     `json:"migrated,omitempty"`
+	CreatedAt        int64    `json:"createdAt"`
+	LastUsedAt       int64    `json:"lastUsedAt,omitempty"`
+	TokenLimit       int64    `json:"tokenLimit,omitempty"`
+	CreditLimit      float64  `json:"creditLimit,omitempty"`
+	RPMLimit         int64    `json:"rpmLimit,omitempty"`
+	ConcurrencyLimit int64    `json:"concurrencyLimit,omitempty"`
+	AllowedModels    []string `json:"allowedModels,omitempty"`
+	TokensUsed       int64    `json:"tokensUsed"`
+	CreditsUsed      float64  `json:"creditsUsed"`
+	RequestsCount    int64    `json:"requestsCount"`
 }
 
 func toApiKeyView(e config.ApiKeyEntry) apiKeyView {
 	return apiKeyView{
-		ID:            e.ID,
-		Name:          e.Name,
-		KeyMasked:     config.MaskApiKey(e.Key),
-		Enabled:       e.Enabled,
-		Migrated:      e.Migrated,
-		CreatedAt:     e.CreatedAt,
-		LastUsedAt:    e.LastUsedAt,
-		TokenLimit:    e.TokenLimit,
-		CreditLimit:   e.CreditLimit,
-		TokensUsed:    e.TokensUsed,
-		CreditsUsed:   e.CreditsUsed,
-		RequestsCount: e.RequestsCount,
+		ID:               e.ID,
+		Name:             e.Name,
+		KeyMasked:        config.MaskApiKey(e.Key),
+		Enabled:          e.Enabled,
+		Migrated:         e.Migrated,
+		CreatedAt:        e.CreatedAt,
+		LastUsedAt:       e.LastUsedAt,
+		TokenLimit:       e.TokenLimit,
+		CreditLimit:      e.CreditLimit,
+		RPMLimit:         e.RPMLimit,
+		ConcurrencyLimit: e.ConcurrencyLimit,
+		AllowedModels:    e.AllowedModels,
+		TokensUsed:       e.TokensUsed,
+		CreditsUsed:      e.CreditsUsed,
+		RequestsCount:    e.RequestsCount,
 	}
 }
 
@@ -56,15 +65,21 @@ func (h *Handler) apiGetApiKey(w http.ResponseWriter, r *http.Request, id string
 		json.NewEncoder(w).Encode(map[string]string{"error": "API key not found"})
 		return
 	}
-	json.NewEncoder(w).Encode(toApiKeyView(*entry))
+	w.Header().Set("Cache-Control", "no-store")
+	view := toApiKeyView(*entry)
+	view.Key = entry.Key
+	json.NewEncoder(w).Encode(view)
 }
 
 type apiKeyCreateRequest struct {
-	Name        string  `json:"name,omitempty"`
-	Key         string  `json:"key,omitempty"`
-	Enabled     *bool   `json:"enabled,omitempty"`
-	TokenLimit  int64   `json:"tokenLimit,omitempty"`
-	CreditLimit float64 `json:"creditLimit,omitempty"`
+	Name             string   `json:"name,omitempty"`
+	Key              string   `json:"key,omitempty"`
+	Enabled          *bool    `json:"enabled,omitempty"`
+	TokenLimit       int64    `json:"tokenLimit,omitempty"`
+	CreditLimit      float64  `json:"creditLimit,omitempty"`
+	RPMLimit         int64    `json:"rpmLimit,omitempty"`
+	ConcurrencyLimit int64    `json:"concurrencyLimit,omitempty"`
+	AllowedModels    []string `json:"allowedModels,omitempty"`
 }
 
 func (h *Handler) apiCreateApiKey(w http.ResponseWriter, r *http.Request) {
@@ -86,11 +101,14 @@ func (h *Handler) apiCreateApiKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	entry, err := config.AddApiKey(config.ApiKeyEntry{
-		Name:        req.Name,
-		Key:         keyValue,
-		Enabled:     enabled,
-		TokenLimit:  req.TokenLimit,
-		CreditLimit: req.CreditLimit,
+		Name:             req.Name,
+		Key:              keyValue,
+		Enabled:          enabled,
+		TokenLimit:       req.TokenLimit,
+		CreditLimit:      req.CreditLimit,
+		RPMLimit:         req.RPMLimit,
+		ConcurrencyLimit: req.ConcurrencyLimit,
+		AllowedModels:    cleanModelList(req.AllowedModels),
 	})
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -108,11 +126,29 @@ func (h *Handler) apiCreateApiKey(w http.ResponseWriter, r *http.Request) {
 }
 
 type apiKeyUpdateRequest struct {
-	Name        *string  `json:"name,omitempty"`
-	Key         *string  `json:"key,omitempty"`
-	Enabled     *bool    `json:"enabled,omitempty"`
-	TokenLimit  *int64   `json:"tokenLimit,omitempty"`
-	CreditLimit *float64 `json:"creditLimit,omitempty"`
+	Name             *string   `json:"name,omitempty"`
+	Key              *string   `json:"key,omitempty"`
+	Enabled          *bool     `json:"enabled,omitempty"`
+	TokenLimit       *int64    `json:"tokenLimit,omitempty"`
+	CreditLimit      *float64  `json:"creditLimit,omitempty"`
+	RPMLimit         *int64    `json:"rpmLimit,omitempty"`
+	ConcurrencyLimit *int64    `json:"concurrencyLimit,omitempty"`
+	AllowedModels    *[]string `json:"allowedModels,omitempty"`
+}
+
+// cleanModelList trims, drops blanks and dedupes case-insensitively.
+func cleanModelList(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range in {
+		m = strings.TrimSpace(m)
+		if m == "" || seen[strings.ToLower(m)] {
+			continue
+		}
+		seen[strings.ToLower(m)] = true
+		out = append(out, m)
+	}
+	return out
 }
 
 func (h *Handler) apiUpdateApiKey(w http.ResponseWriter, r *http.Request, id string) {
@@ -145,6 +181,15 @@ func (h *Handler) apiUpdateApiKey(w http.ResponseWriter, r *http.Request, id str
 	}
 	if req.CreditLimit != nil {
 		patch.CreditLimit = *req.CreditLimit
+	}
+	if req.RPMLimit != nil {
+		patch.RPMLimit = *req.RPMLimit
+	}
+	if req.ConcurrencyLimit != nil {
+		patch.ConcurrencyLimit = *req.ConcurrencyLimit
+	}
+	if req.AllowedModels != nil {
+		patch.AllowedModels = cleanModelList(*req.AllowedModels)
 	}
 
 	if err := config.UpdateApiKey(id, patch); err != nil {

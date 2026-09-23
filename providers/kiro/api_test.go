@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
-	"kiro-go/config"
-	"kiro-go/providers"
+	"hekato-go/config"
+	"hekato-go/providers"
 	"testing"
 )
 
@@ -206,4 +206,64 @@ func awsEventStreamFrame(t *testing.T, eventType string, payload map[string]inte
 	frame = append(frame, payloadBytes...)
 	frame = append(frame, 0, 0, 0, 0)
 	return frame
+}
+
+// awsEventStreamErrorFrame builds a frame with :message-type=exception so the
+// parser's error path can be exercised.
+func awsEventStreamErrorFrame(t *testing.T, exceptionType, message string) []byte {
+	t.Helper()
+	putHeader := func(dst []byte, name, value string) []byte {
+		dst = append(dst, byte(len(name)))
+		dst = append(dst, []byte(name)...)
+		dst = append(dst, 7, byte(len(value)>>8), byte(len(value)))
+		return append(dst, []byte(value)...)
+	}
+	var headers []byte
+	headers = putHeader(headers, ":message-type", "exception")
+	headers = putHeader(headers, ":exception-type", exceptionType)
+	payload := []byte(`{"message":"` + message + `"}`)
+	totalLength := 12 + len(headers) + len(payload) + 4
+	frame := make([]byte, 12, totalLength)
+	binary.BigEndian.PutUint32(frame[0:4], uint32(totalLength))
+	binary.BigEndian.PutUint32(frame[4:8], uint32(len(headers)))
+	frame = append(frame, headers...)
+	frame = append(frame, payload...)
+	return append(frame, 0, 0, 0, 0)
+}
+
+func TestParseEventStreamExceptionFrameBecomesTypedError(t *testing.T) {
+	var stream []byte
+	stream = append(stream, awsEventStreamFrame(t, "assistantResponseEvent", map[string]interface{}{"content": "partial"})...)
+	stream = append(stream, awsEventStreamErrorFrame(t, "ThrottlingException", "Rate exceeded")...)
+
+	var text string
+	err := parseEventStream(bytes.NewReader(stream), &providers.StreamCallback{
+		OnText: func(s string, _ bool) { text += s },
+	})
+	if err == nil {
+		t.Fatal("expected error from exception frame")
+	}
+	ue, ok := err.(*providers.UpstreamError)
+	if !ok || ue.Status != 429 {
+		t.Fatalf("expected 429 UpstreamError, got %T %v", err, err)
+	}
+	if text != "partial" {
+		t.Fatalf("content before the error frame should be delivered, got %q", text)
+	}
+}
+
+func TestParseEventStreamReportsStopReason(t *testing.T) {
+	var stream []byte
+	stream = append(stream, awsEventStreamFrame(t, "assistantResponseEvent", map[string]interface{}{"content": "x"})...)
+	stream = append(stream, awsEventStreamFrame(t, "messageStopEvent", map[string]interface{}{"stopReason": "MAX_TOKENS"})...)
+
+	var stop string
+	if err := parseEventStream(bytes.NewReader(stream), &providers.StreamCallback{
+		OnStopReason: func(r string) { stop = r },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if stop != "max_tokens" {
+		t.Fatalf("expected normalized max_tokens, got %q", stop)
+	}
 }

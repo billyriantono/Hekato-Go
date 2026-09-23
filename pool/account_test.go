@@ -2,7 +2,7 @@ package pool
 
 import (
 	"errors"
-	"kiro-go/config"
+	"hekato-go/config"
 	"path/filepath"
 	"testing"
 	"time"

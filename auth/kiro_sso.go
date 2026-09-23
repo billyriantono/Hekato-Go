@@ -35,10 +35,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"hekato-go/config"
+	"hekato-go/egress"
+	"hekato-go/logger"
 	"io"
-	"kiro-go/config"
-	"kiro-go/egress"
-	"kiro-go/logger"
 	"net"
 	"net/http"
 	"net/url"
@@ -385,9 +385,9 @@ func newRelayResponseWriter() *relayResponseWriter {
 	return &relayResponseWriter{header: make(http.Header), status: http.StatusOK}
 }
 
-func (w *relayResponseWriter) Header() http.Header       { return w.header }
+func (w *relayResponseWriter) Header() http.Header         { return w.header }
 func (w *relayResponseWriter) Write(b []byte) (int, error) { return len(b), nil }
-func (w *relayResponseWriter) WriteHeader(status int)    { w.status = status }
+func (w *relayResponseWriter) WriteHeader(status int)      { w.status = status }
 
 // RelayKiroSsoCallback feeds a redirect URL the operator pasted into the admin
 // panel through the session's callback state machine. This is the remote-browser
@@ -643,6 +643,15 @@ var externalIdpEndpointValidator = validateExternalIdpEndpoint
 // otherwise cause the server to POST the account's refresh token there.
 func ValidateExternalIdpEndpoint(rawURL string) error {
 	return externalIdpEndpointValidator(rawURL)
+}
+
+// IssuerFromAccessTokenJWT decodes an unverified access token's payload and
+// returns its iss claim. No signature verification: this is used only to
+// classify a pasted credential (e.g. telling a CodeBuddy China token from a
+// global one by its Keycloak realm), never to trust the token itself.
+// Returns "" if accessToken is not a JWT or has no iss.
+func IssuerFromAccessTokenJWT(accessToken string) string {
+	return issuerFromAccessTokenJWT(accessToken)
 }
 
 // issuerFromAccessTokenJWT decodes an unverified Azure AD access token's payload
@@ -947,4 +956,3 @@ func hasActiveKiroSsoSession() bool {
 	}
 	return false
 }
-

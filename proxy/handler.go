@@ -6,38 +6,62 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/google/uuid"
+	"hekato-go/auth"
+	"hekato-go/config"
+	"hekato-go/egress"
+	"hekato-go/logger"
+	"hekato-go/pool"
+	"hekato-go/providers"
+	"hekato-go/providers/opencodezen"
+	"hekato-go/relay"
 	"io"
-	"kiro-go/auth"
-	"kiro-go/config"
-	"kiro-go/egress"
-	"kiro-go/logger"
-	"kiro-go/pool"
-	"kiro-go/providers"
-	"kiro-go/relay"
+	"math"
+	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/google/uuid"
+	"unicode/utf8"
 )
 
 const tokenRefreshSkewSeconds int64 = 120
 
 // RequestLog stores details about a single API request (success or failure).
 type RequestLog struct {
-	Time      int64   `json:"time"`      // Unix timestamp
-	Endpoint  string  `json:"endpoint"`  // claude/openai/responses
-	Model     string  `json:"model"`     // Requested model
-	AccountID string  `json:"accountId"` // Account used
-	Status    string  `json:"status"`    // "success" or "error"
-	Error     string  `json:"error"`     // Error message (empty on success)
-	ErrorType string  `json:"errorType"` // Error category (empty on success)
-	Tokens    int     `json:"tokens"`    // Total tokens (input+output, 0 on failure)
-	Credits   float64 `json:"credits"`   // Credits consumed (0 on failure)
-	Duration  int64   `json:"duration"`  // Request duration in ms
+	Time         int64   `json:"time"`         // Unix timestamp
+	Endpoint     string  `json:"endpoint"`     // claude/openai/responses
+	Model        string  `json:"model"`        // Requested model
+	AccountID    string  `json:"accountId"`    // Account used
+	Status       string  `json:"status"`       // "success" or "error"
+	Error        string  `json:"error"`        // Error message (empty on success)
+	ErrorType    string  `json:"errorType"`    // Error category (empty on success)
+	Tokens       int     `json:"tokens"`       // Total tokens (input+output, 0 on failure)
+	OutputTokens int     `json:"outputTokens"` // Output tokens only (drives TPS)
+	Credits      float64 `json:"credits"`      // Credits consumed (0 on failure)
+	Duration     int64   `json:"duration"`     // Request duration in ms (first-byte → end)
+	TTFTMs       int64   `json:"ttftMs"`       // Time to first token / tool_use in ms
+	TPS          float64 `json:"tps"`          // Output tokens per second (0 when unmeasurable)
+	UserAgent    string  `json:"userAgent"`    // Client User-Agent header (truncated)
+	ClientIP     string  `json:"clientIp"`     // Client IP (honors X-Forwarded-For + X-Real-IP)
+	// RequestedModel is what the client asked for when it differs from Model
+	// (currently "auto"); the live routing map uses it to show auto traffic only.
+	RequestedModel string `json:"requestedModel,omitempty"`
+	// ApiKeyID is the caller's API-key row id (empty when the request had no
+	// key, e.g. the admin-panel probes). The public /v1/usage/logs endpoint
+	// filters on this so a key holder only sees their own routing.
+	ApiKeyID string `json:"apiKeyId,omitempty"`
 }
+
+// logUserAgentMaxLen is the truncation ceiling for the User-Agent persisted on
+// the log entry. 200 chars covers any realistic CLI / agent UA while keeping
+// the dashboard column readable; longer strings get "…" appended.
+const logUserAgentMaxLen = 200
 
 const requestLogsMaxSize = 500
 
@@ -59,10 +83,121 @@ type Handler struct {
 	modelsCacheMu   sync.RWMutex
 	modelsCacheTime int64
 	promptCache     *promptCacheTracker
+	affinity        *accountAffinity
+	limiter         *keyLimiter
+	autoRouter      *autoRouter
+	metrics         *metricsCollector
+	warmup          warmupState
 	tokenRefreshMu  sync.Mutex
 	// 请求日志 (环形缓冲区，包含成功和失败)
 	requestLogs   []RequestLog
 	requestLogsMu sync.RWMutex
+	// 请求日志持久化：appendRequestLog 把条目丢进 pendingLogs；
+	// 后台 goroutine 按 flush 周期批量写盘，停机时 drain 后再退出。
+	pendingLogs  chan config.PersistedRequestLog
+	stopLogSaver chan struct{}
+	logSaverDone chan struct{}
+}
+
+// logMetaWriter wraps the ResponseWriter for one request with the client
+// metadata (User-Agent, IP) that every log entry of that request should carry.
+// Carrying it on the writer (which every handler already threads through)
+// keeps concurrent requests isolated; shared Handler fields raced.
+type logMetaWriter struct {
+	http.ResponseWriter
+	userAgent string
+	clientIP  string
+	requested string // client-requested model when it was rewritten (e.g. "auto")
+	apiKeyID  string // caller's API-key ID; empty when the request had no key
+}
+
+// findLogMeta unwraps to the logMetaWriter bound by withClientLogMeta (nil if none).
+func findLogMeta(w http.ResponseWriter) *logMetaWriter {
+	for w != nil {
+		if m, ok := w.(*logMetaWriter); ok {
+			return m
+		}
+		u, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return nil
+		}
+		w = u.Unwrap()
+	}
+	return nil
+}
+
+// markRequestedModel records the client-requested model on the log metadata
+// so log rows can tell "auto" traffic from explicit model requests.
+func markRequestedModel(w http.ResponseWriter, model string) {
+	if m := findLogMeta(w); m != nil {
+		m.requested = model
+	}
+}
+
+// markApiKeyID records the caller's API-key row ID on the log metadata.
+// Called from admit() after authentication succeeds so every log entry
+// produced by this request carries the key identity.
+func markApiKeyID(w http.ResponseWriter, id string) {
+	if m := findLogMeta(w); m != nil {
+		m.apiKeyID = id
+	}
+}
+
+func (m *logMetaWriter) Flush() {
+	if f, ok := m.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer.
+func (m *logMetaWriter) Unwrap() http.ResponseWriter { return m.ResponseWriter }
+
+// withClientLogMeta returns the writer to use for the request's handler.
+func withClientLogMeta(w http.ResponseWriter, r *http.Request) http.ResponseWriter {
+	return &logMetaWriter{ResponseWriter: w, userAgent: truncateUA(r.UserAgent()), clientIP: clientIPFromRequest(r)}
+}
+
+// clientLogMeta extracts the metadata bound by withClientLogMeta ("" when the
+// writer was not wrapped, e.g. tests or internal calls).
+func clientLogMeta(w http.ResponseWriter) (userAgent, clientIP string) {
+	if m := findLogMeta(w); m != nil {
+		return m.userAgent, m.clientIP
+	}
+	return "", ""
+}
+
+// truncateUA keeps User-Agent strings bounded so a malicious or buggy client
+// cannot blow up the in-memory ring or the dashboard column width. 200 chars
+// is more than any real CLI / agent UA we have seen.
+func truncateUA(ua string) string {
+	ua = strings.TrimSpace(ua)
+	if len(ua) <= logUserAgentMaxLen {
+		return ua
+	}
+	return ua[:logUserAgentMaxLen-1] + "…"
+}
+
+// clientIPFromRequest returns the best-effort client IP, honoring the
+// standard proxy headers. Only the leftmost X-Forwarded-For entry is used
+// (the original client); X-Real-IP is the fallback. r.RemoteAddr is the
+// last resort (direct connection peer).
+func clientIPFromRequest(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if i := strings.IndexByte(xff, ','); i >= 0 {
+			xff = xff[:i]
+		}
+		if ip := strings.TrimSpace(xff); ip != "" {
+			return ip
+		}
+	}
+	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
+		return xri
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 type thinkingStreamSource int
@@ -249,9 +384,51 @@ func NewHandler() *Handler {
 		startTime:       time.Now().Unix(),
 		stopRefresh:     make(chan struct{}),
 		stopStatsSaver:  make(chan struct{}),
+		pendingLogs:     make(chan config.PersistedRequestLog, requestLogPendingCapacity),
+		stopLogSaver:    make(chan struct{}),
+		logSaverDone:    make(chan struct{}),
 		promptCache:     newPromptCacheTracker(defaultPromptCacheTTL),
+		affinity:        newAccountAffinity(),
+		limiter:         newKeyLimiter(),
+		autoRouter:      newAutoRouter(),
+		metrics:         newMetricsCollector(),
+	}
+	// Restore persisted ops metrics and keep flushing them in the background.
+	h.metrics.Load(config.Metrics())
+	h.autoRouter.vision = h.modelHasVision
+	h.autoRouter.Load(config.Blobs())
+	go h.runTelemetryFlusher()
+	// 从持久化存储加载最近请求日志，使重启后 /logs 与 dashboard telemetry 不再清空。
+	// 容量不足 (e.g. 历史未持久化、或后端未实现 RequestLogStore) 时静默回退到内存环。
+	if rs := config.RequestLogs(); rs != nil {
+		if entries, err := rs.LoadRecent(requestLogsMaxSize); err == nil && len(entries) > 0 {
+			// 按 Time 升序填入环形缓冲；最新 N 条保留在最尾。
+			h.requestLogs = make([]RequestLog, 0, len(entries))
+			for _, e := range entries {
+				h.requestLogs = append(h.requestLogs, RequestLog{
+					Time: e.Time, Endpoint: e.Endpoint, Model: e.Model,
+					AccountID: e.AccountID, Status: e.Status,
+					Error: e.Error, ErrorType: e.ErrorType,
+					Tokens: e.Tokens, OutputTokens: e.OutputTokens,
+					Credits: e.Credits, Duration: e.Duration,
+					TTFTMs: e.TTFTMs, TPS: e.TPS,
+					UserAgent: e.UserAgent, ClientIP: e.ClientIP,
+					ApiKeyID: e.ApiKeyID,
+				})
+			}
+			logger.Infof("[request-log] restored %d entries from storage", len(h.requestLogs))
+		}
+		go h.runRequestLogFlusher(rs)
+	} else {
+		// 后端不支持持久化 → 不启动 flusher，pendingLogs 保持 nil，appendRequestLog 走纯内存路径。
+		close(h.logSaverDone)
 	}
 	// 启动后台刷新
+	// Routing needs per-account model lists from the first request: restore
+	// the last known live lists from storage, overlay static catalogs, then
+	// fetch fresh lists in the background immediately.
+	h.pool.RestoreModelLists(config.Blobs())
+	h.seedStaticModelLists()
 	go h.backgroundRefresh()
 	// 启动后台统计保存 (每30秒保存一次)
 	go h.backgroundStatsSaver()
@@ -260,68 +437,104 @@ func NewHandler() *Handler {
 	return h
 }
 
-// backgroundRefresh 后台定时刷新账户信息
-func (h *Handler) backgroundRefresh() {
-	ticker := time.NewTicker(30 * time.Minute) // 每 30 分钟刷新一次
+// accountRefreshInterval: how often every account's token and quota/credits
+// are re-checked upstream. Dashboard setting wins, then ACCOUNT_REFRESH_MINUTES,
+// then 30 minutes.
+func accountRefreshInterval() time.Duration {
+	if v := config.GetAccountRefreshMinutes(); v >= 1 {
+		return time.Duration(v) * time.Minute
+	}
+	if v, err := strconv.Atoi(os.Getenv("ACCOUNT_REFRESH_MINUTES")); err == nil && v >= 1 {
+		return time.Duration(v) * time.Minute
+	}
+	return 30 * time.Minute
+}
+
+// runTelemetryFlusher persists ops telemetry (metrics buckets, auto-router
+// state) every 30s and once more on shutdown.
+func (h *Handler) runTelemetryFlusher() {
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
-
-	// 启动时延迟 10 秒后执行一次
-	time.Sleep(10 * time.Second)
-	h.refreshModelsCache()
-	h.refreshAllAccounts()
-
 	for {
 		select {
 		case <-ticker.C:
-			h.refreshModelsCache()
-			h.refreshAllAccounts()
-		case <-h.stopRefresh:
+			h.metrics.Flush()
+			h.autoRouter.Flush()
+		case <-h.stopStatsSaver:
+			h.metrics.Flush()
+			h.autoRouter.Flush()
 			return
 		}
 	}
 }
 
-// refreshAllAccounts 刷新所有账户信息
-func (h *Handler) refreshAllAccounts() {
-	accounts := config.GetAccounts()
-	for i := range accounts {
-		account := &accounts[i]
-		if !account.Enabled || account.AccessToken == "" {
-			continue
-		}
-
-		// 检查 token 是否需要刷新
-		if account.ExpiresAt > 0 && time.Now().Unix() > account.ExpiresAt-tokenRefreshSkewSeconds {
-			newAccessToken, newRefreshToken, newExpiresAt, profileArn, err := auth.RefreshToken(account)
-			if err != nil {
-				logger.Warnf("[BackgroundRefresh] Token refresh failed for %s: %v", account.Email, err)
-				h.handleAccountFailure(account, err)
-				continue
-			}
-			account.AccessToken = newAccessToken
-			if newRefreshToken != "" {
-				account.RefreshToken = newRefreshToken
-			}
-			account.ExpiresAt = newExpiresAt
-			config.UpdateAccountToken(account.ID, newAccessToken, newRefreshToken, newExpiresAt)
-			h.pool.UpdateToken(account.ID, newAccessToken, newRefreshToken, newExpiresAt)
-			if profileArn != "" {
-				account.ProfileArn = profileArn
-				config.UpdateAccountProfileArn(account.ID, profileArn)
-			}
-		}
-
-		// 刷新账户信息
-		info, err := RefreshAccountInfo(account)
-		if err != nil {
-			logger.Warnf("[BackgroundRefresh] Failed to refresh %s: %v", account.Email, err)
-			continue
-		}
-
-		config.UpdateAccountInfo(account.ID, *info)
-		logger.Infof("[BackgroundRefresh] Refreshed %s: %s %.1f/%.1f", account.Email, info.SubscriptionType, info.UsageCurrent, info.UsageLimit)
+// Shutdown stops background loops and flushes stats and telemetry to storage.
+func (h *Handler) Shutdown() {
+	close(h.stopRefresh)
+	close(h.stopStatsSaver)
+	h.saveStats()
+	h.metrics.Flush()
+	h.autoRouter.Flush()
+	// Drain pending request logs to disk before exit. Non-blocking on shutdown:
+	// if no flusher was started (backend without RequestLogStore), logSaverDone
+	// was closed in NewHandler, so the select hits it immediately.
+	if h.stopLogSaver != nil {
+		close(h.stopLogSaver)
 	}
-	h.pool.Reload()
+	if h.logSaverDone != nil {
+		<-h.logSaverDone
+	}
+}
+
+// seedStaticModelLists fills the pool's per-account model lists for providers
+// whose catalog is local (no network), synchronously.
+func (h *Handler) seedStaticModelLists() {
+	for _, acc := range config.GetEnabledAccounts() {
+		adapter, err := adapterForAccount(&acc)
+		if err != nil || !adapter.staticModels || adapter.listModels == nil {
+			continue
+		}
+		models, err := adapter.listModels(&acc)
+		if err != nil || len(models) == 0 {
+			continue
+		}
+		ids := make([]string, 0, len(models))
+		for _, m := range models {
+			ids = append(ids, m.ModelId)
+		}
+		h.pool.SetModelList(acc.ID, ids)
+	}
+}
+
+// backgroundRefresh 后台定时刷新账户信息
+func (h *Handler) backgroundRefresh() {
+	// Fetch live model lists right away (the pool was restored from the last
+	// known lists + static catalogs, so routing works meanwhile); give the
+	// upstreams a short grace period before the first full warmup.
+	h.refreshModelsCache()
+	h.pool.PersistModelLists(config.Blobs())
+	time.Sleep(10 * time.Second)
+	h.refreshAllAccounts()
+
+	// Timer is re-armed every cycle so a changed interval applies without restart.
+	for {
+		timer := time.NewTimer(accountRefreshInterval())
+		select {
+		case <-timer.C:
+			h.refreshModelsCache()
+			h.pool.PersistModelLists(config.Blobs())
+			h.refreshAllAccounts()
+		case <-h.stopRefresh:
+			timer.Stop()
+			return
+		}
+	}
+}
+
+// refreshAllAccounts runs the warmup cycle (token refresh, quota, optional probe,
+// auto-recovery) over every candidate account.
+func (h *Handler) refreshAllAccounts() {
+	h.runWarmup(nil)
 }
 
 // validateApiKey 验证 API Key（Bool 包装，旧签名仍被部分调用方使用）
@@ -330,33 +543,33 @@ func (h *Handler) validateApiKey(r *http.Request) bool {
 	return err == nil
 }
 
-// authenticateForClaude runs authenticate and writes a Claude-style error on failure.
-// Returns the request with the matched API key injected into context, or nil if auth failed.
-func (h *Handler) authenticateForClaude(w http.ResponseWriter, r *http.Request) *http.Request {
-	entry, err := h.authenticate(r)
-	if err != nil {
-		ae, _ := err.(*authError)
-		if ae == nil {
-			ae = newAuthError(http.StatusUnauthorized, "authentication_error", err.Error())
+// authenticateForClaude runs authenticate + rate limiting and writes a Claude-style
+// error on failure. Returns the request with the matched API key injected into
+// context plus a release func (always call it), or nil if rejected.
+func (h *Handler) authenticateForClaude(w http.ResponseWriter, r *http.Request) (*http.Request, func()) {
+	ar, release, ae := h.admit(r)
+	if ae != nil {
+		if ae.status == http.StatusTooManyRequests {
+			w.Header().Set("Retry-After", "1")
 		}
 		h.sendClaudeError(w, ae.status, ae.code, ae.message)
-		return nil
+		return nil, nil
 	}
-	return withApiKeyContext(r, entry)
+	markApiKeyID(w, apiKeyIDFromContext(ar.Context()))
+	return ar, release
 }
 
-// authenticateForOpenAI runs authenticate and writes an OpenAI-style error on failure.
-func (h *Handler) authenticateForOpenAI(w http.ResponseWriter, r *http.Request) *http.Request {
-	entry, err := h.authenticate(r)
-	if err != nil {
-		ae, _ := err.(*authError)
-		if ae == nil {
-			ae = newAuthError(http.StatusUnauthorized, "authentication_error", err.Error())
+func (h *Handler) authenticateForOpenAI(w http.ResponseWriter, r *http.Request) (*http.Request, func()) {
+	ar, release, ae := h.admit(r)
+	if ae != nil {
+		if ae.status == http.StatusTooManyRequests {
+			w.Header().Set("Retry-After", "1")
 		}
 		h.sendOpenAIError(w, ae.status, ae.code, ae.message)
-		return nil
+		return nil, nil
 	}
-	return withApiKeyContext(r, entry)
+	markApiKeyID(w, apiKeyIDFromContext(ar.Context()))
+	return ar, release
 }
 
 // ServeHTTP 路由分发
@@ -370,7 +583,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Api-Key, anthropic-version, anthropic-beta, x-api-key, x-stainless-os, x-stainless-lang, x-stainless-package-version, x-stainless-runtime, x-stainless-runtime-version, x-stainless-arch")
-	w.Header().Set("Access-Control-Expose-Headers", "x-request-id, x-ratelimit-limit-requests, x-ratelimit-limit-tokens, x-ratelimit-remaining-requests, x-ratelimit-remaining-tokens, x-ratelimit-reset-requests, x-ratelimit-reset-tokens")
+	w.Header().Set("Access-Control-Expose-Headers", "x-request-id, x-hekato-routed-model, x-hekato-route-reason, x-ratelimit-limit-requests, x-ratelimit-limit-tokens, x-ratelimit-remaining-requests, x-ratelimit-remaining-tokens, x-ratelimit-reset-requests, x-ratelimit-reset-tokens")
 
 	if r.Method == "OPTIONS" {
 		w.WriteHeader(204)
@@ -381,29 +594,52 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	// API 端点（需要验证 API Key）
 	case path == "/v1/messages" || path == "/messages" || path == "/anthropic/v1/messages":
-		ar := h.authenticateForClaude(w, r)
+		w = withClientLogMeta(w, r)
+		ar, release := h.authenticateForClaude(w, r)
 		if ar == nil {
 			return
 		}
+		defer release()
 		h.handleClaudeMessages(w, ar)
 	case path == "/v1/messages/count_tokens" || path == "/messages/count_tokens":
-		ar := h.authenticateForClaude(w, r)
+		w = withClientLogMeta(w, r)
+		ar, release := h.authenticateForClaude(w, r)
 		if ar == nil {
 			return
 		}
+		defer release()
 		h.handleCountTokens(w, ar)
 	case path == "/v1/chat/completions" || path == "/chat/completions":
-		ar := h.authenticateForOpenAI(w, r)
+		w = withClientLogMeta(w, r)
+		ar, release := h.authenticateForOpenAI(w, r)
 		if ar == nil {
 			return
 		}
+		defer release()
 		h.handleOpenAIChat(w, ar)
 	case path == "/v1/responses" || path == "/responses":
-		ar := h.authenticateForOpenAI(w, r)
+		w = withClientLogMeta(w, r)
+		ar, release := h.authenticateForOpenAI(w, r)
 		if ar == nil {
 			return
 		}
+		defer release()
 		h.handleOpenAIResponses(w, ar)
+	case path == "/v1/systemone" || path == "/zen/v1/systemone":
+		w = withClientLogMeta(w, r)
+		ar, release := h.authenticateForOpenAI(w, r)
+		if ar == nil {
+			return
+		}
+		defer release()
+		h.handleSystemOne(w, ar)
+	case path == "/v1/usage":
+		h.handleKeyUsage(w, r)
+	case path == "/v1/usage/logs":
+		h.handleKeyUsageLogs(w, r)
+	case path == "/usage" || path == "/usage/" || path == "/docs" || strings.HasPrefix(path, "/docs/"):
+		// Public pages (usage check, documentation): same SPA bundle, no admin path exposed.
+		h.serveAdminPage(w, r)
 	case path == "/v1/models" || path == "/models":
 		h.handleModels(w, r)
 	case path == "/api/event_logging/batch":
@@ -436,6 +672,66 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Not Found", 404)
 	}
+}
+
+// handleKeyUsage is the public self-service usage check: a client presents its
+// own API key (Bearer / X-Api-Key) and gets that key's quota and usage back.
+// No admin credentials are involved; the key itself is the credential.
+func (h *Handler) handleKeyUsage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	provided := extractProvidedKey(r)
+	entry := config.FindApiKeyByValue(provided)
+	if provided == "" || entry == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid or missing API key"})
+		return
+	}
+	pct := func(used, limit float64) float64 {
+		if limit <= 0 {
+			return 0
+		}
+		return used / limit
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"name":             entry.Name,
+		"keyMasked":        config.MaskApiKey(entry.Key),
+		"enabled":          entry.Enabled,
+		"createdAt":        entry.CreatedAt,
+		"lastUsedAt":       entry.LastUsedAt,
+		"requestsCount":    entry.RequestsCount,
+		"tokensUsed":       entry.TokensUsed,
+		"tokenLimit":       entry.TokenLimit,
+		"tokenPercent":     pct(float64(entry.TokensUsed), float64(entry.TokenLimit)),
+		"creditsUsed":      entry.CreditsUsed,
+		"creditLimit":      entry.CreditLimit,
+		"creditPercent":    pct(entry.CreditsUsed, entry.CreditLimit),
+		"rpmLimit":         entry.RPMLimit,
+		"concurrencyLimit": entry.ConcurrencyLimit,
+	})
+}
+
+// handleKeyUsageLogs returns the caller's own request logs (filtered by API key ID).
+// The client authenticates with its own API key (Bearer / X-Api-Key) — no admin
+// credentials involved. Returns the subset of in-memory logs that belong to the key.
+func (h *Handler) handleKeyUsageLogs(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	provided := extractProvidedKey(r)
+	entry := config.FindApiKeyByValue(provided)
+	if provided == "" || entry == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid or missing API key"})
+		return
+	}
+	all := h.getRequestLogs() // newest-first
+	filtered := make([]RequestLog, 0, len(all))
+	for _, log := range all {
+		if log.ApiKeyID == entry.ID {
+			filtered = append(filtered, log)
+		}
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"logs": filtered,
+	})
 }
 
 // handleHealth 健康检查（不暴露统计数据）
@@ -488,9 +784,23 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 	// 添加别名模型
 	models = append(models,
 		buildModelInfo("auto", "kiro-proxy", true),
+		buildModelInfo("auto"+thinkingSuffix, "kiro-proxy", true),
 		buildModelInfo("gpt-4o", "kiro-proxy", true),
 		buildModelInfo("gpt-4", "kiro-proxy", true),
 	)
+	// A key with a model allowlist only sees what it may call (thinking
+	// variants follow their base ID).
+	if entry, err := h.authenticate(r); err == nil && entry != nil && len(entry.AllowedModels) > 0 {
+		kept := models[:0]
+		for _, m := range models {
+			id, _ := m["id"].(string)
+			base, _ := ParseModelAndThinking(id, thinkingSuffix)
+			if entry.AllowsModel(base) {
+				kept = append(kept, m)
+			}
+		}
+		models = kept
+	}
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -508,6 +818,11 @@ func buildAnthropicModelsResponse(cached []ModelInfo, thinkingSuffix string) []m
 	models := make([]map[string]interface{}, 0, len(cached)*2)
 	if len(cached) > 0 {
 		for _, m := range cached {
+			if isAutoModel(m.ModelId) {
+				// Upstream-native "auto" (CodeBuddy) collides with the gateway's
+				// virtual auto model; the alias block below lists it once.
+				continue
+			}
 			supportsImage := modelSupportsImage(m.InputTypes)
 			models = append(models, buildModelInfo(m.ModelId, "anthropic", supportsImage))
 			// 自动生成 thinking 变体
@@ -577,6 +892,19 @@ func buildModelInfo(id, ownedBy string, supportsImage bool) map[string]interface
 			},
 		},
 	}
+}
+
+// modelHasVision reports whether the aggregated catalog marks model as
+// accepting image input.
+func (h *Handler) modelHasVision(model string) bool {
+	h.modelsCacheMu.RLock()
+	defer h.modelsCacheMu.RUnlock()
+	for _, m := range h.cachedModels {
+		if strings.EqualFold(m.ModelId, model) {
+			return modelSupportsImage(m.InputTypes)
+		}
+	}
+	return false
 }
 
 // refreshModelsCache 从 Kiro API 拉取模型列表并缓存
@@ -668,6 +996,7 @@ func (h *Handler) apiRefreshAccountModels(w http.ResponseWriter, r *http.Request
 		account.ExpiresAt = latest.ExpiresAt
 		account.ProfileArn = latest.ProfileArn
 	}
+	h.pool.ClearModelDenies(id) // operator asked for a fresh view: forget learned rejections
 	if err := h.fetchAndCacheAccountModels(account); err != nil {
 		w.WriteHeader(500)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -840,15 +1169,31 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 	// Stream or non-stream. Provider-specific conversion happens after account
 	// selection inside the upstream routing layer.
 	apiKeyID := apiKeyIDFromContext(r.Context())
+	if !keyAllowsModel(apiKeyID, req.Model) {
+		h.sendClaudeError(w, 403, "permission_error", "model "+req.Model+" is not enabled for this API key")
+		return
+	}
+	affinityKey := claudeAffinityKey(&req)
+	if isAutoModel(req.Model) {
+		markRequestedModel(w, req.Model)
+		var autoThink bool
+		req.Model, autoThink = h.resolveAutoModel(w, "claude", req.Model, claudeRouteSignals(&req, estimatedInputTokens, thinking), &affinityKey, capClaudeChat)
+		if autoThink {
+			thinking = true
+			effectiveReq = cloneClaudeRequestForThinking(&req, thinking)
+		}
+		effectiveReq.Model = req.Model
+		cacheProfile = h.promptCache.BuildClaudeProfile(effectiveReq, estimatedInputTokens)
+	}
 	if req.Stream {
-		h.handleClaudeStream(w, &req, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID)
+		h.handleClaudeStream(w, &req, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID, affinityKey)
 	} else {
-		h.handleClaudeNonStream(w, &req, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID)
+		h.handleClaudeNonStream(w, &req, req.Model, thinking, thinkingResponseOpts, estimatedInputTokens, cacheProfile, apiKeyID, affinityKey)
 	}
 }
 
 // handleClaudeStream Claude 流式响应
-func (h *Handler) handleClaudeStream(w http.ResponseWriter, req *ClaudeRequest, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID string) {
+func (h *Handler) handleClaudeStream(w http.ResponseWriter, req *ClaudeRequest, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID string, affinityKey string) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -863,6 +1208,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, req *ClaudeRequest, 
 	thinkingFormat := thinkingOpts.Format
 
 	reqStart := time.Now()
+	perf := newPerfTracker(reqStart)
 	msgID := "msg_" + uuid.New().String()
 	startInputTokens := estimatedInputTokens
 	excluded := make(map[string]bool)
@@ -891,14 +1237,14 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, req *ClaudeRequest, 
 	}
 
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
-		account := h.pool.GetNextForModelExcluding(model, excluded, capabilityFilter(capClaudeChat))
+		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capClaudeChat))
 		if account == nil {
 			break
 		}
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
 			excluded[account.ID] = true
-			h.handleAccountFailure(account, err)
+			h.handleModelFailure(account, model, err)
 			continue
 		}
 		cacheUsage := h.promptCache.Compute(account.ID, cacheProfile)
@@ -907,7 +1253,8 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, req *ClaudeRequest, 
 		var inputTokens, outputTokens int
 		var credits float64
 		var realInputTokens int
-		var toolUses []KiroToolUse
+		var upstreamStop string
+		var toolUses []ToolUse
 		var nextContentIndex int
 		var rawContentBuilder strings.Builder
 		var rawThinkingBuilder strings.Builder
@@ -1155,11 +1502,13 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, req *ClaudeRequest, 
 			}
 		}
 
-		callback := &KiroStreamCallback{
+		callback := &StreamCallback{
 			OnText: func(text string, isThinking bool) {
 				if text == "" {
 					return
 				}
+				perf.markFirstByte()
+				perf.addTokens(text)
 				if isThinking {
 					rawThinkingBuilder.WriteString(text)
 				} else {
@@ -1167,7 +1516,8 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, req *ClaudeRequest, 
 				}
 				processClaudeText(text, isThinking, false)
 			},
-			OnToolUse: func(tu KiroToolUse) {
+			OnToolUse: func(tu ToolUse) {
+				perf.markFirstByte()
 				processClaudeText("", false, true)
 				rawContentBuilder.WriteString(tu.Name)
 				if b, err := json.Marshal(tu.Input); err == nil {
@@ -1217,17 +1567,18 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, req *ClaudeRequest, 
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
 			},
+			OnStopReason: func(reason string) { upstreamStop = reason },
 		}
 
-		err := CallClaudeUpstreamAPI(account, req, thinking, callback)
+		err := callUpstreamFromClaude(account, req, thinking, callback)
 		if err != nil {
 			lastErr = err
 			excluded[account.ID] = true
-			h.handleAccountFailure(account, err)
+			h.handleModelFailure(account, model, err)
 			if !messageStarted {
 				continue
 			}
-			h.recordFailureWithDetails("claude", model, account.ID, err)
+			h.recordFailureWithDetails(w, "claude", model, account.ID, err)
 			h.sendSSE(w, flusher, "error", map[string]interface{}{
 				"type":  "error",
 				"error": map[string]string{"type": "api_error", "message": err.Error()},
@@ -1260,11 +1611,12 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, req *ClaudeRequest, 
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
 		h.promptCache.Update(account.ID, cacheProfile)
-		h.recordSuccessLog("claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
-
+		h.recordSuccessLog(w, "claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), perf.finalise())
 		stopReason := "end_turn"
 		if len(toolUses) > 0 {
 			stopReason = "tool_use"
+		} else if upstreamStop == "max_tokens" {
+			stopReason = "max_tokens"
 		}
 
 		ensureMessageStart()
@@ -1287,7 +1639,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, req *ClaudeRequest, 
 		return
 	}
 
-	h.recordFailureWithDetails("claude", model, "", lastErr)
+	h.recordFailureWithDetails(w, "claude", model, "", lastErr)
 	h.sendClaudeError(w, 500, "api_error", lastErr.Error())
 }
 
@@ -1338,68 +1690,126 @@ func (h *Handler) addCredits(credits float64) {
 	h.creditsMu.Unlock()
 }
 
-// 统计记录 (使用原子操作)
-func (h *Handler) recordSuccess(inputTokens, outputTokens int, credits float64) {
-	atomic.AddInt64(&h.totalRequests, 1)
-	atomic.AddInt64(&h.successRequests, 1)
-	atomic.AddInt64(&h.totalTokens, int64(inputTokens+outputTokens))
-	h.addCredits(credits)
+// dashboard "Performance" column needs. ttftMs is the gap between request
+// start and the first upstream token; tps is outputTokens / seconds-after-TTFT.
+// A zero value is a valid signal that the request was non-streaming (or no
+// token arrived), and the log row simply renders the cells blank.
+type requestPerf struct {
+	ttftMs int64
+	tps    float64
 }
 
-// recordSuccessForApiKey is recordSuccess + per-API-key usage attribution.
-// When apiKeyID is empty (legacy single-key path or unauthenticated path), only the
-// global counters are updated. Persistence errors are logged but do not propagate.
-func (h *Handler) recordSuccessForApiKey(apiKeyID string, inputTokens, outputTokens int, credits float64) {
-	h.recordSuccess(inputTokens, outputTokens, credits)
-	if apiKeyID == "" {
+// perfTracker accumulates streaming timing as the callback fires. It snapshots
+// the request start (which every handler already keeps) so first-token latency
+// can be derived without the caller threading another timestamp around.
+// finalise() returns the requestPerf to hand to recordSuccessLog.
+type perfTracker struct {
+	start      time.Time
+	firstAt    time.Time // set on first non-empty OnText / OnToolUse / OnComplete
+	tokenCount int       // output tokens seen at finalise()
+	mu         sync.Mutex
+}
+
+// newPerfTracker constructs a tracker anchored to the handler's request start.
+func newPerfTracker(start time.Time) *perfTracker {
+	return &perfTracker{start: start}
+}
+
+// markFirstByte records the first time the upstream produced anything
+// (token, tool_use, or the usage finalisation). Safe under concurrent calls
+// from OnText / OnToolUse: only the earliest timestamp wins.
+func (p *perfTracker) markFirstByte() {
+	if p == nil {
 		return
 	}
-	if err := config.RecordApiKeyUsage(apiKeyID, int64(inputTokens+outputTokens), credits); err != nil {
-		logger.Warnf("[ApiKey] failed to record usage for key %s: %v", apiKeyID, err)
+	p.mu.Lock()
+	if p.firstAt.IsZero() {
+		p.firstAt = time.Now()
 	}
+	p.mu.Unlock()
 }
 
-// recordFailureWithDetails records a failure and stores it in the request logs.
-func (h *Handler) recordFailureWithDetails(endpoint, model, accountID string, err error) {
-	atomic.AddInt64(&h.totalRequests, 1)
-	atomic.AddInt64(&h.failedRequests, 1)
-
-	if err == nil {
+// addTokens bumps the running output-token estimate as the callback delivers
+// text. We count by rune length / 4 (heuristic) rather than waiting for the
+// final usage, so the TPS denominator reflects what the user actually saw
+// arrive, not the post-hoc accounting.
+func (p *perfTracker) addTokens(text string) {
+	if p == nil || text == "" {
 		return
 	}
-
-	errMsg := err.Error()
-	errType := classifyError(errMsg)
-
-	entry := RequestLog{
-		Time:      time.Now().Unix(),
-		Endpoint:  endpoint,
-		Model:     model,
-		AccountID: accountID,
-		Status:    "error",
-		Error:     errMsg,
-		ErrorType: errType,
-	}
-
-	h.appendRequestLog(entry)
+	p.mu.Lock()
+	p.tokenCount += (utf8.RuneCountInString(text) + 3) / 4
+	p.mu.Unlock()
 }
 
-// recordSuccessLog records a successful request in the request logs.
-func (h *Handler) recordSuccessLog(endpoint, model, accountID string, tokens int, credits float64, durationMs int64) {
-	entry := RequestLog{
-		Time:      time.Now().Unix(),
-		Endpoint:  endpoint,
-		Model:     model,
-		AccountID: accountID,
-		Status:    "success",
-		Tokens:    tokens,
-		Credits:   credits,
-		Duration:  durationMs,
+// setFinalTokens overrides the estimate with the authoritative token count
+// from the upstream usage block (OpenAI's prompt_tokens/completion_tokens).
+func (p *perfTracker) setFinalTokens(n int) {
+	if p == nil || n <= 0 {
+		return
 	}
-
-	h.appendRequestLog(entry)
+	p.mu.Lock()
+	p.tokenCount = n
+	p.mu.Unlock()
 }
 
+// finalise produces the requestPerf to ship to the log row. Uses total wall
+// time (request start → completion) for the TPS denominator; falls back to
+// a 1 ms floor so a sub-millisecond request doesn't divide by zero.
+func (p *perfTracker) finalise() requestPerf {
+	if p == nil {
+		return requestPerf{}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	ttft := int64(0)
+	if !p.firstAt.IsZero() && p.firstAt.After(p.start) {
+		ttft = p.firstAt.Sub(p.start).Milliseconds()
+	}
+	total := now.Sub(p.start).Seconds()
+	if total < 0.001 {
+		total = 0.001
+	}
+	tps := float64(p.tokenCount) / total
+	return requestPerf{ttftMs: ttft, tps: math.Round(tps*100) / 100}
+}
+
+// newLogEntry is the central constructor for RequestLog. It stamps time, the
+// client metadata snapshot (taken via currentLogContext), and folds the perf
+// numbers into the typed fields. Keeping this in one place avoids the dozen
+// inline RequestLog{} literals scattered across handlers from drifting apart.
+func (h *Handler) newLogEntry(w http.ResponseWriter, endpoint, model, accountID, status string, tokens, outputTokens int, credits float64, durationMs, ttftMs int64, tps float64) RequestLog {
+	ua, ip := clientLogMeta(w)
+	requested := ""
+	apiKeyID := ""
+	if m := findLogMeta(w); m != nil {
+		requested = m.requested
+		apiKeyID = m.apiKeyID
+	}
+	return RequestLog{
+		RequestedModel: requested,
+		Time:           time.Now().Unix(),
+		Endpoint:       endpoint,
+		Model:          model,
+		AccountID:      accountID,
+		Status:         status,
+		Tokens:         tokens,
+		OutputTokens:   outputTokens,
+		Credits:        credits,
+		Duration:       durationMs,
+		TTFTMs:         ttftMs,
+		TPS:            tps,
+		UserAgent:      ua,
+		ClientIP:       ip,
+		ApiKeyID:       apiKeyID,
+	}
+}
+
+// appendRequestLog stores one entry in the in-memory ring buffer (newest at the
+// tail, ring-shift eviction when full) and non-blockingly enqueues the same
+// entry onto the persistence channel so the flusher goroutine can batch-write
+// it to disk.
 func (h *Handler) appendRequestLog(entry RequestLog) {
 	h.requestLogsMu.Lock()
 	if h.requestLogs == nil {
@@ -1410,6 +1820,140 @@ func (h *Handler) appendRequestLog(entry RequestLog) {
 	}
 	h.requestLogs = append(h.requestLogs, entry)
 	h.requestLogsMu.Unlock()
+
+	// 非阻塞投递到持久化队列。队列满 = 上一批次还没刷盘，降级为丢弃本次
+	// 持久化条目（内存环照常保留，查询不丢），避免反向阻塞请求路径。
+	if h.pendingLogs != nil {
+		persisted := config.PersistedRequestLog{
+			Time: entry.Time, Endpoint: entry.Endpoint, Model: entry.Model,
+			AccountID: entry.AccountID, Status: entry.Status,
+			Error: entry.Error, ErrorType: entry.ErrorType,
+			Tokens: entry.Tokens, OutputTokens: entry.OutputTokens,
+			Credits: entry.Credits, Duration: entry.Duration,
+			TTFTMs: entry.TTFTMs, TPS: entry.TPS,
+			UserAgent: entry.UserAgent, ClientIP: entry.ClientIP,
+			ApiKeyID: entry.ApiKeyID,
+		}
+		select {
+		case h.pendingLogs <- persisted:
+		default:
+			// 后台正在批量写入；下一轮再补。这里不再 spin / 阻塞。
+		}
+	}
+}
+
+// recordFailureWithDetails records a failure and stores it in the request logs.
+// log row renders empty TTFT/TPS cells.
+func (h *Handler) recordFailureWithDetails(w http.ResponseWriter, endpoint, model, accountID string, err error) {
+	atomic.AddInt64(&h.totalRequests, 1)
+	atomic.AddInt64(&h.failedRequests, 1)
+
+	if err == nil {
+		return
+	}
+
+	errMsg := err.Error()
+	errType := classifyError(errMsg)
+
+	entry := h.newLogEntry(w, endpoint, model, accountID, "error", 0, 0, 0, 0, 0, 0)
+	entry.Error = errMsg
+	entry.ErrorType = errType
+
+	h.appendRequestLog(entry)
+	h.autoRouter.Record(accountID, model, false, 0)
+	h.metrics.Record(endpoint, model, accountID, false, 0, 0, 0)
+}
+
+// recordSuccessForApiKey credits the per-key rate limiter and quota counters.
+// Kept separate from recordSuccessLog so log-row perf timing (TTFT/TPS) can
+// evolve without touching the limiter. The current keyLimiter has no usage
+// recorder (Acquire/Release only); this is the seam future per-key quota
+// dashboards can plug into without touching call sites.
+func (h *Handler) recordSuccessForApiKey(apiKeyID string, inputTokens, outputTokens int, credits float64) {
+	if apiKeyID == "" {
+		return
+	}
+	// Sum prompt + completion tokens so the quota counters match the per-request
+	// bill. RecordApiKeyUsage is a no-op for non-positive token/credit deltas, so
+	// upstream callers that pass zeros (e.g. responses streaming paths before
+	// the model reports usage) don't pollute the counters.
+	totalTokens := int64(inputTokens) + int64(outputTokens)
+	if err := config.RecordApiKeyUsage(apiKeyID, totalTokens, credits); err != nil {
+		logger.Warnf("[apikey] record usage for %s failed: %v", apiKeyID, err)
+	}
+}
+
+// recordSuccessLog records a successful request in the request logs. The
+// perf struct carries streaming-only timing: TTFT (first-byte to first token)
+// and the TPS denominator (outputTokens / max(secondsAfterFirstByte, 1ms)).
+// Pass a zero `perf` for non-streaming endpoints to log no TTFT/TPS.
+func (h *Handler) recordSuccessLog(w http.ResponseWriter, endpoint, model, accountID string, tokens int, credits float64, durationMs int64, perf requestPerf) {
+	atomic.AddInt64(&h.totalRequests, 1)
+	atomic.AddInt64(&h.successRequests, 1)
+	atomic.AddInt64(&h.totalTokens, int64(tokens))
+	h.addCredits(credits)
+
+	entry := h.newLogEntry(w, endpoint, model, accountID, "success", tokens, 0, credits, durationMs, perf.ttftMs, perf.tps)
+
+	h.appendRequestLog(entry)
+	h.autoRouter.Record(accountID, model, true, durationMs)
+	h.metrics.Record(endpoint, model, accountID, true, tokens, credits, durationMs)
+}
+
+// 开销过大；太长：崩溃丢失窗口过大。5s 与现有 metrics 刷新节奏一致。
+const requestLogFlushInterval = 5 * time.Second
+
+// requestLogBatchSize 触发立即 flush 的条目阈值，避免突发后长时间不刷盘。
+const requestLogBatchSize = 64
+
+// requestLogPendingCapacity 是 pendingLogs 通道的缓冲大小。环形 500 条 +
+// 突发，1024 给后台 5s 周期足够吸纳一次小高峰；满了就走非阻塞丢弃路径。
+const requestLogPendingCapacity = 1024
+
+// runRequestLogFlusher 从 pendingLogs 收集条目并按周期批量持久化。
+// store 为 nil 时（极少数后端未实现）直接退出，保持原内存-only 行为。
+func (h *Handler) runRequestLogFlusher(store config.RequestLogStore) {
+	defer close(h.logSaverDone)
+	ticker := time.NewTicker(requestLogFlushInterval)
+	defer ticker.Stop()
+
+	batch := make([]config.PersistedRequestLog, 0, requestLogBatchSize)
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		if err := store.Append(batch); err != nil {
+			logger.Warnf("request log flush failed: %v (lost %d entries)", err, len(batch))
+		}
+		batch = batch[:0]
+	}
+
+	for {
+		select {
+		case e, ok := <-h.pendingLogs:
+			if !ok {
+				flush()
+				return
+			}
+			batch = append(batch, e)
+			if len(batch) >= requestLogBatchSize {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		case <-h.stopLogSaver:
+			// 退出前先把通道里所有剩余条目拉空再 flush，保证 Shutdown 同步落盘。
+			for {
+				select {
+				case e := <-h.pendingLogs:
+					batch = append(batch, e)
+				default:
+					flush()
+					return
+				}
+			}
+		}
+	}
 }
 
 // classifyError categorizes an error message into a type for display.
@@ -1445,43 +1989,48 @@ func (h *Handler) getRequestLogs() []RequestLog {
 }
 
 // handleClaudeNonStream Claude 非流式响应
-func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, req *ClaudeRequest, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID string) {
+func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, req *ClaudeRequest, model string, thinking bool, thinkingOpts claudeThinkingResponseOptions, estimatedInputTokens int, cacheProfile *promptCacheProfile, apiKeyID string, affinityKey string) {
 	excluded := make(map[string]bool)
 	var lastErr error
 	reqStart := time.Now()
+	perf := newPerfTracker(reqStart)
 
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
-		account := h.pool.GetNextForModelExcluding(model, excluded, capabilityFilter(capClaudeChat))
+		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capClaudeChat))
 		if account == nil {
 			break
 		}
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
 			excluded[account.ID] = true
-			h.handleAccountFailure(account, err)
+			h.handleModelFailure(account, model, err)
 			continue
 		}
 		cacheUsage := h.promptCache.Compute(account.ID, cacheProfile)
 
 		var content string
 		var thinkingContent string
-		var toolUses []KiroToolUse
+		var toolUses []ToolUse
 		var inputTokens, outputTokens int
 		var credits float64
 		var realInputTokens int
 
-		callback := &KiroStreamCallback{
+		callback := &StreamCallback{
 			OnText: func(text string, isThinking bool) {
+				perf.markFirstByte()
+				perf.addTokens(text)
 				if isThinking {
 					thinkingContent += text
 				} else {
 					content += text
 				}
 			},
-			OnToolUse: func(tu KiroToolUse) {
+			OnToolUse: func(tu ToolUse) {
+				perf.markFirstByte()
 				toolUses = append(toolUses, tu)
 			},
 			OnComplete: func(inTok, outTok int) {
+				perf.setFinalTokens(outTok)
 				inputTokens = inTok
 				outputTokens = outTok
 			},
@@ -1493,11 +2042,11 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, req *ClaudeReques
 			},
 		}
 
-		err := CallClaudeUpstreamAPI(account, req, thinking, callback)
+		err := callUpstreamFromClaude(account, req, thinking, callback)
 		if err != nil {
 			lastErr = err
 			excluded[account.ID] = true
-			h.handleAccountFailure(account, err)
+			h.handleModelFailure(account, model, err)
 			continue
 		}
 
@@ -1510,7 +2059,6 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, req *ClaudeReques
 		if !thinking {
 			rawThinkingContent = ""
 		}
-
 		if realInputTokens > 0 {
 			inputTokens = realInputTokens
 		} else if inputTokens <= 0 {
@@ -1521,8 +2069,7 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, req *ClaudeReques
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.promptCache.Update(account.ID, cacheProfile)
-		h.recordSuccessLog("claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
+		h.recordSuccessLog(w, "claude", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), perf.finalise())
 
 		responseThinkingContent := rawThinkingContent
 		includeEmptyThinkingBlock := thinking && thinkingOpts.OmitDisplay && rawThinkingContent != ""
@@ -1562,7 +2109,7 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, req *ClaudeReques
 		return
 	}
 
-	h.recordFailureWithDetails("claude", model, "", lastErr)
+	h.recordFailureWithDetails(w, "claude", model, "", lastErr)
 	h.sendClaudeError(w, 500, "api_error", lastErr.Error())
 }
 
@@ -1608,15 +2155,26 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	estimatedInputTokens := estimateOpenAIRequestInputTokens(&req)
 
 	apiKeyID := apiKeyIDFromContext(r.Context())
+	if !keyAllowsModel(apiKeyID, req.Model) {
+		h.sendOpenAIError(w, 403, "permission_error", "model "+req.Model+" is not enabled for this API key")
+		return
+	}
+	affinityKey := openAIAffinityKey(&req)
+	if isAutoModel(req.Model) {
+		markRequestedModel(w, req.Model)
+		var autoThink bool
+		req.Model, autoThink = h.resolveAutoModel(w, "openai", req.Model, openAIRouteSignals(&req, estimatedInputTokens, thinking), &affinityKey, capOpenAIChat)
+		thinking = thinking || autoThink
+	}
 	if req.Stream {
-		h.handleOpenAIStream(w, &req, req.Model, thinking, estimatedInputTokens, apiKeyID)
+		h.handleOpenAIStream(w, &req, req.Model, thinking, estimatedInputTokens, apiKeyID, affinityKey)
 	} else {
-		h.handleOpenAINonStream(w, &req, req.Model, thinking, estimatedInputTokens, apiKeyID)
+		h.handleOpenAINonStream(w, &req, req.Model, thinking, estimatedInputTokens, apiKeyID, affinityKey)
 	}
 }
 
 // handleOpenAIStream OpenAI 流式响应
-func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, model string, thinking bool, estimatedInputTokens int, apiKeyID string) {
+func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, model string, thinking bool, estimatedInputTokens int, apiKeyID string, affinityKey string) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -1634,16 +2192,16 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 	excluded := make(map[string]bool)
 	var lastErr error
 	reqStart := time.Now()
-
+	perf := newPerfTracker(reqStart)
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
-		account := h.pool.GetNextForModelExcluding(model, excluded, capabilityFilter(capOpenAIChat))
+		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capOpenAIChat))
 		if account == nil {
 			break
 		}
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
 			excluded[account.ID] = true
-			h.handleAccountFailure(account, err)
+			h.handleModelFailure(account, model, err)
 			continue
 		}
 
@@ -1866,11 +2424,13 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 			}
 		}
 
-		callback := &KiroStreamCallback{
+		callback := &StreamCallback{
 			OnText: func(text string, isThinking bool) {
 				if text == "" {
 					return
 				}
+				perf.markFirstByte()
+				perf.addTokens(text)
 				if isThinking {
 					rawReasoningBuilder.WriteString(text)
 				} else {
@@ -1878,7 +2438,8 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 				}
 				processText(text, isThinking, false)
 			},
-			OnToolUse: func(tu KiroToolUse) {
+			OnToolUse: func(tu ToolUse) {
+				perf.markFirstByte()
 				processText("", false, true)
 
 				args, _ := json.Marshal(tu.Input)
@@ -1917,26 +2478,25 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 				responseStarted = true
 			},
 			OnComplete: func(inTok, outTok int) {
+				perf.setFinalTokens(outTok)
 				inputTokens = inTok
 				outputTokens = outTok
 			},
-			OnCredits: func(c float64) {
-				credits = c
-			},
+			OnCredits: func(c float64) { credits = c },
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
 			},
 		}
 
-		err := CallOpenAIUpstreamAPI(account, req, thinking, callback)
+		err := callUpstreamFromOpenAI(account, req, thinking, callback)
 		if err != nil {
 			lastErr = err
 			excluded[account.ID] = true
-			h.handleAccountFailure(account, err)
+			h.handleModelFailure(account, model, err)
 			if !responseStarted {
 				continue
 			}
-			h.recordFailureWithDetails("openai", model, account.ID, err)
+			h.recordFailureWithDetails(w, "openai", model, account.ID, err)
 			return
 		}
 
@@ -1967,13 +2527,11 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLog("openai", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
-
+		h.recordSuccessLog(w, "openai", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), perf.finalise())
 		finishReason := "stop"
 		if len(toolCalls) > 0 {
 			finishReason = "tool_calls"
 		}
-
 		chunk := map[string]interface{}{
 			"id":      chatID,
 			"object":  "chat.completion.chunk",
@@ -2002,56 +2560,66 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 		return
 	}
 
-	h.recordFailureWithDetails("openai", model, "", lastErr)
+	h.recordFailureWithDetails(w, "openai", model, "", lastErr)
 	h.sendOpenAIError(w, 500, "server_error", lastErr.Error())
 }
 
 // handleOpenAINonStream OpenAI 非流式响应
-func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, req *OpenAIRequest, model string, thinking bool, estimatedInputTokens int, apiKeyID string) {
+func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, req *OpenAIRequest, model string, thinking bool, estimatedInputTokens int, apiKeyID string, affinityKey string) {
 	excluded := make(map[string]bool)
 	var lastErr error
 	reqStart := time.Now()
+	perf := newPerfTracker(reqStart)
 
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
-		account := h.pool.GetNextForModelExcluding(model, excluded, capabilityFilter(capOpenAIChat))
+		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capOpenAIChat))
 		if account == nil {
 			break
 		}
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
 			excluded[account.ID] = true
-			h.handleAccountFailure(account, err)
+			h.handleModelFailure(account, model, err)
 			continue
 		}
 
 		var content string
 		var reasoningContent string
-		var toolUses []KiroToolUse
+		var toolUses []ToolUse
 		var inputTokens, outputTokens int
 		var credits float64
 		var realInputTokens int
 
-		callback := &KiroStreamCallback{
+		callback := &StreamCallback{
 			OnText: func(text string, isThinking bool) {
+				perf.markFirstByte()
+				perf.addTokens(text)
 				if isThinking {
 					reasoningContent += text
 				} else {
 					content += text
 				}
 			},
-			OnToolUse:  func(tu KiroToolUse) { toolUses = append(toolUses, tu) },
-			OnComplete: func(inTok, outTok int) { inputTokens = inTok; outputTokens = outTok },
-			OnCredits:  func(c float64) { credits = c },
+			OnToolUse: func(tu ToolUse) {
+				perf.markFirstByte()
+				toolUses = append(toolUses, tu)
+			},
+			OnComplete: func(inTok, outTok int) {
+				perf.setFinalTokens(outTok)
+				inputTokens = inTok
+				outputTokens = outTok
+			},
+			OnCredits: func(c float64) { credits = c },
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
 			},
 		}
 
-		err := CallOpenAIUpstreamAPI(account, req, thinking, callback)
+		err := callUpstreamFromOpenAI(account, req, thinking, callback)
 		if err != nil {
 			lastErr = err
 			excluded[account.ID] = true
-			h.handleAccountFailure(account, err)
+			h.handleModelFailure(account, model, err)
 			continue
 		}
 
@@ -2072,7 +2640,7 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, req *OpenAIReques
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLog("openai", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
+		h.recordSuccessLog(w, "openai", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), perf.finalise())
 
 		thinkingFormat := config.GetThinkingConfig().OpenAIFormat
 		resp := KiroToOpenAIResponseWithReasoning(finalContent, reasoningContent, toolUses, inputTokens, outputTokens, model, thinkingFormat)
@@ -2086,7 +2654,7 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, req *OpenAIReques
 		return
 	}
 
-	h.recordFailureWithDetails("openai", model, "", lastErr)
+	h.recordFailureWithDetails(w, "openai", model, "", lastErr)
 	h.sendOpenAIError(w, 500, "server_error", lastErr.Error())
 }
 
@@ -2103,7 +2671,9 @@ func (h *Handler) sendOpenAIError(w http.ResponseWriter, status int, errType, me
 
 // ensureValidToken 确保 token 有效
 func (h *Handler) ensureValidToken(account *config.Account) error {
-	if isCodeBuddyAccount(account) {
+	// API-key and access-token-only CodeBuddy accounts cannot be refreshed;
+	// Keycloak offline-token imports can.
+	if isCodeBuddyAccount(account) && !auth.CodeBuddyRefreshable(account) {
 		return nil
 	}
 	if account.ExpiresAt == 0 || time.Now().Unix() < account.ExpiresAt-tokenRefreshSkewSeconds {
@@ -2143,6 +2713,9 @@ func (h *Handler) ensureValidToken(account *config.Account) error {
 
 	// 持久化
 	config.UpdateAccountToken(account.ID, accessToken, refreshToken, expiresAt)
+	if isCodexAccount(account) && account.UserId != "" {
+		config.UpdateAccountUserId(account.ID, account.UserId)
+	}
 
 	return nil
 }
@@ -2274,6 +2847,18 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiTestRelay(w, r)
 	case path == "/relay/source" && r.Method == "GET":
 		h.apiGetRelaySource(w, r)
+	case path == "/auto-route" && r.Method == "GET":
+		h.apiGetAutoRoute(w, r)
+	case path == "/auto-route" && r.Method == "POST":
+		h.apiUpdateAutoRoute(w, r)
+	case path == "/auto-route/decisions" && r.Method == "GET":
+		h.apiGetAutoRouteDecisions(w, r)
+	case path == "/metrics" && r.Method == "GET":
+		h.apiGetMetrics(w, r)
+	case path == "/warmup/status" && r.Method == "GET":
+		h.apiWarmupStatus(w, r)
+	case path == "/warmup" && r.Method == "POST":
+		h.apiRunWarmup(w, r)
 	case path == "/prompt-filter" && r.Method == "GET":
 		h.apiGetPromptFilter(w, r)
 	case path == "/prompt-filter" && r.Method == "POST":
@@ -2321,6 +2906,7 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 		if a.AuthMethod == "external_idp" {
 			displayProvider = "AzureAD"
 		}
+		kind, _ := config.ProviderForAccount(&a)
 
 		result[i] = map[string]interface{}{
 			"id":                a.ID,
@@ -2329,15 +2915,21 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 			"nickname":          a.Nickname,
 			"authMethod":        a.AuthMethod,
 			"provider":          displayProvider,
+			"providerKind":      string(kind),
 			"region":            a.Region,
 			"enabled":           a.Enabled,
 			"banStatus":         a.BanStatus,
 			"banReason":         a.BanReason,
 			"banTime":           a.BanTime,
 			"expiresAt":         a.ExpiresAt,
-			"hasToken":          a.AccessToken != "",
+			"hasToken":          hasCredential(&a),
+			"baseUrl":           a.BaseURL,
+			"compatProtocol":    a.CompatProtocol,
+			"hasCompatKey":      a.CompatAPIKey != "",
 			"machineId":         a.MachineId,
 			"weight":            a.Weight,
+			"probeModel":        a.ProbeModel,
+			"extraModels":       a.ExtraModels,
 			"overageStatus":     a.OverageStatus,
 			"overageCapability": a.OverageCapability,
 			"overageCap":        a.OverageCap,
@@ -2365,6 +2957,9 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 			"totalTokens":       stats.TotalTokens,
 			"totalCredits":      stats.TotalCredits,
 			"lastUsed":          stats.LastUsed,
+			"warmupStatus":      a.WarmupStatus,
+			"warmupError":       a.WarmupError,
+			"lastWarmup":        a.LastWarmup,
 		}
 	}
 	json.NewEncoder(w).Encode(result)
@@ -2384,6 +2979,11 @@ func (h *Handler) apiAddAccount(w http.ResponseWriter, r *http.Request) {
 	if account.Region == "" {
 		account.Region = "us-east-1"
 	}
+	if msg := normalizeCompatAccount(&account); msg != "" {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": msg})
+		return
+	}
 
 	if err := config.AddAccount(account); err != nil {
 		w.WriteHeader(500)
@@ -2393,7 +2993,7 @@ func (h *Handler) apiAddAccount(w http.ResponseWriter, r *http.Request) {
 
 	h.pool.Reload()
 	// 新账号若已启用且有 token，立即拉取并缓存模型列表
-	if account.Enabled && account.AccessToken != "" {
+	if account.Enabled && hasCredential(&account) {
 		go func(acc config.Account) {
 			if err := h.fetchAndCacheAccountModels(&acc); err != nil {
 				logger.Warnf("[ModelsCache] Auto-refresh failed for new account %s: %v", acc.Email, err)
@@ -2450,6 +3050,17 @@ func (h *Handler) apiUpdateAccount(w http.ResponseWriter, r *http.Request, id st
 	if v, ok := updates["weight"].(float64); ok {
 		existing.Weight = int(v)
 	}
+	if v, ok := updates["probeModel"].(string); ok {
+		existing.ProbeModel = strings.TrimSpace(v)
+	}
+	if v, ok := updates["extraModels"].([]interface{}); ok {
+		existing.ExtraModels = existing.ExtraModels[:0:0]
+		for _, item := range v {
+			if id, ok := item.(string); ok && strings.TrimSpace(id) != "" {
+				existing.ExtraModels = append(existing.ExtraModels, strings.TrimSpace(id))
+			}
+		}
+	}
 	if v, ok := updates["proxyURL"].(string); ok {
 		if v != "" && !strings.HasPrefix(v, "http://") && !strings.HasPrefix(v, "https://") && !strings.HasPrefix(v, "socks5://") && !strings.HasPrefix(v, "socks5h://") {
 			http.Error(w, `{"error":"invalid proxyURL"}`, http.StatusBadRequest)
@@ -2476,6 +3087,17 @@ func (h *Handler) apiUpdateAccount(w http.ResponseWriter, r *http.Request, id st
 	if v, ok := updates["relaySecret"].(string); ok && v != "" {
 		existing.RelaySecret = v
 	}
+	if v, ok := updates["baseUrl"].(string); ok {
+		existing.BaseURL = strings.TrimRight(strings.TrimSpace(v), "/")
+	}
+	if v, ok := updates["compatApiKey"].(string); ok && strings.TrimSpace(v) != "" {
+		existing.CompatAPIKey = strings.TrimSpace(v)
+	}
+	if msg := normalizeCompatAccount(existing); msg != "" {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": msg})
+		return
+	}
 
 	if err := config.UpdateAccount(id, *existing); err != nil {
 		w.WriteHeader(500)
@@ -2485,7 +3107,7 @@ func (h *Handler) apiUpdateAccount(w http.ResponseWriter, r *http.Request, id st
 
 	h.pool.Reload()
 	// 账号从禁用→启用时，自动拉取并缓存模型列表
-	if !oldEnabled && existing.Enabled && existing.AccessToken != "" {
+	if !oldEnabled && existing.Enabled && hasCredential(existing) {
 		go func(acc config.Account) {
 			if err := h.fetchAndCacheAccountModels(&acc); err != nil {
 				logger.Warnf("[ModelsCache] Auto-refresh failed for re-enabled account %s: %v", acc.Email, err)
@@ -2613,7 +3235,7 @@ func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 		for _, a := range accounts {
 			if idSet[a.ID] {
 				// 记录本次从禁用→启用、且有 token 的账号
-				if enabled && !a.Enabled && a.AccessToken != "" {
+				if enabled && !a.Enabled && hasCredential(&a) {
 					toRefreshModels = append(toRefreshModels, a)
 				}
 				a.Enabled = enabled
@@ -2666,6 +3288,9 @@ func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 						account.ProfileArn = profileArn
 						config.UpdateAccountProfileArn(id, profileArn)
 					}
+					if isCodexAccount(account) && account.UserId != "" {
+						config.UpdateAccountUserId(id, account.UserId)
+					}
 					h.pool.UpdateToken(id, newAccess, newRefresh, newExpires)
 				}
 			}
@@ -2675,7 +3300,9 @@ func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 				failCount++
 				continue
 			}
-			config.UpdateAccountInfo(id, *info)
+			if info != nil {
+				config.UpdateAccountInfo(id, *info)
+			}
 			successCount++
 		}
 		h.pool.Reload()
@@ -3047,12 +3674,19 @@ func (h *Handler) apiGetStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
+	warmupProbe, warmupRecover := config.GetWarmupOptions()
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"apiKey":         config.GetApiKey(),
-		"requireApiKey":  config.IsApiKeyRequired(),
-		"port":           config.GetPort(),
-		"host":           config.GetHost(),
-		"allowOverUsage": config.GetAllowOverUsage(),
+		"apiKey":                config.GetApiKey(),
+		"requireApiKey":         config.IsApiKeyRequired(),
+		"port":                  config.GetPort(),
+		"host":                  config.GetHost(),
+		"allowOverUsage":        config.GetAllowOverUsage(),
+		"logLevel":              config.GetLogLevel(),
+		"accountRefreshMinutes": config.GetAccountRefreshMinutes(),
+		"warmupProbe":           warmupProbe,
+		"warmupRecover":         warmupRecover,
+		"testModel":             config.GetTestModel(),
+		"customModelIds":        map[string][]string{"codebuddy": config.GetCustomModelIDs("codebuddy")},
 	})
 }
 
@@ -3101,15 +3735,78 @@ func (h *Handler) apiUpdatePromptFilter(w http.ResponseWriter, r *http.Request) 
 
 func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ApiKey         *string `json:"apiKey,omitempty"`
-		RequireApiKey  *bool   `json:"requireApiKey,omitempty"`
-		Password       string  `json:"password,omitempty"`
-		AllowOverUsage *bool   `json:"allowOverUsage,omitempty"`
+		ApiKey                *string              `json:"apiKey,omitempty"`
+		RequireApiKey         *bool                `json:"requireApiKey,omitempty"`
+		Password              string               `json:"password,omitempty"`
+		AllowOverUsage        *bool                `json:"allowOverUsage,omitempty"`
+		LogLevel              *string              `json:"logLevel,omitempty"`
+		AccountRefreshMinutes *int                 `json:"accountRefreshMinutes,omitempty"`
+		WarmupProbe           *bool                `json:"warmupProbe,omitempty"`
+		WarmupRecover         *bool                `json:"warmupRecover,omitempty"`
+		TestModel             *string              `json:"testModel,omitempty"`
+		CustomModelIDs        *map[string][]string `json:"customModelIds,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
 		return
+	}
+	if req.LogLevel != nil {
+		lvl, ok := logger.ParseLevel(*req.LogLevel)
+		if !ok {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": "logLevel must be debug, info, warn or error"})
+			return
+		}
+		if err := config.UpdateLogLevel(*req.LogLevel); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		logger.SetLevel(lvl)
+	}
+	if req.TestModel != nil {
+		if err := config.UpdateTestModel(*req.TestModel); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	if req.CustomModelIDs != nil {
+		for provider, ids := range *req.CustomModelIDs {
+			if err := config.UpdateCustomModelIDs(provider, ids); err != nil {
+				w.WriteHeader(500)
+				json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				return
+			}
+		}
+		h.pool.Reload()
+	}
+	if req.WarmupProbe != nil || req.WarmupRecover != nil {
+		probe, recover := config.GetWarmupOptions()
+		if req.WarmupProbe != nil {
+			probe = *req.WarmupProbe
+		}
+		if req.WarmupRecover != nil {
+			recover = *req.WarmupRecover
+		}
+		if err := config.UpdateWarmupOptions(probe, recover); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	if req.AccountRefreshMinutes != nil {
+		if *req.AccountRefreshMinutes < 0 || *req.AccountRefreshMinutes > 1440 {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": "accountRefreshMinutes must be between 0 (default) and 1440"})
+			return
+		}
+		if err := config.UpdateAccountRefreshMinutes(*req.AccountRefreshMinutes); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
 	}
 
 	if err := config.UpdateSettingsPatch(req.ApiKey, req.RequireApiKey, req.Password); err != nil {
@@ -3165,6 +3862,14 @@ func (h *Handler) apiClearLogs(w http.ResponseWriter, r *http.Request) {
 	h.requestLogsMu.Lock()
 	h.requestLogs = h.requestLogs[:0]
 	h.requestLogsMu.Unlock()
+	if rs := config.RequestLogs(); rs != nil {
+		if err := rs.Clear(); err != nil {
+			logger.Warnf("request log clear failed: %v", err)
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
 
@@ -3202,7 +3907,7 @@ func (h *Handler) apiTestAccount(w http.ResponseWriter, r *http.Request, id stri
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.Model == "" {
-		req.Model = "claude-sonnet-4"
+		req.Model = probeModelFor(account)
 	}
 
 	// Build a minimal chat payload
@@ -3222,16 +3927,16 @@ func (h *Handler) apiTestAccount(w http.ResponseWriter, r *http.Request, id stri
 		Stream:    false,
 	}
 	var content string
-	callback := &KiroStreamCallback{
+	callback := &StreamCallback{
 		OnText:         func(text string, isThinking bool) { content += text },
-		OnToolUse:      func(tu KiroToolUse) {},
+		OnToolUse:      func(tu ToolUse) {},
 		OnComplete:     func(inTok, outTok int) {},
 		OnError:        func(err error) {},
 		OnCredits:      func(c float64) {},
 		OnContextUsage: func(pct float64) {},
 	}
 
-	err := CallOpenAIUpstreamAPI(account, openaiReq, thinking, callback)
+	err := callUpstreamFromOpenAI(account, openaiReq, thinking, callback)
 	if err != nil {
 		w.WriteHeader(500)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -3282,11 +3987,19 @@ func (h *Handler) apiRefreshAccount(w http.ResponseWriter, r *http.Request, id s
 			account.ProfileArn = profileArn
 			config.UpdateAccountProfileArn(id, profileArn)
 		}
+		if isCodexAccount(account) && account.UserId != "" {
+			config.UpdateAccountUserId(id, account.UserId)
+		}
 		return nil
 	}
 
-	// 检查 token 是否快过期，先刷新
-	if account.ExpiresAt > 0 && time.Now().Unix() > account.ExpiresAt-tokenRefreshSkewSeconds {
+	var opts struct {
+		ForceToken bool `json:"forceToken"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&opts)
+
+	// 检查 token 是否快过期，先刷新（或操作者要求强制刷新）
+	if opts.ForceToken || (account.ExpiresAt > 0 && time.Now().Unix() > account.ExpiresAt-tokenRefreshSkewSeconds) {
 		if err := refreshTokenIfNeeded(); err != nil {
 			w.WriteHeader(500)
 			json.NewEncoder(w).Encode(map[string]string{"error": "Token refresh failed: " + err.Error()})
@@ -3334,11 +4047,12 @@ func (h *Handler) apiRefreshAccount(w http.ResponseWriter, r *http.Request, id s
 		}
 	}
 
-	// 保存到配置
-	if err := config.UpdateAccountInfo(id, *info); err != nil {
-		w.WriteHeader(500)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-		return
+	if info != nil {
+		if err := config.UpdateAccountInfo(id, *info); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -3477,6 +4191,15 @@ func (h *Handler) apiGetAccountModels(w http.ResponseWriter, r *http.Request, id
 // apiGetAccountModelsCached 返回账号已缓存的模型列表（不实时拉取）
 func (h *Handler) apiGetAccountModelsCached(w http.ResponseWriter, r *http.Request, id string) {
 	models := h.pool.GetModelList(id)
+	// Stable, readable order: subscription-covered entries (cline-pass/…)
+	// first, then alphabetical.
+	sort.SliceStable(models, func(i, j int) bool {
+		pi, pj := strings.HasPrefix(models[i], "cline-pass/"), strings.HasPrefix(models[j], "cline-pass/")
+		if pi != pj {
+			return pi
+		}
+		return models[i] < models[j]
+	})
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"models":  models,
@@ -3490,10 +4213,26 @@ func (h *Handler) serveAdminPage(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, "web/index.html")
 }
 
+// serveStaticFile serves the built dashboard from ./web. Hashed Vite assets
+// under /admin/assets/ are immutable; any other unknown path falls back to
+// index.html so client-side routes (/admin/accounts, ...) load on refresh.
 func (h *Handler) serveStaticFile(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
-	path := strings.TrimPrefix(r.URL.Path, "/admin/")
-	http.ServeFile(w, r, "web/"+path)
+	rel := strings.TrimPrefix(r.URL.Path, "/admin/")
+	if strings.Contains(rel, "..") {
+		http.Error(w, "Not Found", 404)
+		return
+	}
+	fsPath := filepath.Join("web", filepath.FromSlash(rel))
+	if info, err := os.Stat(fsPath); err != nil || info.IsDir() {
+		h.serveAdminPage(w, r)
+		return
+	}
+	if strings.HasPrefix(rel, "assets/") {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "no-store")
+	}
+	http.ServeFile(w, r, fsPath)
 }
 
 // apiGetThinkingConfig 获取 thinking 配置
@@ -3583,7 +4322,7 @@ func (h *Handler) apiUpdateEndpointConfig(w http.ResponseWriter, r *http.Request
 
 // applyProxyConfig 将代理配置应用到所有出站 HTTP 客户端（Kiro API + auth 模块）
 func applyProxyConfig(proxyURL string) {
-	InitKiroHttpClient(proxyURL)
+	initHTTPClients(proxyURL)
 	auth.InitHttpClient(proxyURL)
 }
 
@@ -3591,8 +4330,9 @@ func applyProxyConfig(proxyURL string) {
 // the egress relay is the selected mode. The two are mutually exclusive.
 func (h *Handler) apiGetProxy(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"proxyURL": config.GetProxyURL(),
-		"useRelay": config.IsRelayEnabled(),
+		"proxyURL":  config.GetProxyURL(),
+		"useRelay":  config.IsRelayEnabled(),
+		"proxyPool": config.GetProxyPool(),
 	})
 }
 
@@ -3602,13 +4342,34 @@ func (h *Handler) apiGetProxy(w http.ResponseWriter, r *http.Request) {
 // mutually exclusive outbound modes.
 func (h *Handler) apiUpdateProxy(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ProxyURL string `json:"proxyURL"`
-		UseRelay bool   `json:"useRelay"`
+		ProxyURL  string    `json:"proxyURL"`
+		UseRelay  bool      `json:"useRelay"`
+		ProxyPool *[]string `json:"proxyPool,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
 		return
+	}
+	if req.ProxyPool != nil {
+		pool := make([]string, 0, len(*req.ProxyPool))
+		for _, u := range *req.ProxyPool {
+			u = strings.TrimSpace(u)
+			if u == "" {
+				continue
+			}
+			if !isSupportedProxyURL(u) {
+				w.WriteHeader(400)
+				json.NewEncoder(w).Encode(map[string]string{"error": "proxy pool entry must start with http://, https://, socks5://, or socks5h://: " + u})
+				return
+			}
+			pool = append(pool, u)
+		}
+		if err := config.UpdateProxyPool(pool); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
 	}
 
 	if req.UseRelay {
@@ -3632,10 +4393,7 @@ func (h *Handler) apiUpdateProxy(w http.ResponseWriter, r *http.Request) {
 
 	// Non-relay mode: validate the proxy URL (empty = Direct).
 	if req.ProxyURL != "" {
-		if !strings.HasPrefix(req.ProxyURL, "http://") &&
-			!strings.HasPrefix(req.ProxyURL, "https://") &&
-			!strings.HasPrefix(req.ProxyURL, "socks5://") &&
-			!strings.HasPrefix(req.ProxyURL, "socks5h://") {
+		if !isSupportedProxyURL(req.ProxyURL) {
 			w.WriteHeader(400)
 			json.NewEncoder(w).Encode(map[string]string{"error": "proxyURL must start with http://, https://, socks5://, or socks5h://"})
 			return
@@ -3653,6 +4411,11 @@ func (h *Handler) apiUpdateProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	applyProxyConfig(req.ProxyURL)
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+}
+
+func isSupportedProxyURL(u string) bool {
+	return strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") ||
+		strings.HasPrefix(u, "socks5://") || strings.HasPrefix(u, "socks5h://")
 }
 
 // apiGetRelay returns the egress relay config. The secret is not echoed back in
@@ -3988,4 +4751,145 @@ func clampInt(v, min, max int) int {
 		return max
 	}
 	return v
+}
+
+// keyAllowsModel applies the API key's model allowlist. Unknown / absent keys
+// (auth disabled) are unrestricted.
+func keyAllowsModel(apiKeyID, model string) bool {
+	if apiKeyID == "" {
+		return true
+	}
+	return config.GetApiKeyEntry(apiKeyID).AllowsModel(model)
+}
+
+// hasCredential reports whether the account can talk to its upstream at all:
+// an OAuth/API access token for the built-in providers, or a vendor API key
+// for the OpenAI/Anthropic-compatible ones.
+func hasCredential(a *config.Account) bool {
+	return a != nil && (a.AccessToken != "" || a.CompatAPIKey != "")
+}
+
+// normalizeCompatAccount validates and tidies an OpenAI/Anthropic-compatible
+// account. Returns a user-facing error message, or "" when the account is
+// not a compat account or is valid.
+func normalizeCompatAccount(a *config.Account) string {
+	kind, err := config.ProviderForAccount(a)
+	if err != nil || (kind != config.ProviderOpenAICompat && kind != config.ProviderAnthropicCompat) {
+		return ""
+	}
+	a.ProviderKind = string(kind)
+	a.CompatProtocol = string(kind)
+	a.BaseURL = strings.TrimRight(strings.TrimSpace(a.BaseURL), "/")
+	a.CompatAPIKey = strings.TrimSpace(a.CompatAPIKey)
+	if !strings.HasPrefix(a.BaseURL, "http://") && !strings.HasPrefix(a.BaseURL, "https://") {
+		return "baseUrl must start with http:// or https://"
+	}
+	if a.CompatAPIKey == "" {
+		return "compatApiKey is required"
+	}
+	if strings.TrimSpace(a.Email) == "" {
+		// Email is the display identity everywhere; derive one from the host.
+		host := strings.TrimPrefix(strings.TrimPrefix(a.BaseURL, "https://"), "http://")
+		if i := strings.IndexAny(host, "/:"); i >= 0 {
+			host = host[:i]
+		}
+		a.Email = host
+	}
+	if strings.TrimSpace(a.Provider) == "" {
+		a.Provider = string(kind)
+	}
+	return ""
+}
+
+// handleSystemOne proxies Jev "System One" decision requests
+// ({model, state, questions}) to an OpenCode Zen account. Jev is not a chat
+// model, so it has its own passthrough instead of the chat translators.
+func (h *Handler) handleSystemOne(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method Not Allowed", 405)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		h.sendOpenAIError(w, 400, "invalid_request_error", "Failed to read request body")
+		return
+	}
+	var req struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(body, &req) != nil {
+		h.sendOpenAIError(w, 400, "invalid_request_error", "Invalid JSON")
+		return
+	}
+	if req.Model == "" {
+		req.Model = "jev-1.13-free"
+	}
+	if !keyAllowsModel(apiKeyIDFromContext(r.Context()), req.Model) {
+		h.sendOpenAIError(w, 403, "permission_error", "model "+req.Model+" is not enabled for this API key")
+		return
+	}
+	start := time.Now()
+	excluded := map[string]bool{}
+	var lastErr error
+	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
+		account := h.pickProviderAccount(config.ProviderOpenCodeZen, excluded)
+		if account == nil {
+			break
+		}
+		status, resp, err := opencodezen.CallSystemOne(account, body)
+		if err != nil {
+			lastErr = err
+			excluded[account.ID] = true
+			h.handleModelFailure(account, req.Model, err)
+			if status == 400 || status == 422 {
+				// Client-side problem (bad questions/state): no point rotating.
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				w.WriteHeader(status)
+				w.Write(resp)
+				h.recordFailureWithDetails(w, "systemone", req.Model, account.ID, err)
+				return
+			}
+			continue
+		}
+		var usage struct {
+			Usage struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+		}
+		_ = json.Unmarshal(resp, &usage)
+		tokens := usage.Usage.InputTokens + usage.Usage.OutputTokens
+		h.recordSuccessForApiKey(apiKeyIDFromContext(r.Context()), usage.Usage.InputTokens, usage.Usage.OutputTokens, 0)
+		h.pool.RecordSuccess(account.ID)
+		h.pool.UpdateStats(account.ID, tokens, 0)
+		h.recordSuccessLog(w, "systemone", req.Model, account.ID, tokens, 0, time.Since(start).Milliseconds(), requestPerf{})
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Write(resp)
+		return
+	}
+	if lastErr == nil {
+		h.sendOpenAIError(w, 503, "server_error", "No available OpenCode Zen accounts")
+		return
+	}
+	h.recordFailureWithDetails(w, "systemone", req.Model, "", lastErr)
+	h.sendOpenAIError(w, 502, "server_error", lastErr.Error())
+}
+
+// pickProviderAccount returns a usable account of the given provider,
+// rotating by request count so several accounts share the load.
+func (h *Handler) pickProviderAccount(kind config.AccountProvider, excluded map[string]bool) *config.Account {
+	var best *config.Account
+	for _, a := range h.pool.GetAllAccounts() {
+		a := a
+		if excluded[a.ID] || !a.Enabled || !hasCredential(&a) || (a.BanStatus != "" && a.BanStatus != "ACTIVE") {
+			continue
+		}
+		if p, err := config.ProviderForAccount(&a); err != nil || p != kind {
+			continue
+		}
+		if best == nil || a.RequestCount < best.RequestCount {
+			best = &a
+		}
+	}
+	return best
 }

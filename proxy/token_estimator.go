@@ -66,7 +66,7 @@ func estimateClaudeRequestInputTokens(req *ClaudeRequest) int {
 	return total
 }
 
-func estimateClaudeOutputTokens(content, thinkingContent string, toolUses []KiroToolUse) int {
+func estimateClaudeOutputTokens(content, thinkingContent string, toolUses []ToolUse) int {
 	total := estimateApproxTokens(content)
 	total += estimateApproxTokens(thinkingContent)
 
@@ -191,6 +191,6 @@ func estimateOpenAIContentTokens(content interface{}) int {
 	}
 }
 
-func estimateOpenAIOutputTokens(content, reasoningContent string, toolUses []KiroToolUse) int {
+func estimateOpenAIOutputTokens(content, reasoningContent string, toolUses []ToolUse) int {
 	return estimateClaudeOutputTokens(content, reasoningContent, toolUses)
 }

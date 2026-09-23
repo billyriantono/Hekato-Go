@@ -3,8 +3,9 @@ package proxy
 import (
 	"encoding/json"
 	"fmt"
+	"hekato-go/config"
+	"hekato-go/providers"
 	"io"
-	"kiro-go/config"
 	"net/http"
 	"strings"
 	"time"
@@ -94,7 +95,7 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 		Model:    req.Model,
 		Messages: finalMessages,
 		Stream:   req.Stream,
-		Tools:    req.Tools,
+		Tools:    providers.ToolsToOpenAI(req.Tools),
 	}
 	if req.Temperature != nil {
 		openaiReq.Temperature = *req.Temperature
@@ -110,36 +111,50 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 	estimatedInputTokens := estimateOpenAIRequestInputTokens(openaiReq)
 
 	apiKeyID := apiKeyIDFromContext(r.Context())
+	if !keyAllowsModel(apiKeyID, actualModel) {
+		h.sendOpenAIError(w, 403, "permission_error", "model "+actualModel+" is not enabled for this API key")
+		return
+	}
 	respID := generateResponseID()
+	affinityKey := openAIAffinityKey(openaiReq)
+	if isAutoModel(actualModel) {
+		markRequestedModel(w, actualModel)
+		var autoThink bool
+		actualModel, autoThink = h.resolveAutoModel(w, "responses", actualModel, openAIRouteSignals(openaiReq, estimatedInputTokens, thinking), &affinityKey, capResponses)
+		thinking = thinking || autoThink
+		openaiReq.Model = actualModel
+	}
 
 	if req.Stream {
 		h.handleResponsesStream(w, openaiReq, actualModel, thinking, estimatedInputTokens,
-			apiKeyID, respID, &req, storedInputCopy, storeResponse)
+			apiKeyID, respID, &req, storedInputCopy, storeResponse, affinityKey)
 		return
 	}
 
 	h.handleResponsesNonStream(w, openaiReq, actualModel, thinking, estimatedInputTokens,
-		apiKeyID, respID, &req, storedInputCopy, storeResponse)
+		apiKeyID, respID, &req, storedInputCopy, storeResponse, affinityKey)
 }
 
 func (h *Handler) handleResponsesNonStream(
 	w http.ResponseWriter, openaiReq *OpenAIRequest, model string, thinking bool,
 	estimatedInputTokens int, apiKeyID, respID string,
 	req *ResponsesRequest, storedInput json.RawMessage, storeResponse bool,
+
+	affinityKey string,
 ) {
 	excluded := make(map[string]bool)
 	var lastErr error
 	reqStart := time.Now()
-
+	perf := newPerfTracker(reqStart)
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
-		account := h.pool.GetNextForModelExcluding(model, excluded, capabilityFilter(capResponses))
+		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capResponses))
 		if account == nil {
 			break
 		}
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
 			excluded[account.ID] = true
-			h.handleAccountFailure(account, err)
+			h.handleModelFailure(account, model, err)
 			continue
 		}
 
@@ -147,51 +162,60 @@ func (h *Handler) handleResponsesNonStream(
 		if adapterErr != nil {
 			lastErr = adapterErr
 			excluded[account.ID] = true
-			h.handleAccountFailure(account, adapterErr)
+			h.handleModelFailure(account, model, adapterErr)
 			continue
 		}
 		// Providers with a native Responses transport bypass the chat converter.
-		if adapter.nativeResponses != nil {
-			if providerErr := adapter.nativeResponses(w, nil, account, req); providerErr != nil {
+		if adapter.responses != nil {
+			if providerErr := adapter.responses(w, nil, account, req); providerErr != nil {
 				lastErr = providerErr
 				excluded[account.ID] = true
-				h.handleAccountFailure(account, providerErr)
+				h.handleModelFailure(account, model, providerErr)
 				continue
 			}
 			h.recordSuccessForApiKey(apiKeyID, 0, 0, 0)
 			h.pool.RecordSuccess(account.ID)
 			h.pool.UpdateStats(account.ID, 0, 0)
-			h.recordSuccessLog("responses", model, account.ID, 0, 0, time.Since(reqStart).Milliseconds())
+			h.recordSuccessLog(w, "responses", model, account.ID, 0, 0, time.Since(reqStart).Milliseconds(), perf.finalise())
 			return
 		}
 
 		var content, reasoningContent string
-		var toolUses []KiroToolUse
+		var toolUses []ToolUse
 		var inputTokens, outputTokens int
 		var credits float64
 		var realInputTokens int
 
-		callback := &KiroStreamCallback{
+		callback := &StreamCallback{
 			OnText: func(text string, isThinking bool) {
+				perf.markFirstByte()
+				perf.addTokens(text)
 				if isThinking {
 					reasoningContent += text
 				} else {
 					content += text
 				}
 			},
-			OnToolUse:  func(tu KiroToolUse) { toolUses = append(toolUses, tu) },
-			OnComplete: func(inTok, outTok int) { inputTokens = inTok; outputTokens = outTok },
-			OnCredits:  func(c float64) { credits = c },
+			OnToolUse: func(tu ToolUse) {
+				perf.markFirstByte()
+				toolUses = append(toolUses, tu)
+			},
+			OnComplete: func(inTok, outTok int) {
+				perf.setFinalTokens(outTok)
+				inputTokens = inTok
+				outputTokens = outTok
+			},
+			OnCredits: func(c float64) { credits = c },
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
 			},
 		}
 
-		err := CallOpenAIUpstreamAPI(account, openaiReq, thinking, callback)
+		err := callUpstreamFromOpenAI(account, openaiReq, thinking, callback)
 		if err != nil {
 			lastErr = err
 			excluded[account.ID] = true
-			h.handleAccountFailure(account, err)
+			h.handleModelFailure(account, model, err)
 			continue
 		}
 
@@ -199,7 +223,6 @@ func (h *Handler) handleResponsesNonStream(
 		if !thinking {
 			reasoningContent = ""
 		}
-
 		if realInputTokens > 0 {
 			inputTokens = realInputTokens
 		} else if inputTokens <= 0 {
@@ -210,7 +233,6 @@ func (h *Handler) handleResponsesNonStream(
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLog("responses", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
 
 		respObj := buildResponsesObject(respID, model, finalContent, toolUses, inputTokens, outputTokens, req)
 		respObj.StoredInput = storedInput
@@ -231,12 +253,12 @@ func (h *Handler) handleResponsesNonStream(
 		h.sendOpenAIError(w, 503, "server_error", "No available accounts")
 		return
 	}
-	h.recordFailureWithDetails("responses", model, "", lastErr)
+	h.recordFailureWithDetails(w, "responses", model, "", lastErr)
 	h.sendOpenAIError(w, 500, "server_error", lastErr.Error())
 }
 
 func buildResponsesObject(
-	id, model, content string, toolUses []KiroToolUse,
+	id, model, content string, toolUses []ToolUse,
 	inputTokens, outputTokens int, req *ResponsesRequest,
 ) *ResponsesObject {
 	output := make([]ResponseOutputItem, 0, 1+len(toolUses))
@@ -296,6 +318,8 @@ func (h *Handler) handleResponsesStream(
 	w http.ResponseWriter, openaiReq *OpenAIRequest, model string, thinking bool,
 	estimatedInputTokens int, apiKeyID, respID string,
 	req *ResponsesRequest, storedInput json.RawMessage, storeResponse bool,
+
+	affinityKey string,
 ) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -337,16 +361,17 @@ func (h *Handler) handleResponsesStream(
 	var lastErr error
 	responseStarted := false
 	reqStart := time.Now()
+	perf := newPerfTracker(reqStart)
 
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
-		account := h.pool.GetNextForModelExcluding(model, excluded, capabilityFilter(capResponses))
+		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capResponses))
 		if account == nil {
 			break
 		}
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
 			excluded[account.ID] = true
-			h.handleAccountFailure(account, err)
+			h.handleModelFailure(account, model, err)
 			continue
 		}
 
@@ -354,21 +379,21 @@ func (h *Handler) handleResponsesStream(
 		if adapterErr != nil {
 			lastErr = adapterErr
 			excluded[account.ID] = true
-			h.handleAccountFailure(account, adapterErr)
+			h.handleModelFailure(account, model, adapterErr)
 			continue
 		}
 		// Providers with a native Responses transport pass SSE through directly.
-		if adapter.nativeResponses != nil {
-			if providerErr := adapter.nativeResponses(w, flusher, account, req); providerErr != nil {
+		if adapter.responses != nil {
+			if providerErr := adapter.responses(w, flusher, account, req); providerErr != nil {
 				lastErr = providerErr
 				excluded[account.ID] = true
-				h.handleAccountFailure(account, providerErr)
+				h.handleModelFailure(account, model, providerErr)
 				continue
 			}
 			h.recordSuccessForApiKey(apiKeyID, 0, 0, 0)
 			h.pool.RecordSuccess(account.ID)
 			h.pool.UpdateStats(account.ID, 0, 0)
-			h.recordSuccessLog("responses", model, account.ID, 0, 0, time.Since(reqStart).Milliseconds())
+			h.recordSuccessLog(w, "responses", model, account.ID, 0, 0, time.Since(reqStart).Milliseconds(), perf.finalise())
 			return
 		}
 
@@ -380,7 +405,7 @@ func (h *Handler) handleResponsesStream(
 		var (
 			fullText        strings.Builder
 			reasoningText   strings.Builder
-			toolUses        []KiroToolUse
+			toolUses        []ToolUse
 			inputTokens     int
 			outputTokens    int
 			credits         float64
@@ -420,11 +445,13 @@ func (h *Handler) handleResponsesStream(
 			})
 		}
 
-		callback := &KiroStreamCallback{
+		callback := &StreamCallback{
 			OnText: func(text string, isThinking bool) {
 				if text == "" {
 					return
 				}
+				perf.markFirstByte()
+				perf.addTokens(text)
 				if isThinking {
 					reasoningText.WriteString(text)
 					return
@@ -440,7 +467,8 @@ func (h *Handler) handleResponsesStream(
 				})
 				responseStarted = true
 			},
-			OnToolUse: func(tu KiroToolUse) {
+			OnToolUse: func(tu ToolUse) {
+				perf.markFirstByte()
 				if messageStarted {
 					send("response.content_part.done", map[string]interface{}{
 						"type":          "response.content_part.done",
@@ -506,19 +534,23 @@ func (h *Handler) handleResponsesStream(
 				outputIndex++
 				responseStarted = true
 			},
-			OnComplete: func(inTok, outTok int) { inputTokens = inTok; outputTokens = outTok },
-			OnCredits:  func(c float64) { credits = c },
+			OnComplete: func(inTok, outTok int) {
+				inputTokens = inTok
+				outputTokens = outTok
+				perf.setFinalTokens(outTok)
+			},
+			OnCredits: func(c float64) { credits = c },
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
 			},
 		}
 
-		err := CallOpenAIUpstreamAPI(account, openaiReq, thinking, callback)
+		err := callUpstreamFromOpenAI(account, openaiReq, thinking, callback)
 		if err != nil {
 			if !responseStarted {
 				lastErr = err
 				excluded[account.ID] = true
-				h.handleAccountFailure(account, err)
+				h.handleModelFailure(account, model, err)
 				continue
 			}
 			send("response.failed", map[string]interface{}{
@@ -532,7 +564,7 @@ func (h *Handler) handleResponsesStream(
 					},
 				},
 			})
-			h.recordFailureWithDetails("responses", model, account.ID, err)
+			h.recordFailureWithDetails(w, "responses", model, account.ID, err)
 			return
 		}
 
@@ -579,7 +611,7 @@ func (h *Handler) handleResponsesStream(
 		h.recordSuccessForApiKey(apiKeyID, inputTokens, outputTokens, credits)
 		h.pool.RecordSuccess(account.ID)
 		h.pool.UpdateStats(account.ID, inputTokens+outputTokens, credits)
-		h.recordSuccessLog("responses", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds())
+		h.recordSuccessLog(w, "responses", model, account.ID, inputTokens+outputTokens, credits, time.Since(reqStart).Milliseconds(), perf.finalise())
 
 		respObj := buildResponsesObject(respID, model, finalContent, toolUses, inputTokens, outputTokens, req)
 		respObj.CreatedAt = createdAt
@@ -615,7 +647,7 @@ func (h *Handler) handleResponsesStream(
 		})
 		return
 	}
-	h.recordFailureWithDetails("responses", model, "", lastErr)
+	h.recordFailureWithDetails(w, "responses", model, "", lastErr)
 	send("response.failed", map[string]interface{}{
 		"type": "response.failed",
 		"response": map[string]interface{}{

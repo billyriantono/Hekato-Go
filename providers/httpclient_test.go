@@ -1,8 +1,8 @@
 package providers
 
 import (
+	"hekato-go/config"
 	"io"
-	"kiro-go/config"
 	"net/http"
 	"net/http/httptest"
 	"net/url"

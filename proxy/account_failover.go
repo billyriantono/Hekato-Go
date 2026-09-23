@@ -2,8 +2,9 @@ package proxy
 
 import (
 	"errors"
-	"kiro-go/config"
-	"kiro-go/logger"
+	"hekato-go/config"
+	"hekato-go/logger"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -44,6 +45,29 @@ func isAuthErrorMessage(msg string) bool {
 		strings.Contains(msg, "invalid_grant") ||
 		strings.Contains(msg, "access token expired") ||
 		strings.Contains(msg, "refresh token expired")
+}
+
+// capResetPattern matches "resets in 13d 9h", "resets in 5h 20m", "resets in 45m".
+var capResetPattern = regexp.MustCompile(`resets? in\s+(?:(\d+)d)?\s*(?:(\d+)h)?\s*(?:(\d+)m)?`)
+
+// capResetFromMessage parses a "resets in Xd Yh Zm" hint into an absolute time.
+func capResetFromMessage(msg string) (time.Time, bool) {
+	m := capResetPattern.FindStringSubmatch(strings.ToLower(msg))
+	if m == nil || (m[1] == "" && m[2] == "" && m[3] == "") {
+		return time.Time{}, false
+	}
+	atoi := func(s string) int {
+		n := 0
+		for _, c := range s {
+			n = n*10 + int(c-'0')
+		}
+		return n
+	}
+	d := time.Duration(atoi(m[1]))*24*time.Hour + time.Duration(atoi(m[2]))*time.Hour + time.Duration(atoi(m[3]))*time.Minute
+	if d <= 0 {
+		return time.Time{}, false
+	}
+	return time.Now().Add(d + time.Minute), true
 }
 
 func (h *Handler) disableAccount(account *config.Account, banStatus, banReason string) {
@@ -89,6 +113,17 @@ func (h *Handler) disableAccountOverage(account *config.Account) {
 	h.pool.Reload()
 }
 
+// handleModelFailure records a failed attempt against the (account, model)
+// pair for the auto router's bandit stats, then applies account failover.
+// Every per-attempt failure must flow through here so the learned candidates
+// table reflects real upstream errors, not just requests that exhausted retries.
+func (h *Handler) handleModelFailure(account *config.Account, model string, err error) {
+	if account != nil && err != nil {
+		h.autoRouter.Record(account.ID, model, false, 0)
+	}
+	h.handleAccountFailure(account, err)
+}
+
 func (h *Handler) handleAccountFailure(account *config.Account, err error) {
 	if account == nil || err == nil {
 		return
@@ -110,6 +145,12 @@ func (h *Handler) handleAccountFailure(account *config.Account, err error) {
 		h.pool.RecordError(account.ID, false)
 	case status == 429 || isQuotaErrorMessage(errMsg):
 		h.pool.RecordError(account.ID, true)
+		// Providers that state when the cap lifts ("resets in 13d 9h") get a
+		// cooldown to that moment instead of the generic hour.
+		if until, ok := capResetFromMessage(errMsg); ok {
+			h.pool.SetCooldown(account.ID, until)
+			logger.Warnf("[AccountFailover] %s hit its monthly cap; parked until %s", account.Email, until.Format(time.RFC3339))
+		}
 	case isSuspensionErrorMessage(errMsg):
 		h.disableAccount(account, "BANNED", "AWS temporarily suspended - unusual user activity detected")
 	case isProfileUnavailableErrorMessage(errMsg):

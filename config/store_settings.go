@@ -1,6 +1,10 @@
 package config
 
-import "strconv"
+import (
+	"encoding/json"
+	"strconv"
+	"strings"
+)
 
 // settingsFrom flattens the scalar server settings + global stats of a Config
 // into the key/value rows persisted in the settings table. Entity collections
@@ -23,10 +27,17 @@ func settingsFrom(c *Config) map[string]string {
 		"claude_thinking_format":  c.ClaudeThinkingFormat,
 		"preferred_endpoint":      c.PreferredEndpoint,
 		"proxy_url":               c.ProxyURL,
+		"proxy_pool":              strings.Join(c.ProxyPool, "\n"),
 		"relay_enabled":           boolStr(c.RelayEnabled),
 		"relay_url":               c.RelayURL,
 		"relay_secret":            c.RelaySecret,
 		"log_level":               c.LogLevel,
+		"account_refresh_minutes": strconv.Itoa(c.AccountRefreshMinutes),
+		"auto_route":              autoRouteToString(c.AutoRoute),
+		"warmup_probe":            boolStr(c.WarmupProbe),
+		"warmup_recover":          boolStr(c.WarmupRecover),
+		"test_model":              c.TestModel,
+		"custom_model_ids":        customModelIDsToString(c.CustomModelIDs),
 		"allow_over_usage":        boolStr(c.AllowOverUsage),
 		"filter_claude_code":      boolStr(c.FilterClaudeCode),
 		"filter_env_noise":        boolStr(c.FilterEnvNoise),
@@ -59,10 +70,19 @@ func applySettings(c *Config, m map[string]string) {
 	c.ClaudeThinkingFormat = m["claude_thinking_format"]
 	c.PreferredEndpoint = m["preferred_endpoint"]
 	c.ProxyURL = m["proxy_url"]
+	if v := strings.TrimSpace(m["proxy_pool"]); v != "" {
+		c.ProxyPool = strings.Split(v, "\n")
+	}
 	c.RelayEnabled = m["relay_enabled"] == "1"
 	c.RelayURL = m["relay_url"]
 	c.RelaySecret = m["relay_secret"]
 	c.LogLevel = m["log_level"]
+	c.AccountRefreshMinutes = atoiOr(m["account_refresh_minutes"], 0)
+	c.AutoRoute = autoRouteFromString(m["auto_route"])
+	c.WarmupProbe = m["warmup_probe"] == "1"
+	c.WarmupRecover = m["warmup_recover"] == "1"
+	c.TestModel = m["test_model"]
+	c.CustomModelIDs = customModelIDsFromString(m["custom_model_ids"])
 	c.AllowOverUsage = m["allow_over_usage"] == "1"
 	c.FilterClaudeCode = m["filter_claude_code"] == "1"
 	c.FilterEnvNoise = m["filter_env_noise"] == "1"
@@ -93,4 +113,23 @@ func atoiOr(s string, def int) int {
 		return n
 	}
 	return def
+}
+
+func customModelIDsToString(m map[string][]string) string {
+	if len(m) == 0 {
+		return ""
+	}
+	b, _ := json.Marshal(m)
+	return string(b)
+}
+
+func customModelIDsFromString(s string) map[string][]string {
+	if s == "" {
+		return nil
+	}
+	var m map[string][]string
+	if json.Unmarshal([]byte(s), &m) != nil {
+		return nil
+	}
+	return m
 }

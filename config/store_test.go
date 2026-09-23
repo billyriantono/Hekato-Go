@@ -28,6 +28,7 @@ func sampleConfig() *Config {
 		TotalTokens:       12345,
 		TotalCredits:      3.5,
 		Accounts: []Account{{
+			BaseURL: "https://gw.example/v1", CompatAPIKey: "ck-secret", CompatProtocol: "openai_compat",
 			ID:            "acc-1",
 			Email:         "user@corp.com",
 			AuthMethod:    "external_idp",

@@ -1,9 +1,14 @@
 # Build artifacts
 /kiro-go
 /kiro-go.exe
+/hekato-go
+/hekato-go.exe
+/hekato-go-linux-amd64
+/hekato-go-linux-arm64
 *.exe
 *.test
 *.out
+/build/
 
 # Runtime data
 /data/
@@ -22,3 +27,7 @@ Thumbs.db
 # Local backups / scratch
 backup*/
 PR-*.md
+
+# Dashboard toolchain
+dashboard/node_modules
+dashboard/dist

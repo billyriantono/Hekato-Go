@@ -106,6 +106,9 @@ func UpdateApiKey(id string, patch ApiKeyEntry) error {
 	cfg.ApiKeys[idx].Enabled = patch.Enabled
 	cfg.ApiKeys[idx].TokenLimit = patch.TokenLimit
 	cfg.ApiKeys[idx].CreditLimit = patch.CreditLimit
+	cfg.ApiKeys[idx].RPMLimit = patch.RPMLimit
+	cfg.ApiKeys[idx].ConcurrencyLimit = patch.ConcurrencyLimit
+	cfg.ApiKeys[idx].AllowedModels = patch.AllowedModels
 	if patch.Migrated {
 		cfg.ApiKeys[idx].Migrated = true
 	}
@@ -229,4 +232,27 @@ func ApiKeyOverLimit(e ApiKeyEntry) (overToken bool, overCredit bool) {
 		overCredit = true
 	}
 	return
+}
+
+// AllowsModel reports whether the key may request model. Thinking-suffix
+// variants are matched on the base ID by the caller. Empty list = allow all.
+func (k *ApiKeyEntry) AllowsModel(model string) bool {
+	if k == nil || len(k.AllowedModels) == 0 {
+		return true
+	}
+	m := strings.ToLower(strings.TrimSpace(model))
+	for _, a := range k.AllowedModels {
+		a = strings.ToLower(strings.TrimSpace(a))
+		switch {
+		case a == "":
+			continue
+		case strings.HasSuffix(a, "*"):
+			if strings.HasPrefix(m, strings.TrimSuffix(a, "*")) {
+				return true
+			}
+		case a == m:
+			return true
+		}
+	}
+	return false
 }

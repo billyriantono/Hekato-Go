@@ -82,8 +82,8 @@ func TestValidateExternalIdpEndpoint(t *testing.T) {
 		}
 	}
 	invalid := []string{
-		"http://login.microsoftonline.com/x",      // not https
-		"https://evil-microsoftonline.com/x",       // suffix not anchored to a subdomain boundary
+		"http://login.microsoftonline.com/x",        // not https
+		"https://evil-microsoftonline.com/x",        // suffix not anchored to a subdomain boundary
 		"https://login.microsoftonline.com.evil.co", // not an allowed suffix
 		"https://10.0.0.5/x",                        // IP literal
 		"https://accounts.google.com/x",             // not allow-listed
@@ -239,8 +239,8 @@ func TestValidateExternalIdpEndpointAcceptsAllowListed(t *testing.T) {
 // and non-allow-listed hosts.
 func TestValidateExternalIdpEndpointRejectsUnsafe(t *testing.T) {
 	for _, raw := range []string{
-		"http://login.microsoftonline.com/x",  // not https
-		"https://127.0.0.1/oauth/token",       // IP literal
+		"http://login.microsoftonline.com/x",   // not https
+		"https://127.0.0.1/oauth/token",        // IP literal
 		"https://evil.example.com/oauth/token", // not allow-listed
 	} {
 		if err := ValidateExternalIdpEndpoint(raw); err == nil {

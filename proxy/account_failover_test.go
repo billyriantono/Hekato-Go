@@ -1,6 +1,9 @@
 package proxy
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestAccountFailureClassifiers(t *testing.T) {
 	tests := []struct {
@@ -19,5 +22,18 @@ func TestAccountFailureClassifiers(t *testing.T) {
 		if !tc.fn(tc.msg) {
 			t.Fatalf("%s classifier did not match %q", tc.name, tc.msg)
 		}
+	}
+}
+
+func TestCapResetFromMessage(t *testing.T) {
+	until, ok := capResetFromMessage(`Error 429: You have reached your monthly Clinepass limit. The limit resets in 13d 9h, please try again later.`)
+	if !ok {
+		t.Fatal("expected a reset time")
+	}
+	if d := time.Until(until); d < 13*24*time.Hour+9*time.Hour-time.Minute || d > 13*24*time.Hour+9*time.Hour+2*time.Minute {
+		t.Fatalf("unexpected duration %v", d)
+	}
+	if _, ok := capResetFromMessage("quota exhausted"); ok {
+		t.Fatal("no hint must not produce a time")
 	}
 }

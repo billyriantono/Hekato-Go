@@ -189,3 +189,27 @@ func TestRelayGating(t *testing.T) {
 		t.Fatalf("stored relay URL must be retained, got %q", url)
 	}
 }
+
+func TestTestModelPersistsAcrossReopen(t *testing.T) {
+	resetGlobals(t)
+	defer resetGlobals(t)
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := Init(path); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := UpdateTestModel("  claude-haiku-4.5  "); err != nil {
+		t.Fatalf("UpdateTestModel: %v", err)
+	}
+	if got := GetTestModel(); got != "claude-haiku-4.5" {
+		t.Fatalf("test model = %q", got)
+	}
+
+	resetGlobals(t)
+	if err := Init(path); err != nil {
+		t.Fatalf("re-Init: %v", err)
+	}
+	if got := GetTestModel(); got != "claude-haiku-4.5" {
+		t.Fatalf("persisted test model = %q", got)
+	}
+}

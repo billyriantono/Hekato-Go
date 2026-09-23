@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"hekato-go/config"
 	"io"
-	"kiro-go/config"
 	"net/http"
 	"net/url"
 	"strings"
@@ -36,10 +36,33 @@ func RefreshToken(account *config.Account) (string, string, int64, string, error
 		}
 		return accessToken, refreshToken, time.Now().Unix() + int64(expiresIn), "", nil
 	}
-	if provider != config.ProviderKiro {
-		return "", "", 0, "", fmt.Errorf("provider %s has no OAuth refresh flow", provider)
+	if provider == config.ProviderCodex {
+		accessToken, refreshToken, expiresIn, err := RefreshCodexToken(account)
+		if err != nil {
+			return "", "", 0, "", err
+		}
+		return accessToken, refreshToken, time.Now().Unix() + int64(expiresIn), "", nil
 	}
-
+	if provider == config.ProviderCodeBuddy {
+		accessToken, refreshToken, expiresIn, err := RefreshCodeBuddyToken(account)
+		if err != nil {
+			return "", "", 0, "", err
+		}
+		return accessToken, refreshToken, time.Now().Unix() + int64(expiresIn), "", nil
+	}
+	if provider == config.ProviderClinepass {
+		if IsClinepassAPIKey(account.AccessToken) || IsClinepassAPIKey(account.RefreshToken) {
+			// API-key accounts have nothing to refresh; the caller will skip
+			// ensureValidToken when the expiry is 0 anyway, but we surface
+			// the existing values to keep the call site uniform.
+			return account.AccessToken, account.RefreshToken, account.ExpiresAt, "", nil
+		}
+		accessToken, refreshToken, expiresIn, err := RefreshClinepassToken(account)
+		if err != nil {
+			return "", "", 0, "", err
+		}
+		return accessToken, refreshToken, ClinepassExpiresAt(expiresIn), "", nil
+	}
 	client := GetAuthClientForAccount(account)
 	// External IdP tokens refresh at their own public-client endpoint.
 	if account.AuthMethod == "external_idp" {

@@ -15,7 +15,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"kiro-go/config"
+	"hekato-go/config"
 )
 
 // Header names the relay forwarder reads. Kept in one place so the Go client and

@@ -2,7 +2,7 @@ package providers
 
 import (
 	"fmt"
-	"kiro-go/config"
+	"hekato-go/config"
 	"net/http"
 )
 
