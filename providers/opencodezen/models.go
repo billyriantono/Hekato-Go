@@ -11,17 +11,17 @@ import (
 )
 
 // zenStaticModels is the fallback catalog when the live /models endpoint is
-// unreachable. Mirrors the model list from 9router's opencode-zen registry.
+// unreachable. Normal operation uses the upstream catalog unchanged.
 var zenStaticModels = []providers.ModelInfo{
-	{ModelId: "claude-sonnet-4-20250514"},
-	{ModelId: "claude-sonnet-4.5-20250620"},
-	{ModelId: "gpt-4.1"},
-	{ModelId: "gemini-2.5-pro"},
-	{ModelId: "deepseek-r1"},
-	{ModelId: "deepseek-v3-0324"},
+	{ModelId: "big-pickle"},
+	{ModelId: "ling-3.0-flash-fin-free"},
+	{ModelId: "mimo-v2.5-free"},
+	{ModelId: "mimo-v2.6-flash-free"},
 	{ModelId: "muse-spark-1.2-contributor-free"},
 	{ModelId: "muse-spark-1.3-contributor-free"},
-	{ModelId: "union-alpha"},
+	{ModelId: "nemotron-3-ultra-free"},
+	{ModelId: "nemotron-3.5-lightning-free"},
+	{ModelId: "jev-1.13-free"},
 }
 
 // RefreshModels fetches the live model list from the Zen /models endpoint,
@@ -53,13 +53,7 @@ func fetchModels(account *config.Account) ([]providers.ModelInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	token := account.AccessToken
-	if token == "" {
-		token = "public"
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("User-Agent", opencodeUA)
-	req.Header.Set("x-opencode-client", "desktop")
+	setHeaders(req, account)
 	req.Header.Set("Accept", "application/json")
 
 	client := providers.GetRestClientForAccount(account)

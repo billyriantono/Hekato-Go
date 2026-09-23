@@ -6,11 +6,12 @@ import (
 	"strings"
 )
 
-// fingerprintToolNames are the four tool names required by the OpenCode
-// free-tier gate. Requests that omit any of them are rejected with 403.
-var fingerprintToolNames = []string{"bash", "glob", "grep", "read"}
+// fingerprintToolNames are the two tool names the OpenCode CLI supplies to
+// the Zen free-tier gate. Additional fake tools are unnecessary and alter the
+// model's tool-selection surface.
+var fingerprintToolNames = []string{"bash", "read"}
 
-// InjectFingerprintTools ensures the fingerprint quartet is present in the
+// InjectFingerprintTools ensures the required CLI tool pair is present in the
 // tool list. Tools with matching names (case-insensitive) are renamed to the
 // canonical lowercase form; missing tools are appended as minimal stubs.
 // Returns the (possibly modified) tool list and a map from canonical name to
@@ -43,8 +44,7 @@ func InjectFingerprintTools(tools []providers.OpenAITool) ([]providers.OpenAIToo
 		var tool providers.OpenAITool
 		tool.Type = "function"
 		tool.Function.Name = fp
-		tool.Function.Description = fp + " tool"
-		tool.Function.Parameters = json.RawMessage(`{"type":"object","properties":{}}`)
+		tool.Function.Parameters = json.RawMessage(`{"type":"object"}`)
 		tools = append(tools, tool)
 	}
 	return tools, renames
@@ -84,10 +84,9 @@ func InjectFingerprintResponsesTools(tools []providers.ResponsesTool) []provider
 			continue
 		}
 		tools = append(tools, providers.ResponsesTool{
-			Type:        "function",
-			Name:        fp,
-			Description: fp + " tool",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
+			Type:       "function",
+			Name:       fp,
+			Parameters: json.RawMessage(`{"type":"object"}`),
 		})
 	}
 	return tools

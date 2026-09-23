@@ -23,22 +23,23 @@ const (
 	zenResponsesURL  = "https://opencode.ai/zen/v1/responses"
 	zenModelsURL     = "https://opencode.ai/zen/v1/models"
 	zenUsageURL      = "https://opencode.ai/zen/v1/usage"
-	opencodeUA       = "opencode/1.18.31"
+	opencodeUA       = "opencode/1.18.32"
 	anthropicVersion = "2023-06-01"
 )
 
 // ---------- public transport ----------
 
 // CallOpenAI sends an OpenAI Chat Completions request through the Zen
-// upstream, injecting the fingerprint quartet and OpenCode-specific headers.
+// upstream, matching the OpenCode CLI's required tool pair and request frame.
 func CallOpenAI(account *config.Account, req *providers.OpenAIRequest, callback *providers.StreamCallback) error {
 	if account == nil {
 		return fmt.Errorf("opencodezen: nil account")
 	}
+	hadCallerTools := len(req.Tools) != 0
 	req.Tools, _ = InjectFingerprintTools(req.Tools)
 	req.Stream = true // upstream requires stream:true for free-tier
 
-	body, err := json.Marshal(req)
+	body, err := marshalChatRequest(req, !hadCallerTools)
 	if err != nil {
 		return fmt.Errorf("marshal opencodezen request: %w", err)
 	}
@@ -67,10 +68,11 @@ func CallOpenAI(account *config.Account, req *providers.OpenAIRequest, callback 
 // CallUpstream forwards a native OpenAI Responses request to the Zen upstream
 // and proxies the SSE stream directly back to the client.
 func CallUpstream(w http.ResponseWriter, flusher http.Flusher, account *config.Account, req *providers.ResponsesRequest) error {
+	hadCallerTools := len(req.Tools) != 0
 	req.Stream = true
 	req.Tools = InjectFingerprintResponsesTools(req.Tools)
 
-	body, err := json.Marshal(req)
+	body, err := marshalResponsesRequest(req, !hadCallerTools)
 	if err != nil {
 		return fmt.Errorf("marshal opencodezen responses request: %w", err)
 	}
@@ -110,6 +112,7 @@ func FetchUsage(_ *config.Account) (*config.AccountInfo, error) {
 // ---------- headers ----------
 
 func setHeaders(req *http.Request, account *config.Account) {
+	projectID, sessionID := openCodeSession()
 	token := account.AccessToken
 	if token == "" {
 		token = "public"
@@ -117,10 +120,47 @@ func setHeaders(req *http.Request, account *config.Account) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("User-Agent", opencodeUA)
-	req.Header.Set("x-opencode-client", "desktop")
-	req.Header.Set("x-opencode-session", generateSessionID())
+	req.Header.Set("x-opencode-client", "cli")
+	req.Header.Set("x-opencode-session", sessionID)
 	req.Header.Set("x-opencode-request", generateRequestID())
-	req.Header.Set("x-opencode-project", "global")
+	req.Header.Set("x-opencode-project", projectID)
+}
+
+// marshalChatRequest adds the fields emitted by the official CLI but absent
+// from the proxy's compact OpenAIRequest wire type.
+func marshalChatRequest(req *providers.OpenAIRequest, disableTools bool) ([]byte, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
+	}
+	payload["stream"] = true
+	payload["stream_options"] = map[string]bool{"include_usage": true}
+	if disableTools {
+		payload["tool_choice"] = "none"
+	}
+	return json.Marshal(payload)
+}
+
+// marshalResponsesRequest adds the free-tier stream frame and disables the
+// injected tools when the caller did not request tool execution.
+func marshalResponsesRequest(req *providers.ResponsesRequest, disableTools bool) ([]byte, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
+	}
+	payload["stream"] = true
+	if disableTools {
+		payload["tool_choice"] = "none"
+	}
+	return json.Marshal(payload)
 }
 
 // ---------- SSE parsing (mirrors providers/openaicompat) ----------
