@@ -18,6 +18,10 @@ func TestProviderForAccount(t *testing.T) {
 		{"codex auth method", &Account{AuthMethod: "codex", Provider: "codex"}, ProviderCodex, false},
 		{"codex chatgpt substring", &Account{AuthMethod: "openai", Provider: "chatgpt"}, ProviderCodex, false},
 		{"codex explicit ProviderKind", &Account{ProviderKind: "codex", AuthMethod: "social", Provider: "Google"}, ProviderCodex, false},
+		{"openai_compat explicit ProviderKind", &Account{ProviderKind: "openai_compat", AuthMethod: "openai_compat", Provider: "vercel"}, ProviderOpenAICompat, false},
+		{"anthropic_compat explicit ProviderKind", &Account{ProviderKind: "anthropic_compat", AuthMethod: "anthropic_compat", Provider: "anthropic_platform"}, ProviderAnthropicCompat, false},
+		{"openai_compat substring", &Account{AuthMethod: "openai_compat", Provider: "vercel-gateway"}, ProviderOpenAICompat, false},
+		{"anthropic_compat substring", &Account{AuthMethod: "anthropic-compat", Provider: "azure-ai"}, ProviderAnthropicCompat, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

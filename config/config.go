@@ -65,6 +65,13 @@ type Account struct {
 	IssuerURL     string `json:"issuerUrl,omitempty"`     // External IdP OIDC issuer URL
 	Scopes        string `json:"scopes,omitempty"`        // Space-separated scopes granted by the external IdP
 
+	// OpenAI / Anthropic-compatible upstream (Vercel Gateway, Azure AI, Anthropic Platform, OpenRouter, ...).
+	// BaseURL is the vendor root (no trailing slash); CompatAPIKey is sent as Bearer (OpenAI) or
+	// x-api-key (Anthropic). CompatProtocol mirrors the provider kind for clarity in the UI.
+	BaseURL        string `json:"baseUrl,omitempty"`
+	CompatAPIKey   string `json:"compatApiKey,omitempty"`
+	CompatProtocol string `json:"compatProtocol,omitempty"`
+
 	// Per-account outbound override. Relay takes precedence over ProxyURL; when both
 	// are empty the account inherits the global outbound setting.
 	ProxyURL    string `json:"proxyURL,omitempty"`

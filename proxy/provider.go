@@ -17,11 +17,13 @@ import (
 type providerKind = config.AccountProvider
 
 const (
-	providerKiro      = config.ProviderKiro
-	providerCodeBuddy = config.ProviderCodeBuddy
-	providerGrok      = config.ProviderGrok
-	providerCodex     = config.ProviderCodex
-	providerClinepass = config.ProviderClinepass
+	providerKiro            = config.ProviderKiro
+	providerCodeBuddy       = config.ProviderCodeBuddy
+	providerGrok            = config.ProviderGrok
+	providerCodex           = config.ProviderCodex
+	providerClinepass       = config.ProviderClinepass
+	providerOpenAICompat    = config.ProviderOpenAICompat
+	providerAnthropicCompat = config.ProviderAnthropicCompat
 )
 
 // providerAdapter is the one registration point for proxy capabilities. Each

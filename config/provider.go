@@ -9,11 +9,13 @@ import (
 type AccountProvider string
 
 const (
-	ProviderKiro      AccountProvider = "kiro"
-	ProviderCodeBuddy AccountProvider = "codebuddy"
-	ProviderGrok      AccountProvider = "grok"
-	ProviderCodex     AccountProvider = "codex"
-	ProviderClinepass AccountProvider = "clinepass"
+	ProviderKiro            AccountProvider = "kiro"
+	ProviderCodeBuddy       AccountProvider = "codebuddy"
+	ProviderGrok            AccountProvider = "grok"
+	ProviderCodex           AccountProvider = "codex"
+	ProviderClinepass       AccountProvider = "clinepass"
+	ProviderOpenAICompat    AccountProvider = "openai_compat"
+	ProviderAnthropicCompat AccountProvider = "anthropic_compat"
 )
 
 // ProviderForAccount returns the canonical provider for an account. Accounts
@@ -36,9 +38,17 @@ func ProviderForAccount(account *Account) (AccountProvider, error) {
 		return ProviderCodex, nil
 	case ProviderClinepass:
 		return ProviderClinepass, nil
+	case ProviderOpenAICompat:
+		return ProviderOpenAICompat, nil
+	case ProviderAnthropicCompat:
+		return ProviderAnthropicCompat, nil
 	}
 	joined := strings.ToLower(strings.TrimSpace(account.AuthMethod + " " + account.Provider))
 	switch {
+	case strings.Contains(joined, "openai_compat") || strings.Contains(joined, "openai-compat"):
+		return ProviderOpenAICompat, nil
+	case strings.Contains(joined, "anthropic_compat") || strings.Contains(joined, "anthropic-compat"):
+		return ProviderAnthropicCompat, nil
 	case strings.Contains(joined, "grok") || strings.Contains(joined, "xai") || strings.Contains(joined, "x.ai"):
 		return ProviderGrok, nil
 	case strings.Contains(joined, "codebuddy"):
