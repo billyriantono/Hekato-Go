@@ -361,6 +361,7 @@ func (r *autoRouter) pushLocked(d routeDecision) {
 type candidateView struct {
 	AccountID   string  `json:"accountId"`
 	Provider    string  `json:"provider"`
+	Email       string  `json:"email"`
 	Model       string  `json:"model"`
 	Successes   float64 `json:"successes"`
 	Failures    float64 `json:"failures"`
@@ -378,8 +379,9 @@ func (r *autoRouter) Snapshot() ([]routeDecision, []candidateView) {
 	for i, d := range r.decisions {
 		dec[len(r.decisions)-1-i] = d
 	}
-	providers := map[string]string{}
+	providers, emails := map[string]string{}, map[string]string{}
 	for _, a := range config.GetAccounts() {
+		emails[a.ID] = a.Email
 		if prov, err := config.ProviderForAccount(&a); err == nil {
 			providers[a.ID] = string(prov)
 		}
@@ -389,7 +391,7 @@ func (r *autoRouter) Snapshot() ([]routeDecision, []candidateView) {
 		st.decay(now)
 		parts := strings.SplitN(k, "|", 2)
 		cands = append(cands, candidateView{
-			AccountID: parts[0], Provider: providers[parts[0]], Model: parts[1],
+			AccountID: parts[0], Provider: providers[parts[0]], Email: emails[parts[0]], Model: parts[1],
 			Successes: math.Round(st.Successes*100) / 100, Failures: math.Round(st.Failures*100) / 100,
 			EwmaLatency: math.Round(st.EwmaLatency),
 			Reliability: math.Round((st.Successes+1)/(st.Successes+st.Failures+2)*1000) / 1000,

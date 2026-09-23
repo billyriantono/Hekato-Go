@@ -37,6 +37,7 @@ type Decision = {
 type Candidate = {
   accountId: string
   provider: string
+  email: string
   model: string
   successes: number
   failures: number
@@ -193,6 +194,7 @@ export function AutoRouteSection() {
               <Table className="text-xs">
                 <TableHeader>
                   <TableRow>
+                    <TableHead>{t('settings.autoRoute.col.provider')}</TableHead>
                     <TableHead>{t('settings.autoRoute.col.model')}</TableHead>
                     <TableHead>{t('settings.autoRoute.col.account')}</TableHead>
                     <TableHead className="text-right">{t('settings.autoRoute.col.reliability')}</TableHead>
@@ -204,9 +206,12 @@ export function AutoRouteSection() {
                 <TableBody>
                   {candidates.map((c) => (
                     <TableRow key={c.accountId + c.model}>
+                      <TableCell>
+                        <Badge variant="outline">{c.provider || '?'}</Badge>
+                      </TableCell>
                       <TableCell className="font-mono">{c.model}</TableCell>
-                      <TableCell className="font-mono" title={c.accountId}>
-                        {short(c.accountId)}
+                      <TableCell className="max-w-56 truncate" title={`${c.email} (${c.accountId})`}>
+                        {c.email || short(c.accountId)}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">{Math.round(c.reliability * 100)}%</TableCell>
                       <TableCell className="text-right tabular-nums">{Math.round(c.ewmaLatencyMs)} ms</TableCell>
