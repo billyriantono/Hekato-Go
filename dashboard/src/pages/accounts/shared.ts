@@ -5,6 +5,7 @@ export type Account = {
   userId: string
   nickname: string
   authMethod: string
+  providerKind?: string
   probeModel?: string
   extraModels?: string[]
   provider: string
@@ -156,7 +157,10 @@ export const isMachineId = (v: string) =>
 
 
 /** Kiro (AWS) accounts have upstream overage billing; other providers do not. */
-export function isKiroAccount(a: { authMethod?: string; provider?: string }): boolean {
+export function isKiroAccount(a: { authMethod?: string; provider?: string; providerKind?: string }): boolean {
+  // The API reports the canonical provider; the regex is only a fallback for
+  // stale clients that predate providerKind.
+  if (a.providerKind) return a.providerKind === 'kiro'
   const key = `${a.authMethod ?? ''} ${a.provider ?? ''}`.toLowerCase()
-  return !/codebuddy|grok|xai|codex|openai|cline/.test(key)
+  return !/codebuddy|grok|xai|codex|openai|cline|opencode|command|anthropic/.test(key)
 }

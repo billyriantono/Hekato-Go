@@ -2906,6 +2906,7 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 		if a.AuthMethod == "external_idp" {
 			displayProvider = "AzureAD"
 		}
+		kind, _ := config.ProviderForAccount(&a)
 
 		result[i] = map[string]interface{}{
 			"id":                a.ID,
@@ -2914,6 +2915,7 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 			"nickname":          a.Nickname,
 			"authMethod":        a.AuthMethod,
 			"provider":          displayProvider,
+			"providerKind":      string(kind),
 			"region":            a.Region,
 			"enabled":           a.Enabled,
 			"banStatus":         a.BanStatus,
