@@ -26,6 +26,7 @@ const (
 	providerAnthropicCompat = config.ProviderAnthropicCompat
 	providerOpenCodeZen     = config.ProviderOpenCodeZen
 	providerOpenCodeGo      = config.ProviderOpenCodeGo
+	providerCommandCode     = config.ProviderCommandCode
 )
 
 // providerAdapter is the one registration point for proxy capabilities. Each

@@ -16,7 +16,7 @@ import { useI18n } from '@/lib/i18n'
 import { sleep } from './shared'
 import { SimpleSelect } from './simple-select'
 
-export type Method = 'builderid' | 'iam' | 'kirosso' | 'ssotoken' | 'local' | 'credentials' | 'cookie' | 'codebuddy' | 'grokDevice' | 'grokImport' | 'codexImport' | 'clinepassImport' | 'opencodeZenImport' | 'opencodeGoImport' | 'openaiCompat' | 'anthropicCompat'
+export type Method = 'builderid' | 'iam' | 'kirosso' | 'ssotoken' | 'local' | 'credentials' | 'cookie' | 'codebuddy' | 'grokDevice' | 'grokImport' | 'codexImport' | 'clinepassImport' | 'opencodeZenImport' | 'opencodeGoImport' | 'commandCodeImport' | 'openaiCompat' | 'anthropicCompat'
 
 type Added = { id: string; email?: string }
 type FormProps = { onDone: (accounts: Added[]) => void }
@@ -36,6 +36,7 @@ const METHODS: { id: Method; provider: string; title: string; desc: string }[] =
   { id: 'clinepassImport', provider: 'modal.clinepassProvider', title: 'modal.clinepassImportTitle', desc: 'modal.clinepassImportDesc' },
   { id: 'opencodeZenImport', provider: 'modal.opencodeZenProvider', title: 'modal.opencodeZenImportTitle', desc: 'modal.opencodeZenImportDesc' },
   { id: 'opencodeGoImport', provider: 'modal.opencodeGoProvider', title: 'modal.opencodeGoImportTitle', desc: 'modal.opencodeGoImportDesc' },
+  { id: 'commandCodeImport', provider: 'modal.commandCodeProvider', title: 'modal.commandCodeImportTitle', desc: 'modal.commandCodeImportDesc' },
   { id: 'openaiCompat', provider: 'modal.compatProvider', title: 'modal.openaiCompatTitle', desc: 'modal.openaiCompatDesc' },
   { id: 'anthropicCompat', provider: 'modal.compatProvider', title: 'modal.anthropicCompatTitle', desc: 'modal.anthropicCompatDesc' },
 ]
@@ -122,6 +123,8 @@ export function AddAccountDialog({ open, initialMethod, onClose }: { open: boole
           <OpenCodeTokenImportForm key="zen" provider="opencode_zen" route="/auth/opencodezen/import" successKey="opencodezen.importSuccess" tokenLabel="opencodezen.tokensLabel" hintKey="opencodezen.importHint" optional onDone={onDone} />
         ) : method === 'opencodeGoImport' ? (
           <OpenCodeTokenImportForm key="go" provider="opencode_go" route="/auth/opencodego/import" successKey="opencodego.importSuccess" tokenLabel="opencodego.tokensLabel" hintKey="opencodego.importHint" onDone={onDone} />
+        ) : method === 'commandCodeImport' ? (
+          <OpenCodeTokenImportForm key="cc" provider="commandcode" route="/auth/commandcode/import" successKey="commandcode.importSuccess" tokenLabel="commandcode.tokensLabel" hintKey="commandcode.importHint" onDone={onDone} />
         ) : method === 'openaiCompat' ? (
           <CompatForm key="oc" protocol="openai_compat" onDone={onDone} />
         ) : method === 'anthropicCompat' ? (
@@ -144,6 +147,7 @@ function MethodPicker({ onPick }: { onPick: (m: Method) => void }) {
     'modal.codexProvider': <LuKey className="size-4" />,
     'modal.clinepassProvider': <LuKey className="size-4" />,
     'modal.compatProvider': <LuKey className="size-4" />,
+    'modal.commandCodeProvider': <LuKey className="size-4" />,
   }
   return (
     <div className="max-h-[60vh] space-y-4 overflow-y-auto pr-1">

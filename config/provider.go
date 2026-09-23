@@ -18,6 +18,7 @@ const (
 	ProviderAnthropicCompat AccountProvider = "anthropic_compat"
 	ProviderOpenCodeZen     AccountProvider = "opencode_zen"
 	ProviderOpenCodeGo      AccountProvider = "opencode_go"
+	ProviderCommandCode     AccountProvider = "commandcode"
 )
 
 // ProviderForAccount returns the canonical provider for an account. Accounts
@@ -48,6 +49,8 @@ func ProviderForAccount(account *Account) (AccountProvider, error) {
 		return ProviderOpenCodeZen, nil
 	case ProviderOpenCodeGo:
 		return ProviderOpenCodeGo, nil
+	case ProviderCommandCode:
+		return ProviderCommandCode, nil
 	}
 	joined := strings.ToLower(strings.TrimSpace(account.AuthMethod + " " + account.Provider))
 	switch {
@@ -59,6 +62,8 @@ func ProviderForAccount(account *Account) (AccountProvider, error) {
 		return ProviderOpenCodeZen, nil
 	case strings.Contains(joined, "opencode_go") || strings.Contains(joined, "opencode-go") || strings.Contains(joined, "ocg"):
 		return ProviderOpenCodeGo, nil
+	case strings.Contains(joined, "commandcode") || strings.Contains(joined, "cmc"):
+		return ProviderCommandCode, nil
 	case strings.Contains(joined, "grok") || strings.Contains(joined, "xai") || strings.Contains(joined, "x.ai"):
 		return ProviderGrok, nil
 	case strings.Contains(joined, "codebuddy"):
