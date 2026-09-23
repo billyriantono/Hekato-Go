@@ -57,3 +57,18 @@ func TestCatalogPersistsAndReloads(t *testing.T) {
 		t.Fatalf("restore from blob failed: n=%d at=%v", n, at)
 	}
 }
+
+// The dotted and dashed spellings of one model can carry different windows;
+// ContextLimit must report the smaller, or routing over-estimates and overflows.
+func TestContextLimitTakesSmallestSpelling(t *testing.T) {
+	if ContextLimit("claude-opus-4-6") == 0 {
+		t.Skip("models.dev catalog unavailable")
+	}
+	dotted, dashed := ContextLimit("claude-opus-4.6"), ContextLimit("claude-opus-4-6")
+	if dotted != dashed {
+		t.Errorf("claude-opus-4.6=%d but claude-opus-4-6=%d; want the smaller for both", dotted, dashed)
+	}
+	if n := ContextLimit("no-such-model-anywhere"); n != 0 {
+		t.Errorf("unknown model should report 0, got %d", n)
+	}
+}

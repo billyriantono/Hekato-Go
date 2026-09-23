@@ -11,6 +11,7 @@ import (
 	"hekato-go/providers"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -78,6 +79,10 @@ var (
 	cache      []Model
 	fetchedAt  time.Time
 	blobLoaded bool
+	// index maps every spelling of a model id to its smallest published
+	// context window; rebuilt whenever the catalog size changes.
+	index      map[string]int
+	indexedFor int
 )
 
 // blob is the persisted shape of the catalog.
@@ -200,6 +205,70 @@ func Find(provider, modelID string) (Model, bool) {
 		}
 	}
 	return Model{}, false
+}
+
+// ContextLimit returns the smallest context window any provider publishes for
+// modelID, or 0 when the catalog does not know it. The minimum is deliberate:
+// the same id is resold with different windows (claude-opus-4-6 is 200K on one
+// host and 1M on another), and a routing decision that assumes the larger one
+// overflows upstream. Callers must treat 0 as "unknown", not "zero".
+//
+// Ids are matched loosely — "cline-pass/glm-5.3-flash" and "claude-opus-4.6"
+// both resolve — because every upstream spells its catalog differently.
+func ContextLimit(modelID string) int {
+	models, _, err := List()
+	if err != nil {
+		return 0
+	}
+	mu.Lock()
+	if index == nil || indexedFor != len(models) {
+		index = make(map[string]int, len(models)*2)
+		for _, m := range models {
+			if m.ContextLimit <= 0 {
+				continue
+			}
+			for _, k := range modelKeys(m.ID) {
+				if cur, ok := index[k]; !ok || m.ContextLimit < cur {
+					index[k] = m.ContextLimit
+				}
+			}
+		}
+		indexedFor = len(models)
+	}
+	idx := index
+	mu.Unlock()
+
+	// Every spelling is consulted and the smallest wins: "claude-opus-4.6" and
+	// "claude-opus-4-6" are the same model published with different windows
+	// (409600 vs 200000), and stopping at the first hit would hand back the
+	// optimistic one.
+	best := 0
+	for _, k := range modelKeys(modelID) {
+		if v, ok := idx[k]; ok && (best == 0 || v < best) {
+			best = v
+		}
+	}
+	return best
+}
+
+// modelKeys yields the lookup spellings of a model id, most specific first:
+// the id itself, the part after the last "/", and the dash-for-dot form
+// ("claude-opus-4.6" -> "claude-opus-4-6").
+func modelKeys(id string) []string {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if id == "" {
+		return nil
+	}
+	keys := []string{id}
+	if i := strings.LastIndex(id, "/"); i >= 0 && i+1 < len(id) {
+		keys = append(keys, id[i+1:])
+	}
+	for _, k := range append([]string{}, keys...) {
+		if d := strings.ReplaceAll(k, ".", "-"); d != k {
+			keys = append(keys, d)
+		}
+	}
+	return keys
 }
 
 func fetch() ([]Model, error) {

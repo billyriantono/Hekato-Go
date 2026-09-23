@@ -6,6 +6,7 @@ import (
 	"hekato-go/config"
 	"hekato-go/logger"
 	"hekato-go/pool"
+	"hekato-go/providers/modelsdev"
 	"math"
 	"math/rand"
 	"net/http"
@@ -232,6 +233,12 @@ func (r *autoRouter) Resolve(p *pool.AccountPool, cfg config.AutoRouteConfig, si
 	// beats a neighbouring tier that can actually see the image.
 	var cands []routeCandidate
 	usedTier := tier
+	// anyFit holds the first non-empty tier ignoring the context check, so a
+	// request larger than every known window still routes somewhere instead of
+	// failing outright.
+	var anyFit []routeCandidate
+	anyFitTier := tier
+	truncatedFit := false
 	passes := []bool{false}
 	if sig.Images && r.vision != nil {
 		passes = []bool{true, false}
@@ -243,14 +250,26 @@ search:
 			if needVision {
 				cands = r.onlyVision(cands)
 			}
-			if len(cands) > 0 {
+			if len(cands) == 0 {
+				continue
+			}
+			if len(anyFit) == 0 {
+				anyFit, anyFitTier = cands, ti
+			}
+			if fits := onlyFitsContext(cands, sig.InputTokens); len(fits) > 0 {
+				cands = fits
 				usedTier = ti
 				break search
 			}
+			truncatedFit = true
+			cands = nil
 		}
 	}
 	if len(cands) == 0 {
-		return nil
+		if len(anyFit) == 0 {
+			return nil
+		}
+		cands, usedTier = anyFit, anyFitTier
 	}
 
 	now := time.Now()
@@ -293,6 +312,11 @@ search:
 
 	reason := fmt.Sprintf("tier=%s tokens=%d tools=%d turns=%d thinking=%t images=%t candidates=%d",
 		tierNames[usedTier], sig.InputTokens, sig.Tools, sig.Turns, sig.Thinking, sig.Images, len(cands))
+	if truncatedFit {
+		// Every candidate with a known window was too small for this request;
+		// the pick may not hold the whole context.
+		reason += " context-overflow"
+	}
 	if usedTier != tier {
 		reason += fmt.Sprintf(" (wanted %s)", tierNames[tier])
 	}
@@ -309,6 +333,37 @@ search:
 }
 
 // onlyVision keeps candidates whose model is known to accept images.
+// contextReserve is the room left for the reply (and for the token estimate
+// running low) when checking whether a request fits a model's window.
+const contextReserve = 32_000
+
+// onlyFitsContext drops candidates whose published context window cannot hold
+// inputTokens plus the reply reserve. Models the models.dev catalog does not
+// know are kept — an unknown window is not evidence of a small one, and
+// dropping them would empty the pool for every provider-specific id.
+func onlyFitsContext(cands []routeCandidate, inputTokens int) []routeCandidate {
+	if inputTokens <= 0 {
+		return cands
+	}
+	var out []routeCandidate
+	for _, c := range cands {
+		if modelFitsContext(c.model, inputTokens) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// modelFitsContext reports whether model can hold inputTokens plus the reply
+// reserve. Unknown windows count as fitting (see onlyFitsContext).
+func modelFitsContext(model string, inputTokens int) bool {
+	if inputTokens <= 0 {
+		return true
+	}
+	limit := modelsdev.ContextLimit(model)
+	return limit == 0 || limit >= inputTokens+contextReserve
+}
+
 func (r *autoRouter) onlyVision(cands []routeCandidate) []routeCandidate {
 	var out []routeCandidate
 	for _, c := range cands {
@@ -462,7 +517,10 @@ func (h *Handler) resolveAutoModel(w http.ResponseWriter, endpoint, model string
 	// Cache affinity wins: a pinned conversation keeps its account and model.
 	if *affinityKey != "" {
 		if accID, pinnedModel := h.affinity.GetWithModel(*affinityKey); accID != "" && pinnedModel != "" && !isAutoModel(pinnedModel) {
-			if h.pool.GetForModelByID(accID, pinnedModel, capabilityFilter(cap)) != nil {
+			// The pin is dropped once the conversation outgrows the pinned
+			// model's window — otherwise a session that started small keeps
+			// hitting a model that can no longer hold it.
+			if h.pool.GetForModelByID(accID, pinnedModel, capabilityFilter(cap)) != nil && modelFitsContext(pinnedModel, sig.InputTokens) {
 				h.autoRouter.RecordPinned(routeDecision{Time: time.Now().Unix(), Endpoint: endpoint, Tier: "pinned", Model: pinnedModel, AccountID: accID, Pinned: true, Thinking: think, Signals: sig, Reason: "conversation pinned (warm cache)" + reasonSuffix})
 				w.Header().Set("X-Hekato-Routed-Model", pinnedModel)
 				w.Header().Set("X-Hekato-Route-Reason", "pinned"+reasonSuffix)
