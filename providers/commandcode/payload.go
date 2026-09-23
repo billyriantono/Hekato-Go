@@ -2,8 +2,8 @@ package commandcode
 
 import (
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"hekato-go/providers"
 	"runtime"
 	"strings"
@@ -312,32 +312,19 @@ func pickFloat(v, def float64) float64 {
 	return v
 }
 
-// newUUID returns a v4 UUID hex string. We don't depend on google/uuid to keep
-// this package import-light; crypto/rand is sufficient for session IDs.
+// newUUID returns an RFC 4122 v4 UUID (8-4-4-4-12). Upstream validates the
+// threadId strictly ("Invalid UUID"), so the layout must be exact.
 func newUUID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		// crypto/rand failure is essentially impossible on a healthy host;
-		// fall back to a timestamp-based value rather than panicking.
 		ts := uint64(time.Now().UnixNano())
 		for i := range b {
 			b[i] = byte(ts >> (8 * (i % 8)))
 		}
 	}
-	// RFC 4122 v4 bits.
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
-	hexBuf := make([]byte, 36)
-	hex.Encode(hexBuf, b[:4])
-	hexBuf[4] = '-'
-	hex.Encode(hexBuf[5:9], b[4:6])
-	hexBuf[9] = '-'
-	hex.Encode(hexBuf[10:14], b[6:8])
-	hexBuf[14] = '-'
-	hex.Encode(hexBuf[15:19], b[8:10])
-	hexBuf[19] = '-'
-	hex.Encode(hexBuf[20:32], b[10:16])
-	return string(hexBuf)
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 func currentDate() string {

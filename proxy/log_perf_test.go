@@ -30,10 +30,11 @@ func TestPerfTrackerMeasuresTTFTAndTPS(t *testing.T) {
 	// Authoritative token count wins over the rune estimate. finalise rounds
 	// TPS to 2 decimals (display precision), so compare against the rounded
 	// expected — 320.00 ≠ 319.999... but should equal 320.00.
+	// `want` is computed a few microseconds after finalise() sampled the
+	// clock, so allow a small relative drift rather than an exact match.
 	want := float64(64) / time.Since(start).Seconds()
-	want = math.Round(want*100) / 100
-	if math.Abs(perf.tps-want) > 0.01 {
-		t.Fatalf("tps = %v, want %v", perf.tps, want)
+	if math.Abs(perf.tps-want) > want*0.01 {
+		t.Fatalf("tps = %v, want ~%v", perf.tps, want)
 	}
 }
 
