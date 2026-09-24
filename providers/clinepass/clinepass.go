@@ -117,11 +117,7 @@ type clinepassChoiceMsg struct {
 
 type clinepassResponse struct {
 	Choices []clinepassChoice `json:"choices"`
-	Usage   struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage"`
+	Usage   providers.OpenAIUsage `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
@@ -164,6 +160,7 @@ func decodeClinepassNonStream(r io.Reader, callback *providers.StreamCallback) e
 		}
 		if callback.OnComplete != nil {
 			callback.OnComplete(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
+			providers.ReportCacheUsage(callback, resp.Usage)
 		}
 	}
 	return nil
@@ -230,6 +227,7 @@ func consumeClinepassSSE(r io.Reader, callback *providers.StreamCallback) error 
 		if chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0 {
 			promptTokens = chunk.Usage.PromptTokens
 			completionTokens = chunk.Usage.CompletionTokens
+			providers.ReportCacheUsage(callback, chunk.Usage)
 		}
 	}
 	if err := scanner.Err(); err != nil {

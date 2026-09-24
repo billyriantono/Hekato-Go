@@ -132,10 +132,7 @@ type oaiChoiceM struct {
 
 type oaiResponse struct {
 	Choices []oaiChoice `json:"choices"`
-	Usage   struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-	} `json:"usage"`
+	Usage   providers.OpenAIUsage `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
@@ -197,6 +194,7 @@ func consumeSSE(r io.Reader, callback *providers.StreamCallback) error {
 		if chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0 {
 			promptTokens = chunk.Usage.PromptTokens
 			completionTokens = chunk.Usage.CompletionTokens
+			providers.ReportCacheUsage(callback, chunk.Usage)
 		}
 	}
 	if err := scanner.Err(); err != nil {

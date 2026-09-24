@@ -48,6 +48,10 @@ type RequestLog struct {
 	Duration     int64   `json:"duration"`     // Request duration in ms (first-byte → end)
 	TTFTMs       int64   `json:"ttftMs"`       // Time to first token / tool_use in ms
 	TPS          float64 `json:"tps"`          // Output tokens per second (0 when unmeasurable)
+	// Prompt-cache split of the input tokens, when the upstream reports one.
+	// Absent means the provider said nothing about caching.
+	CacheReadTokens  int `json:"cacheReadTokens,omitempty"`
+	CacheWriteTokens int `json:"cacheWriteTokens,omitempty"`
 	UserAgent    string  `json:"userAgent"`    // Client User-Agent header (truncated)
 	ClientIP     string  `json:"clientIp"`     // Client IP (honors X-Forwarded-For + X-Real-IP)
 	// RequestedModel is what the client asked for when it differs from Model
@@ -1567,6 +1571,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, req *ClaudeRequest, 
 			OnCredits: func(c float64) {
 				credits = c
 			},
+			OnCacheUsage: func(read, write int) { perf.setCacheUsage(read, write) },
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
 			},
@@ -1700,6 +1705,10 @@ func (h *Handler) addCredits(credits float64) {
 type requestPerf struct {
 	ttftMs int64
 	tps    float64
+	// Prompt-cache split of the input tokens, as the upstream billed it.
+	// Zero/zero means the provider reported nothing, not "no hits".
+	cacheRead  int
+	cacheWrite int
 }
 
 // perfTracker accumulates streaming timing as the callback fires. It snapshots
@@ -1710,6 +1719,8 @@ type perfTracker struct {
 	start      time.Time
 	firstAt    time.Time // set on first non-empty OnText / OnToolUse / OnComplete
 	tokenCount int       // output tokens seen at finalise()
+	cacheRead  int       // input tokens served from the upstream prompt cache
+	cacheWrite int       // input tokens newly written to it
 	mu         sync.Mutex
 }
 
@@ -1756,6 +1767,18 @@ func (p *perfTracker) setFinalTokens(n int) {
 	p.mu.Unlock()
 }
 
+// setCacheUsage records the prompt-cache split reported by the upstream.
+// Riding on the perf tracker keeps it off the signature of every handler that
+// already threads perf through to the log row.
+func (p *perfTracker) setCacheUsage(read, write int) {
+	if p == nil || (read <= 0 && write <= 0) {
+		return
+	}
+	p.mu.Lock()
+	p.cacheRead, p.cacheWrite = read, write
+	p.mu.Unlock()
+}
+
 // finalise produces the requestPerf to ship to the log row. Uses total wall
 // time (request start → completion) for the TPS denominator; falls back to
 // a 1 ms floor so a sub-millisecond request doesn't divide by zero.
@@ -1775,7 +1798,7 @@ func (p *perfTracker) finalise() requestPerf {
 		total = 0.001
 	}
 	tps := float64(p.tokenCount) / total
-	return requestPerf{ttftMs: ttft, tps: math.Round(tps*100) / 100}
+	return requestPerf{ttftMs: ttft, tps: math.Round(tps*100) / 100, cacheRead: p.cacheRead, cacheWrite: p.cacheWrite}
 }
 
 // newLogEntry is the central constructor for RequestLog. It stamps time, the
@@ -1904,9 +1927,11 @@ func (h *Handler) recordSuccessLog(w http.ResponseWriter, endpoint, model, accou
 	h.addCredits(credits)
 
 	entry := h.newLogEntry(w, endpoint, model, accountID, "success", tokens, 0, credits, durationMs, perf.ttftMs, perf.tps)
+	entry.CacheReadTokens, entry.CacheWriteTokens = perf.cacheRead, perf.cacheWrite
 
 	h.appendRequestLog(entry)
 	h.autoRouter.Record(accountID, model, true, durationMs)
+	h.metrics.RecordCache(perf.cacheRead, perf.cacheWrite)
 	h.metrics.Record(endpoint, model, accountID, true, tokens, credits, durationMs)
 }
 
@@ -2047,6 +2072,7 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, req *ClaudeReques
 			OnCredits: func(c float64) {
 				credits = c
 			},
+			OnCacheUsage: func(read, write int) { perf.setCacheUsage(read, write) },
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
 			},
@@ -2493,6 +2519,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 				outputTokens = outTok
 			},
 			OnCredits: func(c float64) { credits = c },
+			OnCacheUsage: func(read, write int) { perf.setCacheUsage(read, write) },
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
 			},
@@ -2655,6 +2682,7 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, req *OpenAIReques
 				outputTokens = outTok
 			},
 			OnCredits: func(c float64) { credits = c },
+			OnCacheUsage: func(read, write int) { perf.setCacheUsage(read, write) },
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
 			},

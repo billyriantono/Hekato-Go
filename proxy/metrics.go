@@ -37,6 +37,8 @@ type metricsBucket struct {
 	credits    float64
 	latencySum int64
 	latencyN   int
+	cacheRead  int // input tokens served from an upstream prompt cache
+	cacheWrite int // input tokens newly written to one
 	hist       [10]int
 	byModel    map[string]*dimCounter
 	byAccount  map[string]*dimCounter
@@ -51,6 +53,8 @@ type bucketRecord struct {
 	Credits    float64                `json:"c"`
 	LatencySum int64                  `json:"ls"`
 	LatencyN   int                    `json:"ln"`
+	CacheRead  int                    `json:"crd,omitempty"`
+	CacheWrite int                    `json:"cwr,omitempty"`
 	Hist       [10]int                `json:"h"`
 	ByModel    map[string]*dimCounter `json:"m,omitempty"`
 	ByAccount  map[string]*dimCounter `json:"a,omitempty"`
@@ -59,11 +63,13 @@ type bucketRecord struct {
 
 func (b *metricsBucket) record() bucketRecord {
 	return bucketRecord{Requests: b.requests, Errors: b.errors, Tokens: b.tokens, Credits: b.credits,
+		CacheRead: b.cacheRead, CacheWrite: b.cacheWrite,
 		LatencySum: b.latencySum, LatencyN: b.latencyN, Hist: b.hist, ByModel: b.byModel, ByAccount: b.byAccount, ByEndpoint: b.byEndpoint}
 }
 
 func bucketFromRecord(minute int64, r bucketRecord) *metricsBucket {
 	b := &metricsBucket{minute: minute, requests: r.Requests, errors: r.Errors, tokens: r.Tokens, credits: r.Credits,
+		cacheRead: r.CacheRead, cacheWrite: r.CacheWrite,
 		latencySum: r.LatencySum, latencyN: r.LatencyN, hist: r.Hist, byModel: r.ByModel, byAccount: r.ByAccount, byEndpoint: r.ByEndpoint}
 	if b.byModel == nil {
 		b.byModel = map[string]*dimCounter{}
@@ -213,6 +219,23 @@ func (m *metricsCollector) Record(endpoint, model, accountID string, ok bool, to
 	bump(b.byEndpoint, endpoint, ok, tokens, credits, latencyMs)
 }
 
+// RecordCache folds one request's prompt-cache split into the current minute.
+// Kept separate from Record so the cache numbers can land even for providers
+// that report them late (after the usage block) without widening Record's
+// signature for every caller.
+func (m *metricsCollector) RecordCache(read, write int) {
+	if m == nil || (read <= 0 && write <= 0) {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	minute := time.Now().Unix() / 60
+	b := m.bucketFor(minute)
+	m.dirty[minute] = true
+	b.cacheRead += read
+	b.cacheWrite += write
+}
+
 type metricsPoint struct {
 	Time       int64   `json:"t"`
 	Requests   int     `json:"requests"`
@@ -222,6 +245,8 @@ type metricsPoint struct {
 	AvgLatency int64   `json:"avgLatencyMs"`
 	P50        int64   `json:"p50Ms"`
 	P95        int64   `json:"p95Ms"`
+	CacheRead  int     `json:"cacheReadTokens"`
+	CacheWrite int     `json:"cacheWriteTokens"`
 }
 
 type dimRow struct {
@@ -298,6 +323,8 @@ func (m *metricsCollector) Query(minutes, step int) (points []metricsPoint, tota
 			p.Errors += b.errors
 			p.Tokens += b.tokens
 			p.Credits += b.credits
+			p.CacheRead += b.cacheRead
+			p.CacheWrite += b.cacheWrite
 			p.AvgLatency += b.latencySum
 			latN += b.latencyN
 			for i := range hist {
@@ -318,6 +345,8 @@ func (m *metricsCollector) Query(minutes, step int) (points []metricsPoint, tota
 		totals.Errors += p.Errors
 		totals.Tokens += p.Tokens
 		totals.Credits += p.Credits
+		totals.CacheRead += p.CacheRead
+		totals.CacheWrite += p.CacheWrite
 		totals.AvgLatency += p.AvgLatency
 		totals.P50 += int64(latN) // temporarily count
 		if latN > 0 {

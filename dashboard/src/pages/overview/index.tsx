@@ -10,6 +10,7 @@ import {
   LuClock,
   LuCoins,
   LuCpu,
+  LuDatabase,
   LuGauge,
   LuLoader,
   LuRefreshCw,
@@ -138,6 +139,13 @@ export function OverviewPage() {
   const m = metrics.data?.totals
   const mReq = m?.requests ?? 0
   const mErrRate = mReq ? ((m?.errors ?? 0) / mReq) * 100 : 0
+  // Cache hit rate is cached input tokens over all input tokens the upstream
+  // billed. Providers that report nothing leave both at 0, which renders "—"
+  // rather than a misleading 0%.
+  const cacheRead = m?.cacheReadTokens ?? 0
+  const cacheWrite = m?.cacheWriteTokens ?? 0
+  const cacheTotal = cacheRead + cacheWrite
+  const cacheRate = cacheTotal ? (cacheRead / cacheTotal) * 100 : 0
 
   const pool = useMemo(() => {
     const list = accounts.data ?? []
@@ -270,7 +278,7 @@ export function OverviewPage() {
       <LiveRoutingMap />
 
       {/* KPI row: selected range */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
         <StatCard label={t('overview.requestsInRange', range)} value={formatNumber(mReq)} icon={<LuActivity className="size-4" />} />
         <StatCard
           label={t('overview.errorRateInRange', range)}
@@ -281,6 +289,13 @@ export function OverviewPage() {
         />
         <StatCard label={t('overview.latencyInRange')} value={`${formatNumber(m?.p50Ms)} / ${formatNumber(m?.p95Ms)} ms`} hint="p50 / p95" icon={<LuTimer className="size-4" />} />
         <StatCard label={t('overview.tokensInRange', range)} value={formatNumber(m?.tokens)} hint={t('overview.creditsHint', (m?.credits ?? 0).toFixed(2))} icon={<LuCpu className="size-4" />} />
+        <StatCard
+          label={t('overview.cacheHitInRange', range)}
+          value={cacheTotal ? `${cacheRate.toFixed(1)}%` : '—'}
+          tone={!cacheTotal ? 'default' : cacheRate >= 50 ? 'success' : cacheRate >= 20 ? 'warning' : 'default'}
+          hint={cacheTotal ? t('overview.cacheHint', formatNumber(cacheRead), formatNumber(cacheWrite)) : t('overview.cacheNoData')}
+          icon={<LuDatabase className="size-4" />}
+        />
       </div>
 
       <MetricsCharts data={metrics.data} range={range} loading={metrics.isPending} accountNames={accountNames} />

@@ -23,7 +23,7 @@ import { cn } from '@/lib/utils'
 export type Range = '1h' | '6h' | '24h' | '7d'
 export const RANGES: Range[] = ['1h', '6h', '24h', '7d']
 
-export type Point = { t: number; requests: number; errors: number; tokens: number; credits: number; avgLatencyMs: number; p50Ms: number; p95Ms: number }
+export type Point = { t: number; requests: number; errors: number; tokens: number; credits: number; avgLatencyMs: number; p50Ms: number; p95Ms: number; cacheReadTokens?: number; cacheWriteTokens?: number }
 export type Bucket = { key: string; requests: number; errors: number; tokens: number; credits: number; avgLatencyMs: number }
 export type Metrics = { rangeMinutes: number; stepMinutes: number; series: Point[]; totals: Point; byModel: Bucket[]; byAccount: Bucket[]; byEndpoint: Bucket[] }
 

@@ -304,6 +304,11 @@ func consumeCodexSSE(r io.Reader, callback *providers.StreamCallback) error {
 			if err := json.Unmarshal([]byte(payload), &r); err == nil {
 				inputTokens = r.Response.Usage.InputTokens
 				outputTokens = r.Response.Usage.OutputTokens
+				if cached := r.Response.Usage.InputTokensDetail.CachedTokens; cached > 0 && callback.OnCacheUsage != nil {
+					// The Responses API reports reads only; codex never
+					// bills a separate cache-write.
+					callback.OnCacheUsage(cached, 0)
+				}
 			}
 		}
 	}

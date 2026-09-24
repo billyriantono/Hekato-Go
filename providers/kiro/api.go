@@ -230,6 +230,7 @@ func parseEventStream(body io.Reader, callback *providers.StreamCallback) error 
 
 	// Read directly without bufio to avoid buffering latency in streaming responses.
 	var inputTokens, outputTokens int
+	var cacheRead, cacheWrite int // prompt-cache split, reported once at completion
 	var totalCredits float64
 	var currentToolUse *toolUseState
 	var lastAssistantContent string
@@ -286,7 +287,11 @@ func parseEventStream(body io.Reader, callback *providers.StreamCallback) error 
 			continue
 		}
 
-		inputTokens, outputTokens = updateTokensFromEvent(event, inputTokens, outputTokens)
+		var evCacheRead, evCacheWrite int
+		inputTokens, outputTokens, evCacheRead, evCacheWrite = updateTokensFromEvent(event, inputTokens, outputTokens)
+		if evCacheRead > 0 || evCacheWrite > 0 {
+			cacheRead, cacheWrite = evCacheRead, evCacheWrite
+		}
 
 		// Dispatch by event type.
 		switch eventType {
@@ -333,11 +338,17 @@ func parseEventStream(body io.Reader, callback *providers.StreamCallback) error 
 
 	if callback.OnComplete != nil {
 		callback.OnComplete(inputTokens, outputTokens)
+		if (cacheRead > 0 || cacheWrite > 0) && callback.OnCacheUsage != nil {
+			callback.OnCacheUsage(cacheRead, cacheWrite)
+		}
 	}
 	return nil
 }
 
-func updateTokensFromEvent(event map[string]interface{}, currentInputTokens, currentOutputTokens int) (int, int) {
+// updateTokensFromEvent folds one event's usage into the running totals. The
+// cache split is returned alongside so the caller can report it: Kiro bills
+// cached prefixes separately and the dashboard shows the hit rate.
+func updateTokensFromEvent(event map[string]interface{}, currentInputTokens, currentOutputTokens int) (inTok, outTok, cacheReadOut, cacheWriteOut int) {
 	candidates := []map[string]interface{}{event}
 	collectUsageMaps(event, &candidates)
 
@@ -347,6 +358,15 @@ func updateTokensFromEvent(event map[string]interface{}, currentInputTokens, cur
 	for _, usage := range candidates {
 		if usage == nil {
 			continue
+		}
+
+		// Read the cache split first: it is reported independently of whether
+		// this event also carries a plain inputTokens field.
+		if v, ok := providers.ReadTokenNumber(usage, "cacheReadInputTokens", "cache_read_input_tokens"); ok && v > 0 {
+			cacheReadOut = v
+		}
+		if v, ok := providers.ReadTokenNumber(usage, "cacheWriteInputTokens", "cache_write_input_tokens", "cacheCreationInputTokens", "cache_creation_input_tokens"); ok && v > 0 {
+			cacheWriteOut = v
 		}
 
 		if v, ok := providers.ReadTokenNumber(usage,
@@ -387,8 +407,9 @@ func updateTokensFromEvent(event map[string]interface{}, currentInputTokens, cur
 		}
 	}
 
-	return inputTokens, outputTokens
+	return inputTokens, outputTokens, cacheReadOut, cacheWriteOut
 }
+
 func collectUsageMaps(v interface{}, out *[]map[string]interface{}) {
 	switch t := v.(type) {
 	case map[string]interface{}:
