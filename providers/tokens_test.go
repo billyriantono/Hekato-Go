@@ -20,3 +20,29 @@ func TestOpenAIUsageCacheSplit(t *testing.T) {
 		t.Error("a usage block with no cache fields must report nothing, not zero hits")
 	}
 }
+
+// Map-shaped usage blocks: flat keys and the nested details objects both count.
+func TestCacheSplitFromMap(t *testing.T) {
+	nested := map[string]interface{}{
+		"prompt_tokens":         float64(5000),
+		"prompt_tokens_details": map[string]interface{}{"cached_tokens": float64(4096)},
+	}
+	if r, w, ok := CacheSplitFromMap(nested); !ok || r != 4096 || w != 0 {
+		t.Errorf("nested details: read=%d write=%d ok=%v", r, w, ok)
+	}
+
+	flat := map[string]interface{}{
+		"cacheReadInputTokens":  float64(700),
+		"cacheWriteInputTokens": float64(250),
+	}
+	if r, w, ok := CacheSplitFromMap(flat); !ok || r != 700 || w != 250 {
+		t.Errorf("flat keys: read=%d write=%d ok=%v", r, w, ok)
+	}
+
+	if _, _, ok := CacheSplitFromMap(map[string]interface{}{"prompt_tokens": float64(10)}); ok {
+		t.Error("usage without cache fields must report nothing")
+	}
+	if _, _, ok := CacheSplitFromMap(nil); ok {
+		t.Error("nil usage must report nothing")
+	}
+}

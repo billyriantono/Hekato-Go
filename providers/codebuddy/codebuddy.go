@@ -331,6 +331,9 @@ func parseCodeBuddySSE(body io.Reader, callback *providers.StreamCallback) error
 			if c := codeBuddyCredit(usage); c > 0 {
 				credits = c
 			}
+			if r, wr, ok := providers.CacheSplitFromMap(usage); ok && callback.OnCacheUsage != nil {
+				callback.OnCacheUsage(r, wr)
+			}
 		}
 		choices, _ := evt["choices"].([]interface{})
 		for _, rawChoice := range choices {

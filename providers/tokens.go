@@ -73,3 +73,32 @@ func ReportCacheUsage(callback *StreamCallback, u OpenAIUsage) {
 		callback.OnCacheUsage(read, write)
 	}
 }
+
+// CacheSplitFromMap pulls the prompt-cache split out of a decoded usage map,
+// for providers that parse usage dynamically. It reads both the flat keys and
+// the nested prompt_tokens_details / input_tokens_details objects, so it works
+// against OpenAI-, Anthropic- and Responses-shaped usage blocks alike.
+func CacheSplitFromMap(usage map[string]interface{}) (read, write int, reported bool) {
+	if usage == nil {
+		return 0, 0, false
+	}
+	if v, ok := ReadTokenNumber(usage, "cacheReadInputTokens", "cache_read_input_tokens", "cached_tokens", "cachedTokens"); ok {
+		read = v
+	}
+	if v, ok := ReadTokenNumber(usage, "cacheWriteInputTokens", "cache_write_input_tokens", "cacheCreationInputTokens", "cache_creation_input_tokens"); ok {
+		write = v
+	}
+	if read == 0 {
+		for _, key := range []string{"prompt_tokens_details", "promptTokensDetails", "input_tokens_details", "inputTokensDetails"} {
+			details, _ := usage[key].(map[string]interface{})
+			if details == nil {
+				continue
+			}
+			if v, ok := ReadTokenNumber(details, "cached_tokens", "cachedTokens"); ok && v > 0 {
+				read = v
+				break
+			}
+		}
+	}
+	return read, write, read > 0 || write > 0
+}
