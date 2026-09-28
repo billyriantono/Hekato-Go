@@ -14,6 +14,7 @@ import { Switch } from '@/components/ui/switch'
 import { ConfirmDialog, CopyButton, StatusDot, errorMessage, formatNumber, formatTime } from '@/components/common'
 import { del, get, post, put } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
+import { cn } from '@/lib/utils'
 import { SimpleSelect } from './simple-select'
 import { ModelCombobox } from '@/components/model-combobox'
 import {
@@ -89,6 +90,24 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
   const [probeModel, setProbeModel] = useState(a.probeModel ?? '')
   const [newModel, setNewModel] = useState('')
   const extraModels = a.extraModels ?? []
+  // Empty list = every advertised model is routable; that is the default and
+  // the common case, so the UI says "all" rather than pre-selecting 26 chips.
+  const enabledModels = a.enabledModels ?? []
+  const isModelEnabled = (m: string) => enabledModels.length === 0 || enabledModels.some((x) => x.toLowerCase() === m.toLowerCase())
+  const saveEnabledModels = (list: string[]) =>
+    run('enabledModels', async () => {
+      await put(`/accounts/${a.id}`, { enabledModels: list })
+      toast.success(t('detail.saved'))
+      invalidate()
+    })
+  const toggleModel = (m: string) => {
+    // First click on a fresh account means "only this one", not "all but this".
+    const base = enabledModels.length === 0 ? modelList : enabledModels
+    const next = base.some((x) => x.toLowerCase() === m.toLowerCase())
+      ? base.filter((x) => x.toLowerCase() !== m.toLowerCase())
+      : [...base, m]
+    void saveEnabledModels(next.length === modelList.length ? [] : next)
+  }
   const saveExtraModels = (list: string[]) =>
     run('extra', async () => {
       await put(`/accounts/${a.id}`, { extraModels: list })
@@ -491,15 +510,38 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
         ) : modelList.length === 0 ? (
           <p className="text-xs text-muted-foreground">{t('detail.noModels')}</p>
         ) : (
-          <div className="flex flex-wrap gap-1">
-            {modelList
-              .filter((m) => !extraModels.some((x) => x.toLowerCase() === m.toLowerCase()))
-              .map((m) => (
-                <Badge key={m} variant="outline" className="font-mono">
-                  {m}
-                </Badge>
-              ))}
-          </div>
+          <>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-[11px] text-muted-foreground">
+                {enabledModels.length === 0 ? t('detail.allModelsRoutable') : t('detail.someModelsRoutable', enabledModels.length, modelList.length)}
+              </p>
+              {enabledModels.length > 0 && (
+                <Button variant="ghost" size="sm" className="h-6 px-2 text-[11px]" disabled={!!busy} onClick={() => void saveEnabledModels([])}>
+                  {t('detail.enableAllModels')}
+                </Button>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {modelList
+                .filter((m) => !extraModels.some((x) => x.toLowerCase() === m.toLowerCase()))
+                .map((m) => {
+                  const on = isModelEnabled(m)
+                  return (
+                    <button
+                      key={m}
+                      type="button"
+                      disabled={!!busy}
+                      title={on ? t('detail.disableModel') : t('detail.enableModel')}
+                      onClick={() => toggleModel(m)}
+                    >
+                      <Badge variant={on ? 'outline' : 'secondary'} className={cn('font-mono', !on && 'opacity-40 line-through')}>
+                        {m}
+                      </Badge>
+                    </button>
+                  )
+                })}
+            </div>
+          </>
         )}
         {extraModels.length > 0 && (
           <div className="space-y-1 pt-1">

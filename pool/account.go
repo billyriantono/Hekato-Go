@@ -25,6 +25,7 @@ type AccountPool struct {
 	errorCounts   map[string]int             // 连续错误计数
 	modelLists    map[string]map[string]bool // accountID → set of modelIDs (from ListAvailableModels)
 	modelDenies   map[string]map[string]bool // accountID → models upstream rejected as unknown
+	enabledModels map[string]map[string]bool // accountID → operator allowlist (absent/empty = all)
 }
 
 var (
@@ -39,7 +40,8 @@ func GetPool() *AccountPool {
 			cooldowns:   make(map[string]time.Time),
 			errorCounts: make(map[string]int),
 			modelLists:  make(map[string]map[string]bool),
-			modelDenies: make(map[string]map[string]bool),
+			modelDenies:   make(map[string]map[string]bool),
+			enabledModels: make(map[string]map[string]bool),
 		}
 		pool.Reload()
 	})
@@ -68,6 +70,38 @@ func (p *AccountPool) Reload() {
 	}
 	p.accounts = weighted
 	p.totalAccounts = len(enabled)
+	// Rebuild the allowlists here so a settings change takes effect on the next
+	// request without touching the cached catalogs, which stay complete so the
+	// admin panel can still offer every advertised model to choose from.
+	p.enabledModels = make(map[string]map[string]bool, len(enabled))
+	for _, a := range enabled {
+		if len(a.EnabledModels) == 0 {
+			continue
+		}
+		set := make(map[string]bool, len(a.EnabledModels))
+		for _, m := range a.EnabledModels {
+			if m = strings.ToLower(strings.TrimSpace(m)); m != "" {
+				set[m] = true
+			}
+		}
+		p.enabledModels[a.ID] = set
+	}
+}
+
+// EnabledModels returns the operator allowlist for an account (nil = all).
+func (p *AccountPool) EnabledModels(accountID string) []string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	set := p.enabledModels[accountID]
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for m := range set {
+		out = append(out, m)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // GetNext 获取下一个可用账号（加权轮询）
@@ -292,6 +326,11 @@ func (p *AccountPool) modelKnownAnywhere(modelKey string) bool {
 func (p *AccountPool) accountHasModel(accountID, modelKey string, modelKnown bool) bool {
 	if p.modelDenies[accountID][modelKey] {
 		return false
+	}
+	// An operator allowlist is absolute: it outranks both the advertised
+	// catalog and the optimistic "model unknown anywhere, try it" path below.
+	if allowed := p.enabledModels[accountID]; len(allowed) > 0 {
+		return allowed[modelKey]
 	}
 	list, ok := p.modelLists[accountID]
 	if !ok || len(list) == 0 {

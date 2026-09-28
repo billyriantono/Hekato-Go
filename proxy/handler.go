@@ -936,13 +936,19 @@ func (h *Handler) refreshModelsCache() {
 			h.handleAccountFailure(account, err)
 			continue
 		}
-		// 缓存每账号可用模型，用于路由时过滤
+		// The per-account catalog stays complete — the admin panel offers it as
+		// the menu to pick an allowlist from — but only models this account may
+		// actually serve are advertised to clients.
 		modelIDs := make([]string, 0, len(models))
+		routable := make([]ModelInfo, 0, len(models))
 		for _, m := range models {
 			modelIDs = append(modelIDs, m.ModelId)
+			if account.ServesModel(m.ModelId) {
+				routable = append(routable, m)
+			}
 		}
 		h.pool.SetModelList(account.ID, modelIDs)
-		aggregated = mergeUniqueModels(aggregated, models)
+		aggregated = mergeUniqueModels(aggregated, routable)
 	}
 
 	if len(aggregated) > 0 {
@@ -965,14 +971,18 @@ func (h *Handler) fetchAndCacheAccountModels(account *config.Account) error {
 		return err
 	}
 	modelIDs := make([]string, 0, len(models))
+	routable := make([]ModelInfo, 0, len(models))
 	for _, m := range models {
 		modelIDs = append(modelIDs, m.ModelId)
+		if account.ServesModel(m.ModelId) {
+			routable = append(routable, m)
+		}
 	}
 	h.pool.SetModelList(account.ID, modelIDs)
 
-	// 合并到聚合缓存
+	// 合并到聚合缓存（仅该账号允许路由的模型）
 	h.modelsCacheMu.Lock()
-	h.cachedModels = mergeUniqueModels(h.cachedModels, models)
+	h.cachedModels = mergeUniqueModels(h.cachedModels, routable)
 	h.modelsCacheTime = time.Now().Unix()
 	h.modelsCacheMu.Unlock()
 
@@ -3026,6 +3036,7 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 			"weight":            a.Weight,
 			"probeModel":        a.ProbeModel,
 			"extraModels":       a.ExtraModels,
+			"enabledModels":     a.EnabledModels,
 			"allowPaidModels":   a.AllowPaidModels,
 			"overageStatus":     a.OverageStatus,
 			"overageCapability": a.OverageCapability,
@@ -3155,6 +3166,14 @@ func (h *Handler) apiUpdateAccount(w http.ResponseWriter, r *http.Request, id st
 		for _, item := range v {
 			if id, ok := item.(string); ok && strings.TrimSpace(id) != "" {
 				existing.ExtraModels = append(existing.ExtraModels, strings.TrimSpace(id))
+			}
+		}
+	}
+	if v, ok := updates["enabledModels"].([]interface{}); ok {
+		existing.EnabledModels = existing.EnabledModels[:0:0]
+		for _, item := range v {
+			if id, ok := item.(string); ok && strings.TrimSpace(id) != "" {
+				existing.EnabledModels = append(existing.EnabledModels, strings.TrimSpace(id))
 			}
 		}
 	}

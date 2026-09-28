@@ -86,6 +86,12 @@ type Account struct {
 	// ExtraModels are operator-added model IDs for this account, merged into the
 	// provider's advertised list (for models a catalog does not know yet).
 	ExtraModels []string `json:"extraModels,omitempty"`
+	// EnabledModels restricts routing to these model IDs. Empty means every
+	// model the upstream advertises is routable — the common case. It exists
+	// because a catalog is a menu, not an entitlement: a key may be offered 26
+	// models and be authorised for one, and without this the gateway learns the
+	// difference one failed request at a time.
+	EnabledModels []string `json:"enabledModels,omitempty"`
 	// AllowPaidModels opts the account into the upstream's paid catalog. Default
 	// false keeps providers with a free tier (OpenCode Zen) on zero-cost models
 	// only, so auto-routing cannot pick a model the account has no credit for.
@@ -1254,6 +1260,21 @@ func UpdateAccountRefreshMinutes(minutes int) error {
 	defer cfgLock.Unlock()
 	cfg.AccountRefreshMinutes = minutes
 	return Save()
+}
+
+// ServesModel reports whether the account may be routed the given model.
+// An empty EnabledModels allowlist means "everything advertised".
+func (a *Account) ServesModel(model string) bool {
+	if a == nil || len(a.EnabledModels) == 0 {
+		return true
+	}
+	model = strings.ToLower(strings.TrimSpace(model))
+	for _, m := range a.EnabledModels {
+		if strings.ToLower(strings.TrimSpace(m)) == model {
+			return true
+		}
+	}
+	return false
 }
 
 // GetModelsDevSyncHours returns the models.dev sync interval in hours

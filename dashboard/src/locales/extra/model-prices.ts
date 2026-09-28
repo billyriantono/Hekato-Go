@@ -30,6 +30,11 @@ export const en: Record<string, string> = {
   'settings.modelsDevSyncHint': 'How often the model price catalog is re-pulled and cached. 0 = default (12h), -1 = disabled.',
   'detail.allowPaidModels': 'Allow paid models',
   'detail.allowPaidModelsHint': 'Off: only zero-cost models are advertised for this account, so auto-routing cannot pick one you have no credit for. Turn on after topping up.',
+  'detail.allModelsRoutable': 'All advertised models are routable. Click a model to route only the ones you select.',
+  'detail.someModelsRoutable': 'Routing {0} of {1} advertised models.',
+  'detail.enableAllModels': 'Enable all',
+  'detail.enableModel': 'Enable for routing',
+  'detail.disableModel': 'Stop routing this model',
 }
 
 export const zh: Record<string, string> = {
@@ -63,5 +68,10 @@ export const zh: Record<string, string> = {
   'settings.modelsDevSyncHint': '模型价格目录的重新拉取与缓存频率。0 = 默认（12 小时），-1 = 关闭。',
   'detail.allowPaidModels': '允许付费模型',
   'detail.allowPaidModelsHint': '关闭时该账号只提供零费用模型，自动路由不会选到没有余额的模型。充值后再开启。',
+  'detail.allModelsRoutable': '上游公布的模型全部可路由。点击模型可只路由选中的部分。',
+  'detail.someModelsRoutable': '已启用 {1} 个模型中的 {0} 个。',
+  'detail.enableAllModels': '全部启用',
+  'detail.enableModel': '启用路由',
+  'detail.disableModel': '停止路由该模型',
 }
 
