@@ -3162,10 +3162,23 @@ func (h *Handler) apiUpdateAccount(w http.ResponseWriter, r *http.Request, id st
 		existing.ProbeModel = strings.TrimSpace(v)
 	}
 	if v, ok := updates["extraModels"].([]interface{}); ok {
+		known := make(map[string]bool, len(existing.ExtraModels))
+		for _, m := range existing.ExtraModels {
+			known[strings.ToLower(strings.TrimSpace(m))] = true
+		}
 		existing.ExtraModels = existing.ExtraModels[:0:0]
 		for _, item := range v {
-			if id, ok := item.(string); ok && strings.TrimSpace(id) != "" {
-				existing.ExtraModels = append(existing.ExtraModels, strings.TrimSpace(id))
+			id, ok := item.(string)
+			if !ok || strings.TrimSpace(id) == "" {
+				continue
+			}
+			id = strings.TrimSpace(id)
+			existing.ExtraModels = append(existing.ExtraModels, id)
+			// Adding a model by hand is a statement of intent to use it, so a
+			// new one joins an active allowlist. Without this it would be
+			// added and then silently refused by the allowlist that predates it.
+			if !known[strings.ToLower(id)] && len(existing.EnabledModels) > 0 && !existing.ServesModel(id) {
+				existing.EnabledModels = append(existing.EnabledModels, id)
 			}
 		}
 	}

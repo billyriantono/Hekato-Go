@@ -548,8 +548,15 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
             <p className="text-[11px] text-muted-foreground">{t('detail.manualModels')}</p>
             <div className="flex flex-wrap gap-1">
               {extraModels.map((m) => (
-                <Badge key={m} variant="secondary" className="font-mono">
-                  {m}
+                <Badge key={m} variant="secondary" className={cn('font-mono', !isModelEnabled(m) && 'opacity-40 line-through')}>
+                  <button
+                    type="button"
+                    disabled={!!busy}
+                    title={isModelEnabled(m) ? t('detail.disableModel') : t('detail.enableModel')}
+                    onClick={() => toggleModel(m)}
+                  >
+                    {m}
+                  </button>
                   <button
                     type="button"
                     className="ml-1 opacity-60 hover:opacity-100"
