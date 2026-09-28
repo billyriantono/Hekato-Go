@@ -33,6 +33,8 @@ export const en: Record<string, string> = {
   'detail.allModelsRoutable': 'All advertised models are routable. Click a model to route only the ones you select.',
   'detail.someModelsRoutable': 'Routing {0} of {1} advertised models.',
   'detail.enableAllModels': 'Enable all',
+  'detail.disableAllModels': 'Disable all',
+  'detail.noModelsRoutable': 'No models enabled — this account will not be routed anything. Click a model to enable it.',
   'detail.enableModel': 'Enable for routing',
   'detail.disableModel': 'Stop routing this model',
 }
@@ -71,6 +73,8 @@ export const zh: Record<string, string> = {
   'detail.allModelsRoutable': '上游公布的模型全部可路由。点击模型可只路由选中的部分。',
   'detail.someModelsRoutable': '已启用 {1} 个模型中的 {0} 个。',
   'detail.enableAllModels': '全部启用',
+  'detail.disableAllModels': '全部停用',
+  'detail.noModelsRoutable': '没有启用任何模型 —— 该账号不会被路由任何请求。点击模型即可启用。',
   'detail.enableModel': '启用路由',
   'detail.disableModel': '停止路由该模型',
 }

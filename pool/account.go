@@ -75,9 +75,12 @@ func (p *AccountPool) Reload() {
 	// admin panel can still offer every advertised model to choose from.
 	p.enabledModels = make(map[string]map[string]bool, len(enabled))
 	for _, a := range enabled {
-		if len(a.EnabledModels) == 0 {
-			continue
+		if a.EnabledModels == nil {
+			continue // no allowlist at all: everything advertised is routable
 		}
+		// An empty (but present) allowlist is recorded as an empty set, which
+		// accountHasModel reads as "nothing routable" — the persisted result of
+		// "disable all", not a missing value.
 		set := make(map[string]bool, len(a.EnabledModels))
 		for _, m := range a.EnabledModels {
 			if m = strings.ToLower(strings.TrimSpace(m)); m != "" {
@@ -92,9 +95,12 @@ func (p *AccountPool) Reload() {
 func (p *AccountPool) EnabledModels(accountID string) []string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	set := p.enabledModels[accountID]
+	set, ok := p.enabledModels[accountID]
+	if !ok {
+		return nil // no allowlist
+	}
 	if len(set) == 0 {
-		return nil
+		return []string{} // an allowlist permitting nothing
 	}
 	out := make([]string, 0, len(set))
 	for m := range set {
@@ -329,7 +335,7 @@ func (p *AccountPool) accountHasModel(accountID, modelKey string, modelKnown boo
 	}
 	// An operator allowlist is absolute: it outranks both the advertised
 	// catalog and the optimistic "model unknown anywhere, try it" path below.
-	if allowed := p.enabledModels[accountID]; len(allowed) > 0 {
+	if allowed, ok := p.enabledModels[accountID]; ok {
 		return allowed[modelKey]
 	}
 	list, ok := p.modelLists[accountID]

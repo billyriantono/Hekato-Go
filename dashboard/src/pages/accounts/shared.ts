@@ -8,7 +8,7 @@ export type Account = {
   providerKind?: string
   probeModel?: string
   extraModels?: string[]
-  enabledModels?: string[]
+  enabledModels?: string[] | null
   allowPaidModels?: boolean
   provider: string
   region: string

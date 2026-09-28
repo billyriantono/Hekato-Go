@@ -90,23 +90,26 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
   const [probeModel, setProbeModel] = useState(a.probeModel ?? '')
   const [newModel, setNewModel] = useState('')
   const extraModels = a.extraModels ?? []
-  // Empty list = every advertised model is routable; that is the default and
-  // the common case, so the UI says "all" rather than pre-selecting 26 chips.
-  const enabledModels = a.enabledModels ?? []
-  const isModelEnabled = (m: string) => enabledModels.length === 0 || enabledModels.some((x) => x.toLowerCase() === m.toLowerCase())
-  const saveEnabledModels = (list: string[]) =>
+  // Tri-state, mirroring the backend: null = no allowlist (everything routes,
+  // the default), [] = allow nothing, [ids] = only those. null and [] must stay
+  // distinct or "disable all" silently becomes "enable all".
+  const allowlist: string[] | null = a.enabledModels ?? null
+  const isModelEnabled = (m: string) => allowlist === null || allowlist.some((x) => x.toLowerCase() === m.toLowerCase())
+  const saveEnabledModels = (list: string[] | null) =>
     run('enabledModels', async () => {
       await put(`/accounts/${a.id}`, { enabledModels: list })
       toast.success(t('detail.saved'))
       invalidate()
     })
   const toggleModel = (m: string) => {
-    // First click on a fresh account means "only this one", not "all but this".
-    const base = enabledModels.length === 0 ? modelList : enabledModels
+    // First click on an account without an allowlist means "only this one",
+    // not "all but this one" — opening the list implies narrowing it.
+    const base = allowlist ?? modelList
     const next = base.some((x) => x.toLowerCase() === m.toLowerCase())
       ? base.filter((x) => x.toLowerCase() !== m.toLowerCase())
       : [...base, m]
-    void saveEnabledModels(next.length === modelList.length ? [] : next)
+    // Selecting everything again is the same as having no allowlist at all.
+    void saveEnabledModels(next.length === modelList.length ? null : next)
   }
   const saveExtraModels = (list: string[]) =>
     run('extra', async () => {
@@ -155,12 +158,17 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
     queryFn: () => get<{ models: string[] }>(`/accounts/${a.id}/models/cached`),
   })
   const modelList = models.data?.models ?? []
+  // Probing a model the operator disabled proves nothing about the account, so
+  // the test and warmup pickers only offer what this account will actually
+  // route. The chip list above still shows the full catalog — that is the menu
+  // the allowlist is chosen from.
+  const routableModelList = modelList.filter(isModelEnabled)
   const settings = useQuery({ queryKey: ['settings'], queryFn: () => get<{ testModel?: string }>('/settings') })
   const configuredTestModel = settings.data?.testModel?.trim() ?? ''
   const accountDefaultModel =
-    modelList.find((model) => model.toLowerCase() === (a.probeModel ?? '').toLowerCase()) ??
-    modelList.find((model) => model.toLowerCase() === configuredTestModel.toLowerCase())
-  const selectedTestModel = testModel ?? accountDefaultModel ?? modelList[0] ?? ''
+    routableModelList.find((model) => model.toLowerCase() === (a.probeModel ?? '').toLowerCase()) ??
+    routableModelList.find((model) => model.toLowerCase() === configuredTestModel.toLowerCase())
+  const selectedTestModel = testModel ?? accountDefaultModel ?? routableModelList[0] ?? ''
 
   const saveIdentity = () =>
     run('identity', async () => {
@@ -329,7 +337,7 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
           <ModelCombobox
             value={probeModel}
             onChange={setProbeModel}
-            options={modelList}
+            options={routableModelList}
             placeholder={t('detail.probeModelDefault')}
             emptyLabel={t('detail.probeModelDefault')}
             className="w-full"
@@ -513,13 +521,24 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
           <>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-[11px] text-muted-foreground">
-                {enabledModels.length === 0 ? t('detail.allModelsRoutable') : t('detail.someModelsRoutable', enabledModels.length, modelList.length)}
+                {allowlist === null
+                  ? t('detail.allModelsRoutable')
+                  : allowlist.length === 0
+                    ? t('detail.noModelsRoutable')
+                    : t('detail.someModelsRoutable', allowlist.length, modelList.length)}
               </p>
-              {enabledModels.length > 0 && (
-                <Button variant="ghost" size="sm" className="h-6 px-2 text-[11px]" disabled={!!busy} onClick={() => void saveEnabledModels([])}>
-                  {t('detail.enableAllModels')}
-                </Button>
-              )}
+              <div className="flex items-center gap-1">
+                {allowlist !== null && (
+                  <Button variant="ghost" size="sm" className="h-6 px-2 text-[11px]" disabled={!!busy} onClick={() => void saveEnabledModels(null)}>
+                    {t('detail.enableAllModels')}
+                  </Button>
+                )}
+                {(allowlist === null || allowlist.length > 0) && (
+                  <Button variant="ghost" size="sm" className="h-6 px-2 text-[11px]" disabled={!!busy} onClick={() => void saveEnabledModels([])}>
+                    {t('detail.disableAllModels')}
+                  </Button>
+                )}
+              </div>
             </div>
             <div className="flex flex-wrap gap-1">
               {modelList
@@ -594,7 +613,7 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
 
       <Section title={t('accounts.testModalTitle')}>
         <div className="flex gap-2">
-          <ModelCombobox value={selectedTestModel} onChange={setTestModel} options={modelList} placeholder={t('models.searchPlaceholder')} className="flex-1" />
+          <ModelCombobox value={selectedTestModel} onChange={setTestModel} options={routableModelList} placeholder={t('models.searchPlaceholder')} className="flex-1" />
           <Button size="sm" onClick={runTest} disabled={!!busy}>
             {spin('test') ?? <LuFlaskConical />} {t('accounts.test')}
           </Button>

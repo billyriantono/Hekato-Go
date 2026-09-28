@@ -3177,17 +3177,25 @@ func (h *Handler) apiUpdateAccount(w http.ResponseWriter, r *http.Request, id st
 			// Adding a model by hand is a statement of intent to use it, so a
 			// new one joins an active allowlist. Without this it would be
 			// added and then silently refused by the allowlist that predates it.
-			if !known[strings.ToLower(id)] && len(existing.EnabledModels) > 0 && !existing.ServesModel(id) {
+			if !known[strings.ToLower(id)] && existing.EnabledModels != nil && !existing.ServesModel(id) {
 				existing.EnabledModels = append(existing.EnabledModels, id)
 			}
 		}
 	}
-	if v, ok := updates["enabledModels"].([]interface{}); ok {
-		existing.EnabledModels = existing.EnabledModels[:0:0]
-		for _, item := range v {
-			if id, ok := item.(string); ok && strings.TrimSpace(id) != "" {
-				existing.EnabledModels = append(existing.EnabledModels, strings.TrimSpace(id))
+	if raw, present := updates["enabledModels"]; present {
+		// null clears the allowlist (everything advertised routes again);
+		// [] is an allowlist permitting nothing. The two must not collapse.
+		switch v := raw.(type) {
+		case nil:
+			existing.EnabledModels = nil
+		case []interface{}:
+			list := make([]string, 0, len(v))
+			for _, item := range v {
+				if id, ok := item.(string); ok && strings.TrimSpace(id) != "" {
+					list = append(list, strings.TrimSpace(id))
+				}
 			}
+			existing.EnabledModels = list
 		}
 	}
 	if v, ok := updates["allowPaidModels"].(bool); ok {

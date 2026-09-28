@@ -87,11 +87,17 @@ func isTransient(err error) bool {
 // flash / lite / mini / small), else the first advertised, else a Claude
 // default. Never the first catalog entry blindly: that can be the priciest.
 func probeModelFor(account *config.Account) string {
-	if account != nil && strings.TrimSpace(account.ProbeModel) != "" {
-		return strings.TrimSpace(account.ProbeModel)
+	// Every branch below is filtered through the account's allowlist: probing a
+	// model the operator has disabled proves nothing about the account and
+	// reports a failure they deliberately arranged.
+	if p := strings.TrimSpace(account.GetProbeModel()); p != "" && account.ServesModel(p) {
+		return p
 	}
 	models, err := ListAvailableModels(account)
-	if preferred := config.GetTestModel(); preferred != "" {
+	if err == nil {
+		models = routableModels(account, models)
+	}
+	if preferred := config.GetTestModel(); preferred != "" && account.ServesModel(preferred) {
 		if err != nil || len(models) == 0 {
 			return preferred
 		}
@@ -109,7 +115,25 @@ func probeModelFor(account *config.Account) string {
 		}
 		return cheapestModel(models)
 	}
+	// With an allowlist in force the generic default is not ours to pick.
+	if account != nil && len(account.EnabledModels) > 0 {
+		return account.EnabledModels[0]
+	}
 	return "claude-sonnet-4.5"
+}
+
+// routableModels drops models the account's allowlist excludes.
+func routableModels(account *config.Account, models []ModelInfo) []ModelInfo {
+	if account == nil || len(account.EnabledModels) == 0 {
+		return models
+	}
+	out := make([]ModelInfo, 0, len(models))
+	for _, m := range models {
+		if account.ServesModel(m.ModelId) {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // cheapestModel prefers small / fast tiers by name; falls back to the first.
