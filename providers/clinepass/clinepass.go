@@ -67,7 +67,7 @@ func doClinepassRequest(account *config.Account, body []byte, stream bool) (*htt
 	if stream {
 		req.Header.Set("Accept", "text/event-stream")
 	}
-	return providers.GetRestClientForAccount(account).Do(req)
+	return providers.GetClientForAccount(account).Do(req)
 }
 
 // CallOpenAI forwards an OpenAI Chat-Completions request to ClinePass. The

@@ -72,7 +72,7 @@ func doCodexRequest(account *config.Account, req *providers.ResponsesRequest) (*
 	}
 	setCodexHeaders(httpReq, account)
 
-	client := providers.GetRestClientForAccount(account)
+	client := providers.GetClientForAccount(account)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("codex request: %w", err)

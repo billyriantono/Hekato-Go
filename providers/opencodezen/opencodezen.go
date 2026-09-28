@@ -56,7 +56,7 @@ func CallOpenAI(account *config.Account, req *providers.OpenAIRequest, callback 
 	setHeaders(httpReq, account)
 	httpReq.Header.Set("Accept", "text/event-stream")
 
-	resp, err := providers.GetRestClientForAccount(account).Do(httpReq)
+	resp, err := providers.GetClientForAccount(account).Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("opencodezen upstream: %w", err)
 	}
@@ -89,7 +89,7 @@ func CallUpstream(w http.ResponseWriter, flusher http.Flusher, account *config.A
 	setHeaders(httpReq, account)
 	httpReq.Header.Set("Accept", "text/event-stream")
 
-	resp, err := providers.GetRestClientForAccount(account).Do(httpReq)
+	resp, err := providers.GetClientForAccount(account).Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("opencodezen responses upstream: %w", err)
 	}
@@ -200,7 +200,7 @@ func callResponsesForChat(account *config.Account, req *providers.OpenAIRequest,
 	}
 	setHeaders(httpReq, account)
 	httpReq.Header.Set("Accept", "text/event-stream")
-	resp, err := providers.GetRestClientForAccount(account).Do(httpReq)
+	resp, err := providers.GetClientForAccount(account).Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("opencodezen responses upstream: %w", err)
 	}
@@ -403,7 +403,7 @@ func CallSystemOne(account *config.Account, body []byte) (int, []byte, error) {
 	}
 	setHeaders(httpReq, account)
 	httpReq.Header.Set("Accept", "application/json")
-	resp, err := providers.GetRestClientForAccount(account).Do(httpReq)
+	resp, err := providers.GetClientForAccount(account).Do(httpReq)
 	if err != nil {
 		return 0, nil, fmt.Errorf("opencodezen systemone upstream: %w", err)
 	}

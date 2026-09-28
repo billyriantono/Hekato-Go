@@ -83,7 +83,7 @@ func doRequest(account *config.Account, body []byte, stream bool) (*http.Respons
 	} else {
 		req.Header.Set("Accept", "application/json")
 	}
-	return providers.GetRestClientForAccount(account).Do(req)
+	return providers.GetClientForAccount(account).Do(req)
 }
 
 // oaiChoice mirrors the OpenAI chat-completions response shape; shared

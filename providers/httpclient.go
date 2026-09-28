@@ -62,9 +62,18 @@ func clientForAccount(account *config.Account, rest bool) *http.Client {
 	return client
 }
 
+// GetClientForAccount returns the client for model inference: no overall
+// deadline, liveness enforced by the idle-timeout transport. Use it for every
+// call that waits on a model, streaming or not — a reasoning model can spend a
+// minute on its first token and several more finishing, and an overall
+// deadline cannot tell that apart from a hang.
 func GetClientForAccount(account *config.Account) *http.Client {
 	return clientForAccount(account, false)
 }
+
+// GetRestClientForAccount returns the 30-second client for metadata: model
+// lists, quota, billing, token refresh. These answer immediately or are broken,
+// so a short cap is a feature. Never use it for inference.
 func GetRestClientForAccount(account *config.Account) *http.Client {
 	return clientForAccount(account, true)
 }

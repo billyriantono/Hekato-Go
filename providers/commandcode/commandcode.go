@@ -58,7 +58,7 @@ func CallOpenAI(account *config.Account, req *providers.OpenAIRequest, callback 
 	}
 	setHeaders(httpReq, account, true)
 
-	resp, err := providers.GetRestClientForAccount(account).Do(httpReq)
+	resp, err := providers.GetClientForAccount(account).Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("commandcode upstream: %w", err)
 	}
