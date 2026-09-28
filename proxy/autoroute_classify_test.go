@@ -3,6 +3,7 @@ package proxy
 import (
 	"hekato-go/config"
 	"testing"
+	"time"
 )
 
 // Real request shapes from the production decision ring. The agent toolset is
@@ -91,5 +92,53 @@ func TestAffordability(t *testing.T) {
 	unknown := routeCandidate{account: &config.Account{}, model: "some-unlisted-model"}
 	if a := affordability(unknown); a != 0.5 {
 		t.Errorf("unpriced model should be treated as mid-market, got %.3f", a)
+	}
+}
+
+// Exploration must fade as the bandit accumulates evidence, or a tenth of all
+// traffic stays random forever.
+func TestExploreRateDecaysWithEvidence(t *testing.T) {
+	cfg := config.AutoRouteConfig{Explore: 0.1}
+	acc := &config.Account{ID: "a"}
+	cands := []routeCandidate{{account: acc, model: "m1"}, {account: acc, model: "m2"}}
+	now := time.Now()
+
+	if got := exploreRate(cfg, cands, map[string]*candidateStats{}, now); got != 0.1 {
+		t.Errorf("with no evidence, explore should stay at the configured rate, got %.3f", got)
+	}
+
+	half := map[string]*candidateStats{
+		statKey("a", "m1"): {Successes: 5, Failures: 5},
+	}
+	if got := exploreRate(cfg, cands, half, now); got <= 0 || got >= 0.1 {
+		t.Errorf("partial evidence should reduce but not eliminate exploration, got %.3f", got)
+	}
+
+	mature := map[string]*candidateStats{
+		statKey("a", "m1"): {Successes: 30, Failures: 4},
+	}
+	if got := exploreRate(cfg, cands, mature, now); got != 0 {
+		t.Errorf("a well-observed pool needs no epsilon on top of Thompson, got %.3f", got)
+	}
+	if got := exploreRate(config.AutoRouteConfig{Explore: 0}, cands, nil, now); got != 0 {
+		t.Errorf("explore disabled must stay disabled, got %.3f", got)
+	}
+}
+
+// "=id" pins a tier entry to one model instead of everything sharing its prefix.
+func TestExactTierEntries(t *testing.T) {
+	patterns := []string{"=gemini-3.1-pro"}
+	if !matchesTier("gemini-3.1-pro", patterns) {
+		t.Error("exact entry should match its model")
+	}
+	if matchesTier("gemini-3.1-pro-preview", patterns) {
+		t.Error("exact entry must not match a longer id")
+	}
+	if !matchesTier("GEMINI-3.1-PRO", patterns) {
+		t.Error("exact matching stays case-insensitive")
+	}
+	// Substring entries keep working alongside.
+	if !matchesTier("gemini-3.0-flash", []string{"gemini"}) {
+		t.Error("substring entries must still match")
 	}
 }

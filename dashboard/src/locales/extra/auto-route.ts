@@ -6,6 +6,12 @@ export const en: Record<string, string> = {
   'overview.wantedTier': 'wanted {0}',
   'overview.quarantined': 'quarantined',
   'overview.quarantinedUntil': 'Skipped by the router until {0} — the upstream rejected this model on this account.',
+  'overview.deadPatterns': 'Matching nothing routable: {0}',
+  'settings.autoRoute.keywordRules': 'Keyword rules',
+  'settings.autoRoute.keywordRulesHint':
+    'Literal keywords in the last user message force a tier, overriding the heuristic. Comma-separated; first matching rule wins.',
+  'settings.autoRoute.keywordsPlaceholder': 'kubernetes, race condition, migration',
+  'settings.autoRoute.addKeywordRule': 'Add rule',
 }
 
 export const zh: Record<string, string> = {
@@ -15,4 +21,9 @@ export const zh: Record<string, string> = {
   'overview.wantedTier': '期望 {0}',
   'overview.quarantined': '已隔离',
   'overview.quarantinedUntil': '路由将跳过该组合直到 {0} —— 上游拒绝了该账号上的此模型。',
+  'overview.deadPatterns': '未匹配到任何可用模型：{0}',
+  'settings.autoRoute.keywordRules': '关键词规则',
+  'settings.autoRoute.keywordRulesHint': '最后一条用户消息中出现这些字面关键词时强制使用该档位，优先于启发式判断。逗号分隔，首条匹配生效。',
+  'settings.autoRoute.keywordsPlaceholder': 'kubernetes, 竞态条件, 数据迁移',
+  'settings.autoRoute.addKeywordRule': '添加规则',
 }

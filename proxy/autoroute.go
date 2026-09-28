@@ -293,11 +293,26 @@ func isAutoModel(model string) bool {
 	return strings.EqualFold(strings.TrimSpace(model), autoModelName)
 }
 
+// matchesTier reports whether model belongs to a tier.
+//
+// Entries are substrings by default, which is convenient and occasionally too
+// generous: "gemini" swept in gemini-3.0-flash, which one provider rejects
+// outright. An entry prefixed with "=" is matched exactly, so an operator can
+// name one model without also claiming everything that shares its prefix.
 func matchesTier(model string, patterns []string) bool {
-	m := strings.ToLower(model)
+	m := strings.ToLower(strings.TrimSpace(model))
 	for _, p := range patterns {
 		p = strings.ToLower(strings.TrimSpace(p))
-		if p != "" && strings.Contains(m, p) {
+		if p == "" {
+			continue
+		}
+		if exact, ok := strings.CutPrefix(p, "="); ok {
+			if m == strings.TrimSpace(exact) {
+				return true
+			}
+			continue
+		}
+		if strings.Contains(m, p) {
 			return true
 		}
 	}
@@ -387,7 +402,7 @@ search:
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	explored := r.rng.Float64() < cfg.Explore
+	explored := r.rng.Float64() < exploreRate(cfg, cands, r.stats, now)
 	best := -1.0
 	var pick routeCandidate
 	var pickScore float64
@@ -440,6 +455,31 @@ search:
 	}
 	r.pushLocked(d)
 	return &d
+}
+
+// exploreMaturity is the number of observations across a candidate set beyond
+// which random exploration is considered redundant.
+const exploreMaturity = 20.0
+
+// exploreRate scales epsilon-exploration down as the bandit learns.
+//
+// Thompson sampling already explores: an unobserved candidate draws from a
+// wide posterior and wins often. The fixed epsilon on top of it was useful
+// only while every candidate sat at the same prior — and with the old
+// one-hour half-life that was always, so a tenth of all traffic was routed at
+// random forever. Exploration now fades as evidence accumulates.
+func exploreRate(cfg config.AutoRouteConfig, cands []routeCandidate, stats map[string]*candidateStats, now time.Time) float64 {
+	if cfg.Explore <= 0 || len(cands) == 0 {
+		return 0
+	}
+	observations := 0.0
+	for _, c := range cands {
+		if st := stats[statKey(c.account.ID, c.model)]; st != nil {
+			observations += st.Successes + st.Failures
+		}
+	}
+	maturity := math.Min(1, observations/exploreMaturity)
+	return cfg.Explore * (1 - maturity)
 }
 
 // priceReference is the per-1M price treated as "mid-market": a model at this
@@ -974,6 +1014,10 @@ type tierHealthRow struct {
 	Wanted     int    `json:"wanted"`
 	Served     int    `json:"served"`
 	Starved    int    `json:"starved"`
+	// DeadPatterns are tier entries matching nothing routable right now —
+	// a typo, a retired model, or an account that has gone quiet. They are the
+	// usual reason a tier is starved while looking well populated in settings.
+	DeadPatterns []string `json:"deadPatterns,omitempty"`
 }
 
 // tierHealth answers the question the decision ring could only hint at: a tier
@@ -985,6 +1029,11 @@ func (h *Handler) tierHealth(dec []routeDecision) []tierHealthRow {
 		rows[i] = tierHealthRow{
 			Tier:       tierNames[i],
 			Candidates: len(h.autoRouter.candidates(h.pool, patterns, nil, cfg)),
+		}
+		for _, p := range patterns {
+			if len(h.autoRouter.candidates(h.pool, []string{p}, nil, cfg)) == 0 {
+				rows[i].DeadPatterns = append(rows[i].DeadPatterns, p)
+			}
 		}
 	}
 	index := map[string]int{tierNames[0]: 0, tierNames[1]: 1, tierNames[2]: 2}
