@@ -23,23 +23,89 @@ import (
 const autoModelName = "auto"
 
 // routeSignals are the locally observable complexity signals of a request.
+// Content-derived flags are booleans by design: signals are persisted in the
+// decision ring and shown in the admin panel, so the prompt text that produced
+// them is deliberately not carried here.
 type routeSignals struct {
 	InputTokens int  `json:"inputTokens"`
 	Tools       int  `json:"tools"`
 	Turns       int  `json:"turns"`
 	Images      bool `json:"images"`
 	Thinking    bool `json:"thinking"`
+	// Code, Reasoning and Simple describe the last user message.
+	Code      bool `json:"code,omitempty"`
+	Reasoning bool `json:"reasoning,omitempty"`
+	Simple    bool `json:"simple,omitempty"`
+	// KeywordTier is a tier forced by an operator rule (0 = unset, else tier+1,
+	// so the zero value of the struct means "no rule matched").
+	KeywordTier int `json:"keywordTier,omitempty"`
 }
 
 var tierNames = [3]string{"fast", "balanced", "strong"}
 
-// classifyTier maps signals to a tier index (0 fast, 1 balanced, 2 strong).
-// ponytail: fixed thresholds; make them configurable if operators ask.
+// Tier thresholds over the additive complexity score below.
+// ponytail: fixed weights; make them configurable if operators ask.
+const (
+	strongScore   = 4
+	balancedScore = 2
+)
+
+// classifyTier scores a request and maps the score to a tier (0 fast,
+// 1 balanced, 2 strong).
+//
+// This used to be a cascade in which "tools >= 8" meant strong. Every coding
+// agent sends its whole toolset on every turn, so in production that single
+// clause decided nearly everything: 19 of 25 classified requests arrived with
+// exactly 13 tools, and a 300-token "hi" was sorted with a 70k-token refactor.
+// Tool count is now worth one point among several, and what the user actually
+// wrote carries real weight.
 func classifyTier(s routeSignals) int {
+	// An operator keyword rule is an instruction, not a hint.
+	if s.KeywordTier > 0 {
+		return s.KeywordTier - 1
+	}
+	score := 0
 	switch {
-	case s.Thinking || s.InputTokens > 40000 || s.Tools >= 8:
+	// A prompt this large is heavy work on its own terms, whatever else the
+	// request looks like — decisive, like explicit thinking, but still
+	// cancellable by a one-word message.
+	case s.InputTokens > 40000:
+		score += strongScore
+	case s.InputTokens > 12000:
+		score += 2
+	case s.InputTokens > 4000:
+		score++
+	}
+	if s.Turns > 20 {
+		score++
+	}
+	if s.Tools > 0 {
+		score++
+	}
+	if s.Images {
+		score++
+	}
+	if s.Code {
+		score++
+	}
+	if s.Reasoning {
+		score += 2
+	}
+	// A client explicitly asking for extended thinking is stating intent, not
+	// leaving a hint to be weighed: on its own it reaches the strong tier. It
+	// can still be pulled back down by a trivial message ("ok" with thinking
+	// on is not hard work).
+	if s.Thinking {
+		score += strongScore
+	}
+	// A one-line acknowledgement is cheap work whatever else the envelope says.
+	if s.Simple {
+		score -= 2
+	}
+	switch {
+	case score >= strongScore:
 		return 2
-	case s.InputTokens > 6000 || s.Tools > 0 || s.Turns > 6 || s.Images:
+	case score >= balancedScore:
 		return 1
 	default:
 		return 0
@@ -339,11 +405,7 @@ search:
 		if st.EwmaLatency > 0 {
 			speed = 1 / (1 + st.EwmaLatency/2000)
 		}
-		budget := 1.0
-		if c.account.UsageLimit > 0 {
-			budget = math.Max(0, 1-c.account.UsagePercent)
-		}
-		score := reliability * (1 - cfg.SpeedWeight*(1-speed)) * (1 - cfg.CostWeight*(1-budget))
+		score := reliability * (1 - cfg.SpeedWeight*(1-speed)) * (1 - cfg.CostWeight*(1-affordability(c)))
 		if explored {
 			if c == pick {
 				pickScore = score
@@ -378,6 +440,33 @@ search:
 	}
 	r.pushLocked(d)
 	return &d
+}
+
+// priceReference is the per-1M price treated as "mid-market": a model at this
+// price scores 0.5 on affordability, free models score 1, and something ten
+// times dearer lands near 0.09. Chosen so the curve discriminates across the
+// range actually seen in the catalog ($0 to $30/1M) rather than saturating.
+const priceReference = 2.0
+
+// affordability scores what a candidate costs to use, from 1 (free and
+// unthrottled) down towards 0.
+//
+// It weighs two unrelated meanings of "expensive" and takes the harsher:
+// money (models.dev price per 1M tokens) and quota (how little of a metered
+// account is left). Multiplying them would compound two independent penalties
+// into a number that means neither; the minimum keeps the binding constraint
+// legible. A model the catalog does not price is treated as mid-market — an
+// unknown price is not evidence of a cheap one.
+func affordability(c routeCandidate) float64 {
+	money := 0.5
+	if price, ok := modelsdev.BlendedPrice(c.model); ok {
+		money = priceReference / (priceReference + price)
+	}
+	quota := 1.0
+	if c.account != nil && c.account.UsageLimit > 0 {
+		quota = math.Max(0, 1-c.account.UsagePercent)
+	}
+	return math.Min(money, quota)
 }
 
 // onlyVision keeps candidates whose model is known to accept images.
@@ -719,6 +808,7 @@ func (h *Handler) fallbackAutoModel(cfg config.AutoRouteConfig, filter pool.Acco
 
 func claudeRouteSignals(req *ClaudeRequest, inputTokens int, thinking bool) routeSignals {
 	s := routeSignals{InputTokens: inputTokens, Tools: len(req.Tools), Turns: len(req.Messages), Thinking: thinking}
+	s.applyContent(lastClaudeUserText(req))
 	for _, m := range req.Messages {
 		if blocks, ok := m.Content.([]interface{}); ok {
 			for _, b := range blocks {
@@ -733,6 +823,7 @@ func claudeRouteSignals(req *ClaudeRequest, inputTokens int, thinking bool) rout
 
 func openAIRouteSignals(req *OpenAIRequest, inputTokens int, thinking bool) routeSignals {
 	s := routeSignals{InputTokens: inputTokens, Tools: len(req.Tools), Turns: len(req.Messages), Thinking: thinking}
+	s.applyContent(lastOpenAIUserText(req))
 	for _, m := range req.Messages {
 		if parts, ok := m.Content.([]interface{}); ok {
 			for _, p := range parts {
@@ -743,6 +834,82 @@ func openAIRouteSignals(req *OpenAIRequest, inputTokens int, thinking bool) rout
 		}
 	}
 	return s
+}
+
+// applyContent folds the content signals of the last user message into s.
+// The text is analysed and discarded; only the resulting flags are kept.
+func (s *routeSignals) applyContent(text string) {
+	c := analyseText(text, config.GetAutoRouteConfig())
+	s.Code, s.Reasoning, s.Simple = c.Code, c.Reasoning, c.Simple
+	if c.KeywordTier >= 0 {
+		s.KeywordTier = c.KeywordTier + 1 // 0 stays "no rule matched"
+	}
+}
+
+// lastClaudeUserText flattens the final user message to plain text. Tool
+// results are skipped: a tool-output turn says nothing about how hard the
+// user's actual request is.
+func lastClaudeUserText(req *ClaudeRequest) string {
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		m := req.Messages[i]
+		if !strings.EqualFold(m.Role, "user") {
+			continue
+		}
+		switch v := m.Content.(type) {
+		case string:
+			if strings.TrimSpace(v) != "" {
+				return truncateForAnalysis(v)
+			}
+		case []interface{}:
+			var b strings.Builder
+			for _, blk := range v {
+				bm, ok := blk.(map[string]interface{})
+				if !ok || bm["type"] != "text" {
+					continue // tool_result / image blocks carry no user intent
+				}
+				if t, ok := bm["text"].(string); ok {
+					b.WriteString(t)
+					b.WriteByte('\n')
+				}
+			}
+			if strings.TrimSpace(b.String()) != "" {
+				return truncateForAnalysis(b.String())
+			}
+		}
+	}
+	return ""
+}
+
+// lastOpenAIUserText is lastClaudeUserText for the OpenAI message shape.
+func lastOpenAIUserText(req *OpenAIRequest) string {
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		m := req.Messages[i]
+		if !strings.EqualFold(m.Role, "user") {
+			continue
+		}
+		switch v := m.Content.(type) {
+		case string:
+			if strings.TrimSpace(v) != "" {
+				return truncateForAnalysis(v)
+			}
+		case []interface{}:
+			var b strings.Builder
+			for _, part := range v {
+				pm, ok := part.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if t, ok := pm["text"].(string); ok {
+					b.WriteString(t)
+					b.WriteByte('\n')
+				}
+			}
+			if strings.TrimSpace(b.String()) != "" {
+				return truncateForAnalysis(b.String())
+			}
+		}
+	}
+	return ""
 }
 
 // ---- admin API ----

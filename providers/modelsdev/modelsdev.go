@@ -83,6 +83,9 @@ var (
 	// context window; rebuilt whenever the catalog size changes.
 	index      map[string]int
 	indexedFor int
+	// priceIndex mirrors index for the blended per-1M price.
+	priceIndex map[string]float64
+	pricedFor  int
 )
 
 // blob is the persisted shape of the catalog.
@@ -249,6 +252,46 @@ func ContextLimit(modelID string) int {
 		}
 	}
 	return best
+}
+
+// BlendedPrice returns a single USD-per-1M-token figure for modelID, weighting
+// input 3:1 against output — agent traffic is overwhelmingly prompt, not
+// completion. Returns false when the catalog does not price the model.
+//
+// Where a model is resold at different prices, the highest wins. That is the
+// mirror of ContextLimit taking the lowest: both answer "what is the worst
+// this choice can cost me", which is the only safe basis for a routing bet.
+func BlendedPrice(modelID string) (float64, bool) {
+	models, _, err := List()
+	if err != nil {
+		return 0, false
+	}
+	mu.Lock()
+	if priceIndex == nil || pricedFor != len(models) {
+		priceIndex = make(map[string]float64, len(models)*2)
+		for _, m := range models {
+			blended := 0.75*m.Input + 0.25*m.Output
+			for _, k := range modelKeys(m.ID) {
+				if cur, ok := priceIndex[k]; !ok || blended > cur {
+					priceIndex[k] = blended
+				}
+			}
+		}
+		pricedFor = len(models)
+	}
+	idx := priceIndex
+	mu.Unlock()
+
+	worst, found := 0.0, false
+	for _, k := range modelKeys(modelID) {
+		if v, ok := idx[k]; ok {
+			found = true
+			if v > worst {
+				worst = v
+			}
+		}
+	}
+	return worst, found
 }
 
 // modelKeys yields the lookup spellings of a model id, most specific first:
