@@ -64,3 +64,4 @@ export const zh: Record<string, string> = {
   'detail.allowPaidModels': '允许付费模型',
   'detail.allowPaidModelsHint': '关闭时该账号只提供零费用模型，自动路由不会选到没有余额的模型。充值后再开启。',
 }
+

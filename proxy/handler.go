@@ -1894,6 +1894,11 @@ func (h *Handler) recordFailureTimed(w http.ResponseWriter, endpoint, model, acc
 
 	h.appendRequestLog(entry)
 	h.autoRouter.Record(accountID, model, false, 0)
+	if errType == "model" {
+		// The upstream will say the same thing next time; stop offering this
+		// pair to the router for a while.
+		h.autoRouter.RecordHardFailure(accountID, model, errMsg)
+	}
 	h.metrics.Record(endpoint, model, accountID, false, 0, 0, 0)
 }
 
@@ -2000,6 +2005,8 @@ func classifyError(msg string) string {
 		return "overage"
 	case isSuspensionErrorMessage(msg):
 		return "suspended"
+	case isModelRejectionMessage(msg):
+		return "model"
 	case isAuthErrorMessage(msg):
 		return "auth"
 	case isProfileUnavailableErrorMessage(msg):

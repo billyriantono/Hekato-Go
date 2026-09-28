@@ -46,15 +46,63 @@ func classifyTier(s routeSignals) int {
 	}
 }
 
+// effectiveTier is the tier a request routes to: the classified tier moved by
+// the quality/cost preference. Resolve and the affinity-pin check must agree on
+// it, or a pinned conversation is judged against a tier it never wanted.
+func effectiveTier(cfg config.AutoRouteConfig, sig routeSignals) int {
+	tier := classifyTier(sig)
+	// Quality pushes up, cost pushes down. Only a clear preference moves the tier.
+	shift := cfg.QualityWeight - cfg.CostWeight
+	if shift >= 0.5 {
+		tier++
+	} else if shift <= -0.5 {
+		tier--
+	}
+	return int(math.Max(0, math.Min(2, float64(tier))))
+}
+
+// tierOfModel reports the highest tier whose patterns match model, or -1 when
+// no tier claims it. Highest wins because patterns overlap (glm-5.3-flash sits
+// in both fast and balanced) and the generous reading avoids evicting a pin
+// that is in fact strong enough.
+func tierOfModel(cfg config.AutoRouteConfig, model string) int {
+	found := -1
+	for i, patterns := range [3][]string{cfg.Fast, cfg.Balanced, cfg.Strong} {
+		if matchesTier(model, patterns) {
+			found = i
+		}
+	}
+	return found
+}
+
 // candidateStats is the decayed reliability + latency record of one (account, model).
 type candidateStats struct {
 	Successes   float64 `json:"successes"`
 	Failures    float64 `json:"failures"`
 	EwmaLatency float64 `json:"ewmaLatencyMs"`
 	Updated     time.Time
+	// QuarantinedUntil sidelines a pair the upstream keeps rejecting outright.
+	// Decayed reliability alone cannot express this: a hard rejection is
+	// certainty, not evidence to be averaged away.
+	QuarantinedUntil time.Time `json:"quarantinedUntil,omitempty"`
+	QuarantineReason string    `json:"quarantineReason,omitempty"`
 }
 
-const statsHalfLife = time.Hour
+func (c *candidateStats) quarantined(now time.Time) bool {
+	return c != nil && now.Before(c.QuarantinedUntil)
+}
+
+// statsHalfLife governs how fast the bandit forgets. An hour sounded prudent
+// but decayed faster than traffic accumulated per (account, model): every
+// candidate sat back at Beta(1,1) — a coin flip dressed up as Thompson
+// sampling. A day keeps enough signal to actually rank candidates.
+const statsHalfLife = 24 * time.Hour
+
+// quarantineWindow is how long a candidate sits out after a hard failure —
+// one the upstream will repeat for the same (account, model) pair, e.g. "model
+// not supported". Long enough to outlast a model-list refresh, short enough
+// that a fixed upstream returns on its own.
+const quarantineWindow = 30 * time.Minute
 
 func (c *candidateStats) decay(now time.Time) {
 	if c.Updated.IsZero() {
@@ -71,9 +119,14 @@ func (c *candidateStats) decay(now time.Time) {
 
 // routeDecision is what the router chose and why; kept in a ring for the dashboard.
 type routeDecision struct {
-	Time      int64   `json:"time"`
-	Endpoint  string  `json:"endpoint"`
-	Tier      string  `json:"tier"`
+	Time     int64  `json:"time"`
+	Endpoint string `json:"endpoint"`
+	Tier     string `json:"tier"`
+	// WantedTier is the tier the request classified into, when it differs from
+	// the tier that actually served it. A populated value means that tier was
+	// starved — no candidate offered it — which is invisible in Tier alone.
+	WantedTier string `json:"wantedTier,omitempty"`
+	Candidates int    `json:"candidates,omitempty"`
 	Model     string  `json:"model"`
 	AccountID string  `json:"accountId"`
 	Score     float64 `json:"score"`
@@ -207,15 +260,7 @@ func (r *autoRouter) Resolve(p *pool.AccountPool, cfg config.AutoRouteConfig, si
 	if r == nil || p == nil {
 		return nil
 	}
-	tier := classifyTier(sig)
-	// Quality pushes up, cost pushes down. Only a clear preference moves the tier.
-	shift := cfg.QualityWeight - cfg.CostWeight
-	if shift >= 0.5 {
-		tier++
-	} else if shift <= -0.5 {
-		tier--
-	}
-	tier = int(math.Max(0, math.Min(2, float64(tier))))
+	tier := effectiveTier(cfg, sig)
 	tiers := [3][]string{cfg.Fast, cfg.Balanced, cfg.Strong}
 
 	// Walk from the chosen tier outward until some account offers a model.
@@ -326,7 +371,10 @@ search:
 	d := routeDecision{
 		Time: now.Unix(), Endpoint: endpoint, Tier: tierNames[usedTier], Model: pick.model,
 		AccountID: pick.account.ID, Score: math.Round(pickScore*1000) / 1000, Explored: explored,
-		Signals: sig, Reason: reason,
+		Candidates: len(cands), Signals: sig, Reason: reason,
+	}
+	if usedTier != tier {
+		d.WantedTier = tierNames[tier]
 	}
 	r.pushLocked(d)
 	return &d
@@ -398,6 +446,9 @@ func (r *autoRouter) candidates(p *pool.AccountPool, patterns []string, filter p
 			if !matchesTier(m, patterns) || cfg.Blacklisted(prov, m) {
 				continue
 			}
+			if r.isQuarantined(acc.ID, m) {
+				continue
+			}
 			if a := p.GetForModelByID(acc.ID, m, filter); a != nil {
 				out = append(out, routeCandidate{account: a, model: m})
 			}
@@ -434,6 +485,38 @@ func (r *autoRouter) Record(accountID, model string, success bool, latencyMs int
 	} else {
 		st.Failures++
 	}
+}
+
+// isQuarantined reports whether a pair is currently sidelined.
+func (r *autoRouter) isQuarantined(accountID, model string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stats[statKey(accountID, model)].quarantined(time.Now())
+}
+
+// RecordHardFailure sidelines a pair the upstream rejected in a way that will
+// repeat: an unknown model, a malformed pairing, a revoked credential. Unlike
+// a 429 (which the pool already routes around and which resolves on its own),
+// retrying these burns a request to learn nothing.
+func (r *autoRouter) RecordHardFailure(accountID, model, reason string) {
+	if r == nil || accountID == "" || model == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	k := statKey(accountID, model)
+	st := r.stats[k]
+	if st == nil {
+		st = &candidateStats{}
+		r.stats[k] = st
+	}
+	st.QuarantinedUntil = time.Now().Add(quarantineWindow)
+	st.QuarantineReason = reason
+	r.dirty = true
+	logger.Warnf("[AutoRoute] quarantined %s for %s (%s)", model, quarantineWindow, reason)
 }
 
 func (r *autoRouter) RecordPinned(d routeDecision) {
@@ -517,10 +600,17 @@ func (h *Handler) resolveAutoModel(w http.ResponseWriter, endpoint, model string
 	// Cache affinity wins: a pinned conversation keeps its account and model.
 	if *affinityKey != "" {
 		if accID, pinnedModel := h.affinity.GetWithModel(*affinityKey); accID != "" && pinnedModel != "" && !isAutoModel(pinnedModel) {
-			// The pin is dropped once the conversation outgrows the pinned
-			// model's window — otherwise a session that started small keeps
-			// hitting a model that can no longer hold it.
-			if h.pool.GetForModelByID(accID, pinnedModel, capabilityFilter(cap)) != nil && modelFitsContext(pinnedModel, sig.InputTokens) {
+			// A pin survives only while it still suits the conversation. It is
+			// dropped when the context outgrew the model's window, when the
+			// request now classifies above the pinned model's tier (a session
+			// that opened with "hi" and turned into a refactor), or when the
+			// pair has been quarantined. Otherwise the pin — which decides the
+			// overwhelming majority of requests — would outlive its own premise.
+			keep := h.pool.GetForModelByID(accID, pinnedModel, capabilityFilter(cap)) != nil &&
+				modelFitsContext(pinnedModel, sig.InputTokens) &&
+				!h.autoRouter.isQuarantined(accID, pinnedModel) &&
+				!pinOutranked(cfg, pinnedModel, sig)
+			if keep {
 				h.autoRouter.RecordPinned(routeDecision{Time: time.Now().Unix(), Endpoint: endpoint, Tier: "pinned", Model: pinnedModel, AccountID: accID, Pinned: true, Thinking: think, Signals: sig, Reason: "conversation pinned (warm cache)" + reasonSuffix})
 				w.Header().Set("X-Hekato-Routed-Model", pinnedModel)
 				w.Header().Set("X-Hekato-Route-Reason", "pinned"+reasonSuffix)
@@ -573,6 +663,18 @@ func (r *autoRouter) markThinking(ts int64, accountID, model string) {
 			return
 		}
 	}
+}
+
+// pinOutranked reports whether the request now classifies above the tier of
+// the pinned model. A model no tier claims (-1) is left alone: an operator who
+// pinned something outside the tier lists did so deliberately, and guessing
+// would churn pins for no gain.
+func pinOutranked(cfg config.AutoRouteConfig, pinnedModel string, sig routeSignals) bool {
+	pinnedTier := tierOfModel(cfg, pinnedModel)
+	if pinnedTier < 0 {
+		return false
+	}
+	return effectiveTier(cfg, sig) > pinnedTier
 }
 
 // fallbackAutoModel picks a concrete model when no tier has candidates.
@@ -671,5 +773,48 @@ func (h *Handler) apiGetAutoRouteDecisions(w http.ResponseWriter, r *http.Reques
 	if cands == nil {
 		cands = []candidateView{}
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{"decisions": dec, "candidates": cands})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"decisions":  dec,
+		"candidates": cands,
+		"tierHealth": h.tierHealth(dec),
+	})
+}
+
+// tierHealthRow is one tier's supply and demand: how many candidates it can
+// offer right now, how often requests asked for it, and how often it could not
+// serve them and a neighbouring tier stepped in.
+type tierHealthRow struct {
+	Tier       string `json:"tier"`
+	Candidates int    `json:"candidates"`
+	Wanted     int    `json:"wanted"`
+	Served     int    `json:"served"`
+	Starved    int    `json:"starved"`
+}
+
+// tierHealth answers the question the decision ring could only hint at: a tier
+// whose requests keep landing elsewhere is misconfigured, not unlucky.
+func (h *Handler) tierHealth(dec []routeDecision) []tierHealthRow {
+	cfg := config.GetAutoRouteConfig()
+	rows := make([]tierHealthRow, 3)
+	for i, patterns := range [3][]string{cfg.Fast, cfg.Balanced, cfg.Strong} {
+		rows[i] = tierHealthRow{
+			Tier:       tierNames[i],
+			Candidates: len(h.autoRouter.candidates(h.pool, patterns, nil, cfg)),
+		}
+	}
+	index := map[string]int{tierNames[0]: 0, tierNames[1]: 1, tierNames[2]: 2}
+	for _, d := range dec {
+		if i, ok := index[d.Tier]; ok {
+			rows[i].Served++
+			// A decision with no WantedTier wanted the tier that served it.
+			if d.WantedTier == "" {
+				rows[i].Wanted++
+			}
+		}
+		if i, ok := index[d.WantedTier]; ok {
+			rows[i].Wanted++
+			rows[i].Starved++
+		}
+	}
+	return rows
 }
