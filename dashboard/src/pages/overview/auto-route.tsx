@@ -29,7 +29,7 @@ type Decision = {
   candidates?: number
 }
 type TierHealth = { tier: string; candidates: number; wanted: number; served: number; starved: number }
-type Candidate = { accountId: string; email?: string; provider?: string; model: string; successes: number; failures: number; ewmaLatencyMs: number; reliability: number; lastUpdated: number }
+type Candidate = { accountId: string; email?: string; provider?: string; model: string; successes: number; failures: number; ewmaLatencyMs: number; reliability: number; lastUpdated: number; quarantinedUntil?: number; quarantineReason?: string }
 const who = (email?: string, id = '') => email || short(id)
 
 const REFETCH = 15000
@@ -149,7 +149,20 @@ export function AutoRouteCard() {
                     {candidates.map((c) => (
                       <TableRow key={`${c.accountId}/${c.model}`}>
                         <TableCell className="text-xs">{c.provider ? <Badge variant="outline">{c.provider}</Badge> : '—'}</TableCell>
-                        <TableCell className="font-mono text-xs">{c.model}</TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {c.model}
+                          {c.quarantinedUntil && (
+                            <Tooltip>
+                              <TooltipTrigger render={<Badge variant="destructive" className="ml-1.5 cursor-help text-[10px]" />}>
+                                {t('overview.quarantined')}
+                              </TooltipTrigger>
+                              <TooltipContent className="max-w-xs break-words">
+                                {t('overview.quarantinedUntil', formatTime(c.quarantinedUntil))}
+                                {c.quarantineReason ? <div className="mt-1 opacity-70">{c.quarantineReason}</div> : null}
+                              </TooltipContent>
+                            </Tooltip>
+                          )}
+                        </TableCell>
                         <TableCell className="max-w-48 truncate text-xs" title={`${c.email || ''} ${c.accountId} · ${formatTime(c.lastUpdated)}`}>{who(c.email, c.accountId)}</TableCell>
                         <TableCell className="text-right text-xs tabular-nums">{pct(c.reliability)}</TableCell>
                         <TableCell className="text-right text-xs tabular-nums">{Math.round(c.ewmaLatencyMs)}ms</TableCell>

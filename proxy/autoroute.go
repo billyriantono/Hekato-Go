@@ -543,6 +543,10 @@ type candidateView struct {
 	EwmaLatency float64 `json:"ewmaLatencyMs"`
 	Reliability float64 `json:"reliability"`
 	LastUpdated int64   `json:"lastUpdated"`
+	// Quarantined pairs are skipped by the router; showing why (and until when)
+	// keeps the exclusion auditable instead of looking like a silent snub.
+	QuarantinedUntil int64  `json:"quarantinedUntil,omitempty"`
+	QuarantineReason string `json:"quarantineReason,omitempty"`
 }
 
 // Snapshot returns recent decisions (newest first) and per-candidate stats.
@@ -566,13 +570,18 @@ func (r *autoRouter) Snapshot() ([]routeDecision, []candidateView) {
 	for k, st := range r.stats {
 		st.decay(now)
 		parts := strings.SplitN(k, "|", 2)
-		cands = append(cands, candidateView{
+		view := candidateView{
 			AccountID: parts[0], Provider: providers[parts[0]], Email: emails[parts[0]], Model: parts[1],
 			Successes: math.Round(st.Successes*100) / 100, Failures: math.Round(st.Failures*100) / 100,
 			EwmaLatency: math.Round(st.EwmaLatency),
 			Reliability: math.Round((st.Successes+1)/(st.Successes+st.Failures+2)*1000) / 1000,
 			LastUpdated: st.Updated.Unix(),
-		})
+		}
+		if st.quarantined(now) {
+			view.QuarantinedUntil = st.QuarantinedUntil.Unix()
+			view.QuarantineReason = truncateReason(st.QuarantineReason)
+		}
+		cands = append(cands, view)
 	}
 	sort.Slice(cands, func(i, j int) bool { return cands[i].Reliability > cands[j].Reliability })
 	return dec, cands
@@ -778,6 +787,15 @@ func (h *Handler) apiGetAutoRouteDecisions(w http.ResponseWriter, r *http.Reques
 		"candidates": cands,
 		"tierHealth": h.tierHealth(dec),
 	})
+}
+
+// truncateReason keeps an upstream rejection readable in a tooltip.
+func truncateReason(s string) string {
+	const max = 160
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }
 
 // tierHealthRow is one tier's supply and demand: how many candidates it can
