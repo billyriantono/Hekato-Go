@@ -2262,6 +2262,12 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 		var thinkingStarted bool
 		var eventThinkingOpen bool
 		responseStarted := false
+		// upstreamProduced records that the model said something, even if it is
+		// still sitting in textBuffer. responseStarted alone is not enough: text
+		// is held back until ~50 runes to detect <thinking> tags, so a stream
+		// that dies early looked to the error path exactly like one that never
+		// answered — and the partial reply was discarded.
+		upstreamProduced := false
 
 		sendChunk := func(content string, thinkingState int) {
 			if content == "" && thinkingState == 2 {
@@ -2364,6 +2370,9 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 		processText := func(text string, isThinking bool, forceFlush bool) {
 			if isThinking && !thinking {
 				return
+			}
+			if text != "" {
+				upstreamProduced = true
 			}
 
 			if isThinking {
@@ -2537,13 +2546,18 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 			lastErr = err
 			excluded[account.ID] = true
 			h.handleModelFailure(account, model, err)
-			if !responseStarted {
-				continue
+			if !responseStarted && !upstreamProduced {
+				continue // nothing was said yet: another account can answer cleanly
 			}
-			// Bytes are already on the wire, so failover is out. Close the SSE
-			// stream properly instead of dropping it: a stream that just stops
-			// makes strict clients ("stream closed before a finish_reason")
-			// discard the partial answer they already rendered.
+			// The model has produced something, so failover is out — a second
+			// attempt cannot un-send it. Flush whatever is still buffered and
+			// close the SSE stream properly instead of dropping it: a stream
+			// that just stops makes strict clients ("stream closed before a
+			// finish_reason") discard the partial answer entirely.
+			processText("", false, true)
+			if eventThinkingOpen {
+				sendChunk("", 3)
+			}
 			h.recordFailureTimed(w, "openai", model, account.ID, err, time.Since(reqStart).Milliseconds(), perf.finalise().ttftMs)
 			endOpenAIStreamTruncated(w, flusher, chatID, model, inputTokens, outputTokens)
 			return
