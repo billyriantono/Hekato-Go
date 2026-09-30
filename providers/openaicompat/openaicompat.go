@@ -158,6 +158,7 @@ func consumeSSE(r io.Reader, callback *providers.StreamCallback) error {
 	var promptTokens, completionTokens int
 	var sawCompletion bool
 	stopReason := ""
+	var toolCalls providers.ToolCallAccumulator
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -186,7 +187,7 @@ func consumeSSE(r io.Reader, callback *providers.StreamCallback) error {
 						callback.OnText(text, false)
 					}
 					if len(choice.Delta.ToolCalls) > 0 && callback.OnToolUse != nil {
-						emitToolCalls(choice.Delta.ToolCalls, callback)
+						toolCalls.Add(choice.Delta.ToolCalls)
 					}
 				}
 				if choice.Message != nil {
@@ -214,6 +215,8 @@ func consumeSSE(r io.Reader, callback *providers.StreamCallback) error {
 	}
 
 	if callback != nil {
+		// Deltas are fragments; only the finished stream holds whole calls.
+		emitToolCalls(toolCalls.Calls(), callback)
 		if callback.OnComplete != nil && (sawCompletion || promptTokens > 0 || completionTokens > 0) {
 			callback.OnComplete(promptTokens, completionTokens)
 		}

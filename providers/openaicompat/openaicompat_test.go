@@ -154,3 +154,30 @@ func TestCallOpenAIMissingConfig(t *testing.T) {
 		t.Fatalf("expected API key error, got %v", err)
 	}
 }
+// TestConsumeSSEFragmentedToolCall replays how gpt-6-astra via zrouter streams a
+// tool call: id+name first with empty arguments, then argument fragments
+// carrying only the index. Each call must reach the client once, whole.
+func TestConsumeSSEFragmentedToolCall(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"bash","arguments":""}}]}}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"comm"}}]}}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_b","type":"function","function":{"name":"read","arguments":"{\"path\":\"x\"}"}}]}}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"and\":\"ls\"}"}}]},"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`,
+	}, "\n\n")
+
+	var got []providers.ToolUse
+	cb := &providers.StreamCallback{OnToolUse: func(tu providers.ToolUse) { got = append(got, tu) }}
+	if err := consumeSSE(strings.NewReader(stream), cb); err != nil {
+		t.Fatalf("consumeSSE: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d tool uses, want 2: %+v", len(got), got)
+	}
+	if got[0].ToolUseID != "call_a" || got[0].Name != "bash" || got[0].Input["command"] != "ls" {
+		t.Fatalf("call 0 = %+v", got[0])
+	}
+	if got[1].ToolUseID != "call_b" || got[1].Name != "read" || got[1].Input["path"] != "x" {
+		t.Fatalf("call 1 = %+v", got[1])
+	}
+}
