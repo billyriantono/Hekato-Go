@@ -95,6 +95,28 @@ func capResetFromMessage(msg string) (time.Time, bool) {
 	return time.Now().Add(d + time.Minute), true
 }
 
+// banStatusRateLimited marks an account warmup disabled after HTTP 429; see warmupRateLimited.
+const banStatusRateLimited = "RATE_LIMITED"
+
+// setEnabledByOperator applies an operator's enable/disable. The ban fields are
+// cleared either way: enabling must make the account routable on every path
+// (pickProviderAccount also requires an ACTIVE ban status), and disabling must
+// not leave a BanReason behind, or warmup auto-recover would undo the decision.
+func setEnabledByOperator(a *config.Account, enabled bool) {
+	a.Enabled = enabled
+	a.BanReason, a.BanTime = "", 0
+	a.BanStatus = ""
+	if enabled {
+		a.BanStatus = "ACTIVE"
+	}
+}
+
+// stuckBanned: enabled but still carrying a ban status, left behind by the
+// old single-account toggle; enabling again repairs it.
+func stuckBanned(a *config.Account) bool {
+	return a.Enabled && a.BanStatus != "" && a.BanStatus != "ACTIVE"
+}
+
 func (h *Handler) disableAccount(account *config.Account, banStatus, banReason string) {
 	if account == nil {
 		return

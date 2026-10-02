@@ -537,7 +537,9 @@ func fetchCodeBuddyCredits(account *config.Account) (limit, used, remain float64
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
-		return 0, 0, 0, fmt.Errorf("codebuddy credits (HTTP %d)", resp.StatusCode)
+		// Typed so callers see the status: warmup auto-disables on 429 and
+		// retries 5xx, neither of which works off a bare string.
+		return 0, 0, 0, providers.Errorf(resp.StatusCode, "codebuddy credits (HTTP %d)", resp.StatusCode)
 	}
 
 	var out struct {

@@ -1,8 +1,13 @@
 package proxy
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 	"time"
+
+	"hekato-go/config"
+	"hekato-go/providers"
 )
 
 func TestAccountFailureClassifiers(t *testing.T) {
@@ -35,5 +40,43 @@ func TestCapResetFromMessage(t *testing.T) {
 	}
 	if _, ok := capResetFromMessage("quota exhausted"); ok {
 		t.Fatal("no hint must not produce a time")
+	}
+}
+
+func TestWarmupRateLimited(t *testing.T) {
+	codebuddy := &config.Account{ProviderKind: "codebuddy"}
+	codebuddyCN := &config.Account{AuthMethod: "codebuddy-cn"} // legacy row, classified by text
+	kiro := &config.Account{ProviderKind: "kiro"}
+	limited := providers.Errorf(429, "HTTP 429 from codebuddy: too many requests")
+	cases := []struct {
+		name    string
+		account *config.Account
+		err     error
+		want    bool
+	}{
+		{"codebuddy global 429", codebuddy, limited, true},
+		{"codebuddy china 429", codebuddyCN, limited, true},
+		{"wrapped 429", codebuddy, fmt.Errorf("usage: %w", limited), true},
+		{"other status", codebuddy, providers.Errorf(500, "HTTP 500"), false},
+		{"429 only in text", codebuddy, errors.New("request id req-429-abc failed"), false},
+		{"other provider 429", kiro, limited, false},
+	}
+	for _, c := range cases {
+		if got := warmupRateLimited(c.account, c.err); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestSetEnabledByOperator(t *testing.T) {
+	a := config.Account{Enabled: false, BanStatus: banStatusRateLimited, BanReason: "Auto-disabled: 429", BanTime: 1}
+	setEnabledByOperator(&a, true)
+	if !a.Enabled || a.BanStatus != "ACTIVE" || a.BanReason != "" || a.BanTime != 0 {
+		t.Fatalf("enable left ban state behind: %+v", a)
+	}
+	a = config.Account{Enabled: false, BanStatus: "BANNED", BanReason: "Authentication failed", BanTime: 1}
+	setEnabledByOperator(&a, false)
+	if a.BanReason != "" || autoBanned(&a) {
+		t.Fatalf("manual disable still looks auto-banned, auto-recover would undo it: %+v", a)
 	}
 }

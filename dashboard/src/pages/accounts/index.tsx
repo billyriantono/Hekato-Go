@@ -42,6 +42,8 @@ import { SimpleSelect } from './simple-select'
 
 type Confirm = { title: string; description?: ReactNode; onConfirm: () => Promise<void> }
 
+const STATUS_KEY = 'kiro_accounts_status'
+
 export function AccountsPage() {
   const { t, lang } = useI18n()
   const qc = useQueryClient()
@@ -50,7 +52,12 @@ export function AccountsPage() {
 
   const [search, setSearch] = useState('')
   const [provider, setProvider] = useState('all')
-  const [status, setStatus] = useState('all')
+  // Default to accounts that can actually route; the choice sticks across visits.
+  const [status, setStatusState] = useState(() => localStorage.getItem(STATUS_KEY) ?? 'active')
+  const setStatus = (v: string) => {
+    localStorage.setItem(STATUS_KEY, v)
+    setStatusState(v)
+  }
   const [selection, setSelection] = useState<RowSelectionState>({})
   const [detailId, setDetailId] = useState<string | null>(null)
   const [addMethod, setAddMethod] = useState<Method | 'pick' | null>(null)
@@ -73,11 +80,12 @@ export function AccountsPage() {
   }
 
   const counts = useMemo(() => {
-    const c = { total: accounts.length, active: 0, disabled: 0, banned: 0, overQuota: 0 }
+    const c = { total: accounts.length, active: 0, disabled: 0, autoDisabled: 0, banned: 0, overQuota: 0 }
     for (const a of accounts) {
       const s = accountStatus(a)
       if (s in c) c[s as keyof typeof c]++
     }
+    c.disabled += c.autoDisabled // the Disabled card counts both; its hint splits them out
     return c
   }, [accounts])
 
@@ -89,7 +97,7 @@ export function AccountsPage() {
       if (provider !== 'all' && a.provider !== provider) return false
       const s = accountStatus(a)
       if (status === 'enabled' && !a.enabled) return false
-      if (status === 'disabled' && a.enabled) return false
+      if (status === 'disabled' && a.enabled) return false // includes auto-disabled
       if (status !== 'all' && status !== 'enabled' && status !== 'disabled' && s !== status) return false
       return !q || (a.email ?? '').toLowerCase().includes(q) || (a.nickname ?? '').toLowerCase().includes(q)
     })
@@ -228,6 +236,11 @@ export function AccountsPage() {
           <div className="space-y-0.5">
             <StatusDot tone={statusTone[s]} label={t(statusKey[s])} />
             {s === 'banned' && a.banStatus && <div className="text-[11px] text-muted-foreground">{a.banStatus}</div>}
+            {s === 'autoDisabled' && (
+              <div className="max-w-56 truncate text-[11px] text-warning-ink" title={a.banReason}>
+                {a.banReason.replace(/^Auto-disabled:\s*/, '')}
+              </div>
+            )}
             {a.expiresAt > 0 && (
               <div className="text-[11px] text-muted-foreground">
                 {t('accounts.expiry')}: {left || t('accounts.expired')}
@@ -347,9 +360,11 @@ export function AccountsPage() {
   ]
 
   const statusOptions = [
+    { value: 'active', label: t('filter.active') },
     { value: 'all', label: t('filter.all') },
     { value: 'enabled', label: t('filter.enabled') },
     { value: 'disabled', label: t('filter.disabled') },
+    { value: 'autoDisabled', label: t('accounts.autoDisabled') },
     { value: 'banned', label: t('filter.banned') },
     { value: 'overQuota', label: t('accounts.overQuota') },
     { value: 'expired', label: t('accounts.expired') },
@@ -388,7 +403,13 @@ export function AccountsPage() {
       <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-5">
         <StatCard label={t('accounts.total')} value={counts.total} icon={<LuUsers className="size-4" />} />
         <StatCard label={t('accounts.available')} value={counts.active} tone="success" icon={<LuCircleCheck className="size-4" />} />
-        <StatCard label={t('accounts.disabled')} value={counts.disabled} icon={<LuCircleOff className="size-4" />} />
+        <StatCard
+          label={t('accounts.disabled')}
+          value={counts.disabled}
+          tone={counts.autoDisabled ? 'warning' : 'default'}
+          hint={counts.autoDisabled ? t('accounts.autoDisabledCount', counts.autoDisabled) : undefined}
+          icon={<LuCircleOff className="size-4" />}
+        />
         <StatCard label={t('accounts.banned')} value={counts.banned} tone={counts.banned ? 'danger' : 'default'} icon={<LuBan className="size-4" />} />
         <StatCard label={t('accounts.overQuota')} value={counts.overQuota} tone={counts.overQuota ? 'warning' : 'default'} icon={<LuGauge className="size-4" />} />
       </div>

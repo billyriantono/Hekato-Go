@@ -3146,8 +3146,8 @@ func (h *Handler) apiUpdateAccount(w http.ResponseWriter, r *http.Request, id st
 
 	// 只更新传入的字段
 	oldEnabled := existing.Enabled
-	if v, ok := updates["enabled"].(bool); ok {
-		existing.Enabled = v
+	if v, ok := updates["enabled"].(bool); ok && (v != existing.Enabled || v && stuckBanned(existing)) {
+		setEnabledByOperator(existing, v)
 	}
 	if v, ok := updates["nickname"].(string); ok {
 		existing.Nickname = v
@@ -3378,11 +3378,8 @@ func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 				if enabled && !a.Enabled && hasCredential(&a) {
 					toRefreshModels = append(toRefreshModels, a)
 				}
-				a.Enabled = enabled
-				if enabled && a.BanStatus != "" && a.BanStatus != "ACTIVE" {
-					a.BanStatus = "ACTIVE"
-					a.BanReason = ""
-					a.BanTime = 0
+				if a.Enabled != enabled || enabled && stuckBanned(&a) {
+					setEnabledByOperator(&a, enabled)
 				}
 				config.UpdateAccount(a.ID, a)
 			}

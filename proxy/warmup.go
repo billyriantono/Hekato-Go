@@ -69,6 +69,17 @@ func warmupCandidates(ids []string, recover bool) []config.Account {
 	return out
 }
 
+// warmupRateLimited: a CodeBuddy account (China or Global) whose warmup was
+// answered with HTTP 429. Live traffic only parks such an account on an
+// in-memory cooldown, so it kept failing every warmup while looking healthy;
+// warmup disables it instead, visibly, and auto-recover (when on) re-enables
+// it once a later warmup passes. Matches the typed status only, never "429"
+// appearing somewhere in an error string.
+func warmupRateLimited(account *config.Account, err error) bool {
+	var ue *UpstreamError
+	return isCodeBuddyAccount(account) && errors.As(err, &ue) && ue.Status == http.StatusTooManyRequests
+}
+
 func isTransient(err error) bool {
 	if err == nil {
 		return false
@@ -246,7 +257,9 @@ func (h *Handler) finishWarmup(res warmupResult, account *config.Account, err er
 		}
 		config.UpdateAccountWarmup(account.ID, "error", res.Error, now)
 		logger.Warnf("[Warmup] %s failed: %s", account.Email, res.Error)
-		if account.Enabled {
+		if account.Enabled && warmupRateLimited(account, err) {
+			h.disableAccount(account, banStatusRateLimited, "Auto-disabled: CodeBuddy returned HTTP 429 (rate limited) during warmup")
+		} else if account.Enabled {
 			h.handleAccountFailure(account, err)
 		} else {
 			logger.Infof("[Warmup] %s is disabled; failure not fed to failover", account.Email)
