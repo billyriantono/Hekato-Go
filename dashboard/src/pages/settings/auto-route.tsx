@@ -21,8 +21,10 @@ type Config = {
   balanced: string[]
   strong: string[]
   blacklist: string[]
+  keywordRules?: KeywordRule[]
   autoThinking: boolean
 }
+type KeywordRule = { keywords: string[]; tier: Tier }
 type Decision = {
   time: number
   endpoint: string
@@ -139,6 +141,58 @@ export function AutoRouteSection() {
                   </button>
                 </Badge>
               ))}
+            </div>
+          </Field>
+
+          <Field label={t('settings.autoRoute.keywordRules')} hint={t('settings.autoRoute.keywordRulesHint')}>
+            <div className="space-y-2">
+              {(draft.keywordRules ?? []).map((rule, i) => (
+                <div key={i} className="flex flex-wrap items-center gap-2">
+                  <Input
+                    className="min-w-0 flex-1 font-mono text-xs"
+                    defaultValue={rule.keywords.join(', ')}
+                    placeholder={t('settings.autoRoute.keywordsPlaceholder')}
+                    onChange={(e) => {
+                      const next = [...(draft.keywordRules ?? [])]
+                      next[i] = { ...rule, keywords: splitPatterns(e.target.value) }
+                      patch({ keywordRules: next })
+                    }}
+                  />
+                  {TIERS.map((tier) => (
+                    <Button
+                      key={tier}
+                      type="button"
+                      size="sm"
+                      variant={rule.tier === tier ? 'default' : 'outline'}
+                      className="h-7 px-2 text-[11px]"
+                      onClick={() => {
+                        const next = [...(draft.keywordRules ?? [])]
+                        next[i] = { ...rule, tier }
+                        patch({ keywordRules: next })
+                      }}
+                    >
+                      {tier}
+                    </Button>
+                  ))}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 px-2"
+                    onClick={() => patch({ keywordRules: (draft.keywordRules ?? []).filter((_, j) => j !== i) })}
+                  >
+                    <LuX className="size-3" />
+                  </Button>
+                </div>
+              ))}
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => patch({ keywordRules: [...(draft.keywordRules ?? []), { keywords: [], tier: 'strong' as Tier }] })}
+              >
+                {t('settings.autoRoute.addKeywordRule')}
+              </Button>
             </div>
           </Field>
 

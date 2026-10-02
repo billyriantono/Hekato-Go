@@ -13,8 +13,14 @@ func TestClassifyTier(t *testing.T) {
 	if classifyTier(routeSignals{InputTokens: 500}) != 0 {
 		t.Fatal("short prompt should be fast")
 	}
-	if classifyTier(routeSignals{InputTokens: 500, Tools: 3}) != 1 {
-		t.Fatal("tools should be balanced")
+	// Carrying tools no longer promotes a request on its own. Coding agents
+	// attach their whole toolset to every turn, so treating tool presence as
+	// evidence of difficulty put "hi" and a refactor in the same tier.
+	if classifyTier(routeSignals{InputTokens: 500, Tools: 3}) != 0 {
+		t.Fatal("a small request with tools should be fast")
+	}
+	if classifyTier(routeSignals{InputTokens: 500, Tools: 3, Reasoning: true}) != 1 {
+		t.Fatal("tools plus a reasoning ask should be balanced")
 	}
 	if classifyTier(routeSignals{InputTokens: 50000}) != 2 || classifyTier(routeSignals{Thinking: true}) != 2 {
 		t.Fatal("huge context / thinking should be strong")
@@ -200,8 +206,13 @@ func TestOnlyVisionAndAutoThinking(t *testing.T) {
 		t.Fatalf("expected only the vision model, got %+v", got)
 	}
 	cfg := config.AutoRouteConfig{AutoThinking: true}
-	if !wantsThinking(cfg, routeSignals{InputTokens: 50000}) || !wantsThinking(cfg, routeSignals{Tools: 9}) {
+	if !wantsThinking(cfg, routeSignals{InputTokens: 50000}) || !wantsThinking(cfg, routeSignals{InputTokens: 5000, Code: true, Reasoning: true, Tools: 9}) {
 		t.Fatal("heavy requests should get thinking")
+	}
+	// Auto-thinking used to fire on tool count alone, so every agent request
+	// paid for extended reasoning whether or not the task warranted it.
+	if wantsThinking(cfg, routeSignals{Tools: 9}) {
+		t.Fatal("an attached toolset is not by itself a reason to think")
 	}
 	if wantsThinking(cfg, routeSignals{InputTokens: 2000, Tools: 2}) {
 		t.Fatal("ordinary request must not get thinking")

@@ -22,6 +22,9 @@ type OpenAIMessage struct {
 }
 
 type ToolCall struct {
+	// Index is only meaningful on streamed deltas, where it ties argument
+	// fragments back to the call that opened them.
+	Index    int    `json:"index,omitempty"`
 	ID       string `json:"id"`
 	Type     string `json:"type"`
 	Function struct {
@@ -29,6 +32,42 @@ type ToolCall struct {
 		Arguments string `json:"arguments"`
 	} `json:"function"`
 }
+
+// ToolCallAccumulator merges streamed OpenAI tool_call deltas. A stream opens a
+// call with {index, id, name, arguments:""} and then sends the arguments as
+// fragments carrying only the index; dispatching each delta on its own emits
+// the call with empty input and the fragments as nameless junk calls.
+type ToolCallAccumulator struct {
+	calls []ToolCall
+	slot  map[int]int // delta index -> position in calls
+}
+
+func (a *ToolCallAccumulator) Add(deltas []ToolCall) {
+	for _, d := range deltas {
+		pos, ok := a.slot[d.Index]
+		// A new id on a known index is a new call: some upstreams send complete
+		// calls without an index, so every one of them arrives as index 0.
+		if !ok || (d.ID != "" && a.calls[pos].ID != "" && d.ID != a.calls[pos].ID) {
+			if a.slot == nil {
+				a.slot = map[int]int{}
+			}
+			a.calls = append(a.calls, ToolCall{Type: d.Type})
+			pos = len(a.calls) - 1
+			a.slot[d.Index] = pos
+		}
+		c := &a.calls[pos]
+		if d.ID != "" {
+			c.ID = d.ID
+		}
+		if d.Function.Name != "" {
+			c.Function.Name = d.Function.Name
+		}
+		c.Function.Arguments += d.Function.Arguments
+	}
+}
+
+// Calls returns the assembled calls in the order they were opened.
+func (a *ToolCallAccumulator) Calls() []ToolCall { return a.calls }
 
 type OpenAITool struct {
 	Type     string `json:"type"`

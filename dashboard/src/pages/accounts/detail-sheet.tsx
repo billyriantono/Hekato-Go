@@ -14,6 +14,7 @@ import { Switch } from '@/components/ui/switch'
 import { ConfirmDialog, CopyButton, StatusDot, errorMessage, formatNumber, formatTime } from '@/components/common'
 import { del, get, post, put } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
+import { cn } from '@/lib/utils'
 import { SimpleSelect } from './simple-select'
 import { ModelCombobox } from '@/components/model-combobox'
 import {
@@ -30,6 +31,7 @@ import {
   type Account,
   type WarmupResult,
   isKiroAccount,
+  hasFreeTier,
 } from './shared'
 
 export function AccountDetailSheet({ account, onClose }: { account: Account | null; onClose: () => void }) {
@@ -88,6 +90,27 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
   const [probeModel, setProbeModel] = useState(a.probeModel ?? '')
   const [newModel, setNewModel] = useState('')
   const extraModels = a.extraModels ?? []
+  // Tri-state, mirroring the backend: null = no allowlist (everything routes,
+  // the default), [] = allow nothing, [ids] = only those. null and [] must stay
+  // distinct or "disable all" silently becomes "enable all".
+  const allowlist: string[] | null = a.enabledModels ?? null
+  const isModelEnabled = (m: string) => allowlist === null || allowlist.some((x) => x.toLowerCase() === m.toLowerCase())
+  const saveEnabledModels = (list: string[] | null) =>
+    run('enabledModels', async () => {
+      await put(`/accounts/${a.id}`, { enabledModels: list })
+      toast.success(t('detail.saved'))
+      invalidate()
+    })
+  const toggleModel = (m: string) => {
+    // First click on an account without an allowlist means "only this one",
+    // not "all but this one" — opening the list implies narrowing it.
+    const base = allowlist ?? modelList
+    const next = base.some((x) => x.toLowerCase() === m.toLowerCase())
+      ? base.filter((x) => x.toLowerCase() !== m.toLowerCase())
+      : [...base, m]
+    // Selecting everything again is the same as having no allowlist at all.
+    void saveEnabledModels(next.length === modelList.length ? null : next)
+  }
   const saveExtraModels = (list: string[]) =>
     run('extra', async () => {
       await put(`/accounts/${a.id}`, { extraModels: list })
@@ -135,12 +158,17 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
     queryFn: () => get<{ models: string[] }>(`/accounts/${a.id}/models/cached`),
   })
   const modelList = models.data?.models ?? []
+  // Probing a model the operator disabled proves nothing about the account, so
+  // the test and warmup pickers only offer what this account will actually
+  // route. The chip list above still shows the full catalog — that is the menu
+  // the allowlist is chosen from.
+  const routableModelList = modelList.filter(isModelEnabled)
   const settings = useQuery({ queryKey: ['settings'], queryFn: () => get<{ testModel?: string }>('/settings') })
   const configuredTestModel = settings.data?.testModel?.trim() ?? ''
   const accountDefaultModel =
-    modelList.find((model) => model.toLowerCase() === (a.probeModel ?? '').toLowerCase()) ??
-    modelList.find((model) => model.toLowerCase() === configuredTestModel.toLowerCase())
-  const selectedTestModel = testModel ?? accountDefaultModel ?? modelList[0] ?? ''
+    routableModelList.find((model) => model.toLowerCase() === (a.probeModel ?? '').toLowerCase()) ??
+    routableModelList.find((model) => model.toLowerCase() === configuredTestModel.toLowerCase())
+  const selectedTestModel = testModel ?? accountDefaultModel ?? routableModelList[0] ?? ''
 
   const saveIdentity = () =>
     run('identity', async () => {
@@ -170,6 +198,14 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
     run('overage', async () => {
       await get(`/accounts/${a.id}/overage`)
       invalidate()
+    })
+  const setAllowPaid = (allowPaidModels: boolean) =>
+    run('allowPaid', async () => {
+      await put(`/accounts/${a.id}`, { allowPaidModels })
+      // The catalog is filtered at fetch time, so re-pull it under the new setting.
+      await post(`/accounts/${a.id}/models/refresh`).catch(() => undefined)
+      invalidate()
+      qc.invalidateQueries({ queryKey: ['account-models', a.id] })
     })
   const setOverage = (enabled: boolean) =>
     run('overage', async () => {
@@ -301,7 +337,7 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
           <ModelCombobox
             value={probeModel}
             onChange={setProbeModel}
-            options={modelList}
+            options={routableModelList}
             placeholder={t('detail.probeModelDefault')}
             emptyLabel={t('detail.probeModelDefault')}
             className="w-full"
@@ -381,6 +417,16 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
         </Row>
         {a.warmupError && <Row label={t('accounts.warmup.error')}>{a.warmupError}</Row>}
       </Section>
+
+      {hasFreeTier(a) && (
+        <Section title={t('detail.allowPaidModels')}>
+          <p className="text-[11px] text-muted-foreground">{t('detail.allowPaidModelsHint')}</p>
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">{t('detail.allowPaidModels')}</span>
+            <Switch checked={!!a.allowPaidModels} onCheckedChange={(v) => setAllowPaid(v)} disabled={!!busy} />
+          </div>
+        </Section>
+      )}
 
       {isKiroAccount(a) && (
       <Section
@@ -472,23 +518,64 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
         ) : modelList.length === 0 ? (
           <p className="text-xs text-muted-foreground">{t('detail.noModels')}</p>
         ) : (
-          <div className="flex flex-wrap gap-1">
-            {modelList
-              .filter((m) => !extraModels.some((x) => x.toLowerCase() === m.toLowerCase()))
-              .map((m) => (
-                <Badge key={m} variant="outline" className="font-mono">
-                  {m}
-                </Badge>
-              ))}
-          </div>
+          <>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-[11px] text-muted-foreground">
+                {allowlist === null
+                  ? t('detail.allModelsRoutable')
+                  : allowlist.length === 0
+                    ? t('detail.noModelsRoutable')
+                    : t('detail.someModelsRoutable', allowlist.length, modelList.length)}
+              </p>
+              <div className="flex items-center gap-1">
+                {allowlist !== null && (
+                  <Button variant="ghost" size="sm" className="h-6 px-2 text-[11px]" disabled={!!busy} onClick={() => void saveEnabledModels(null)}>
+                    {t('detail.enableAllModels')}
+                  </Button>
+                )}
+                {(allowlist === null || allowlist.length > 0) && (
+                  <Button variant="ghost" size="sm" className="h-6 px-2 text-[11px]" disabled={!!busy} onClick={() => void saveEnabledModels([])}>
+                    {t('detail.disableAllModels')}
+                  </Button>
+                )}
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {modelList
+                .filter((m) => !extraModels.some((x) => x.toLowerCase() === m.toLowerCase()))
+                .map((m) => {
+                  const on = isModelEnabled(m)
+                  return (
+                    <button
+                      key={m}
+                      type="button"
+                      disabled={!!busy}
+                      title={on ? t('detail.disableModel') : t('detail.enableModel')}
+                      onClick={() => toggleModel(m)}
+                    >
+                      <Badge variant={on ? 'outline' : 'secondary'} className={cn('font-mono', !on && 'opacity-40 line-through')}>
+                        {m}
+                      </Badge>
+                    </button>
+                  )
+                })}
+            </div>
+          </>
         )}
         {extraModels.length > 0 && (
           <div className="space-y-1 pt-1">
             <p className="text-[11px] text-muted-foreground">{t('detail.manualModels')}</p>
             <div className="flex flex-wrap gap-1">
               {extraModels.map((m) => (
-                <Badge key={m} variant="secondary" className="font-mono">
-                  {m}
+                <Badge key={m} variant="secondary" className={cn('font-mono', !isModelEnabled(m) && 'opacity-40 line-through')}>
+                  <button
+                    type="button"
+                    disabled={!!busy}
+                    title={isModelEnabled(m) ? t('detail.disableModel') : t('detail.enableModel')}
+                    onClick={() => toggleModel(m)}
+                  >
+                    {m}
+                  </button>
                   <button
                     type="button"
                     className="ml-1 opacity-60 hover:opacity-100"
@@ -526,7 +613,7 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
 
       <Section title={t('accounts.testModalTitle')}>
         <div className="flex gap-2">
-          <ModelCombobox value={selectedTestModel} onChange={setTestModel} options={modelList} placeholder={t('models.searchPlaceholder')} className="flex-1" />
+          <ModelCombobox value={selectedTestModel} onChange={setTestModel} options={routableModelList} placeholder={t('models.searchPlaceholder')} className="flex-1" />
           <Button size="sm" onClick={runTest} disabled={!!busy}>
             {spin('test') ?? <LuFlaskConical />} {t('accounts.test')}
           </Button>

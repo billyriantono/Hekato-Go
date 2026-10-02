@@ -7,6 +7,7 @@ import (
 	"hekato-go/providers"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -73,12 +74,29 @@ func fetchModels(account *config.Account) ([]providers.ModelInfo, error) {
 		return nil, err
 	}
 
+	paidOK := account != nil && account.AllowPaidModels
 	out := make([]providers.ModelInfo, 0, len(body.Data))
 	for _, m := range body.Data {
-		if m.ID == "" {
+		if m.ID == "" || (!paidOK && !isFreeModel(m.ID)) {
 			continue
 		}
 		out = append(out, providers.ModelInfo{ModelId: m.ID})
 	}
 	return out, nil
+}
+
+// isFreeModel keeps the catalog to the no-credit tier. Zen's /models response
+// carries no pricing, but every free model is suffixed "-free" — the ids in
+// zenStaticModels without that suffix are the exceptions. Paid ids would
+// otherwise reach auto-routing and come back 402 Account.InsufficientFunds.
+func isFreeModel(id string) bool {
+	if strings.HasSuffix(id, "-free") {
+		return true
+	}
+	for _, m := range zenStaticModels {
+		if m.ModelId == id {
+			return true
+		}
+	}
+	return false
 }

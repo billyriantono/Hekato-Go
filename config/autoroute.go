@@ -26,10 +26,21 @@ type AutoRouteConfig struct {
 	// the model ID). A match removes that (provider, model) pair from auto
 	// routing only; the same model on another provider stays eligible.
 	Blacklist []string `json:"blacklist"`
+	// KeywordRules force a tier when a literal keyword appears in the last user
+	// message, short-circuiting the heuristic. The operator's escape hatch for
+	// work the counting signals cannot see: "kubernetes" is three tokens and a
+	// hard problem. First matching rule wins.
+	KeywordRules []KeywordRule `json:"keywordRules,omitempty"`
 	// AutoThinking lets a plain "auto" request enable thinking by itself when
 	// the request classifies as heavy (strong tier). "auto-thinking" always
 	// forces it on regardless.
 	AutoThinking bool `json:"autoThinking"`
+}
+
+// KeywordRule maps literal keywords to a tier ("fast", "balanced", "strong").
+type KeywordRule struct {
+	Keywords []string `json:"keywords"`
+	Tier     string   `json:"tier"`
 }
 
 // Blacklisted reports whether auto routing must skip model on provider.

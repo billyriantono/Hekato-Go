@@ -13,6 +13,7 @@ import (
 	"hekato-go/logger"
 	"hekato-go/pool"
 	"hekato-go/providers"
+	"hekato-go/providers/modelsdev"
 	"hekato-go/providers/opencodezen"
 	"hekato-go/relay"
 	"io"
@@ -47,6 +48,10 @@ type RequestLog struct {
 	Duration     int64   `json:"duration"`     // Request duration in ms (first-byte → end)
 	TTFTMs       int64   `json:"ttftMs"`       // Time to first token / tool_use in ms
 	TPS          float64 `json:"tps"`          // Output tokens per second (0 when unmeasurable)
+	// Prompt-cache split of the input tokens, when the upstream reports one.
+	// Absent means the provider said nothing about caching.
+	CacheReadTokens  int `json:"cacheReadTokens,omitempty"`
+	CacheWriteTokens int `json:"cacheWriteTokens,omitempty"`
 	UserAgent    string  `json:"userAgent"`    // Client User-Agent header (truncated)
 	ClientIP     string  `json:"clientIp"`     // Client IP (honors X-Forwarded-For + X-Real-IP)
 	// RequestedModel is what the client asked for when it differs from Model
@@ -430,6 +435,8 @@ func NewHandler() *Handler {
 	h.pool.RestoreModelLists(config.Blobs())
 	h.seedStaticModelLists()
 	go h.backgroundRefresh()
+	// Keep the models.dev pricing catalog warm and persisted.
+	go modelsdev.StartSync(h.stopRefresh)
 	// 启动后台统计保存 (每30秒保存一次)
 	go h.backgroundStatsSaver()
 	// 清理过期的 stored responses（>30 天）
@@ -929,13 +936,19 @@ func (h *Handler) refreshModelsCache() {
 			h.handleAccountFailure(account, err)
 			continue
 		}
-		// 缓存每账号可用模型，用于路由时过滤
+		// The per-account catalog stays complete — the admin panel offers it as
+		// the menu to pick an allowlist from — but only models this account may
+		// actually serve are advertised to clients.
 		modelIDs := make([]string, 0, len(models))
+		routable := make([]ModelInfo, 0, len(models))
 		for _, m := range models {
 			modelIDs = append(modelIDs, m.ModelId)
+			if account.ServesModel(m.ModelId) {
+				routable = append(routable, m)
+			}
 		}
 		h.pool.SetModelList(account.ID, modelIDs)
-		aggregated = mergeUniqueModels(aggregated, models)
+		aggregated = mergeUniqueModels(aggregated, routable)
 	}
 
 	if len(aggregated) > 0 {
@@ -958,14 +971,18 @@ func (h *Handler) fetchAndCacheAccountModels(account *config.Account) error {
 		return err
 	}
 	modelIDs := make([]string, 0, len(models))
+	routable := make([]ModelInfo, 0, len(models))
 	for _, m := range models {
 		modelIDs = append(modelIDs, m.ModelId)
+		if account.ServesModel(m.ModelId) {
+			routable = append(routable, m)
+		}
 	}
 	h.pool.SetModelList(account.ID, modelIDs)
 
-	// 合并到聚合缓存
+	// 合并到聚合缓存（仅该账号允许路由的模型）
 	h.modelsCacheMu.Lock()
-	h.cachedModels = mergeUniqueModels(h.cachedModels, models)
+	h.cachedModels = mergeUniqueModels(h.cachedModels, routable)
 	h.modelsCacheTime = time.Now().Unix()
 	h.modelsCacheMu.Unlock()
 
@@ -1564,6 +1581,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, req *ClaudeRequest, 
 			OnCredits: func(c float64) {
 				credits = c
 			},
+			OnCacheUsage: func(read, write int) { perf.setCacheUsage(read, write) },
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
 			},
@@ -1697,6 +1715,10 @@ func (h *Handler) addCredits(credits float64) {
 type requestPerf struct {
 	ttftMs int64
 	tps    float64
+	// Prompt-cache split of the input tokens, as the upstream billed it.
+	// Zero/zero means the provider reported nothing, not "no hits".
+	cacheRead  int
+	cacheWrite int
 }
 
 // perfTracker accumulates streaming timing as the callback fires. It snapshots
@@ -1707,6 +1729,8 @@ type perfTracker struct {
 	start      time.Time
 	firstAt    time.Time // set on first non-empty OnText / OnToolUse / OnComplete
 	tokenCount int       // output tokens seen at finalise()
+	cacheRead  int       // input tokens served from the upstream prompt cache
+	cacheWrite int       // input tokens newly written to it
 	mu         sync.Mutex
 }
 
@@ -1753,6 +1777,18 @@ func (p *perfTracker) setFinalTokens(n int) {
 	p.mu.Unlock()
 }
 
+// setCacheUsage records the prompt-cache split reported by the upstream.
+// Riding on the perf tracker keeps it off the signature of every handler that
+// already threads perf through to the log row.
+func (p *perfTracker) setCacheUsage(read, write int) {
+	if p == nil || (read <= 0 && write <= 0) {
+		return
+	}
+	p.mu.Lock()
+	p.cacheRead, p.cacheWrite = read, write
+	p.mu.Unlock()
+}
+
 // finalise produces the requestPerf to ship to the log row. Uses total wall
 // time (request start → completion) for the TPS denominator; falls back to
 // a 1 ms floor so a sub-millisecond request doesn't divide by zero.
@@ -1772,7 +1808,7 @@ func (p *perfTracker) finalise() requestPerf {
 		total = 0.001
 	}
 	tps := float64(p.tokenCount) / total
-	return requestPerf{ttftMs: ttft, tps: math.Round(tps*100) / 100}
+	return requestPerf{ttftMs: ttft, tps: math.Round(tps*100) / 100, cacheRead: p.cacheRead, cacheWrite: p.cacheWrite}
 }
 
 // newLogEntry is the central constructor for RequestLog. It stamps time, the
@@ -1845,6 +1881,13 @@ func (h *Handler) appendRequestLog(entry RequestLog) {
 // recordFailureWithDetails records a failure and stores it in the request logs.
 // log row renders empty TTFT/TPS cells.
 func (h *Handler) recordFailureWithDetails(w http.ResponseWriter, endpoint, model, accountID string, err error) {
+	h.recordFailureTimed(w, endpoint, model, accountID, err, 0, 0)
+}
+
+// recordFailureTimed is recordFailureWithDetails for paths that know how far
+// the request got. Without the timings a failed row shows "0 ms / —", which
+// reads as "failed instantly" when the truth may be "died after four minutes".
+func (h *Handler) recordFailureTimed(w http.ResponseWriter, endpoint, model, accountID string, err error, durationMs, ttftMs int64) {
 	atomic.AddInt64(&h.totalRequests, 1)
 	atomic.AddInt64(&h.failedRequests, 1)
 
@@ -1855,12 +1898,17 @@ func (h *Handler) recordFailureWithDetails(w http.ResponseWriter, endpoint, mode
 	errMsg := err.Error()
 	errType := classifyError(errMsg)
 
-	entry := h.newLogEntry(w, endpoint, model, accountID, "error", 0, 0, 0, 0, 0, 0)
+	entry := h.newLogEntry(w, endpoint, model, accountID, "error", 0, 0, 0, durationMs, ttftMs, 0)
 	entry.Error = errMsg
 	entry.ErrorType = errType
 
 	h.appendRequestLog(entry)
 	h.autoRouter.Record(accountID, model, false, 0)
+	if errType == "model" {
+		// The upstream will say the same thing next time; stop offering this
+		// pair to the router for a while.
+		h.autoRouter.RecordHardFailure(accountID, model, errMsg)
+	}
 	h.metrics.Record(endpoint, model, accountID, false, 0, 0, 0)
 }
 
@@ -1894,9 +1942,11 @@ func (h *Handler) recordSuccessLog(w http.ResponseWriter, endpoint, model, accou
 	h.addCredits(credits)
 
 	entry := h.newLogEntry(w, endpoint, model, accountID, "success", tokens, 0, credits, durationMs, perf.ttftMs, perf.tps)
+	entry.CacheReadTokens, entry.CacheWriteTokens = perf.cacheRead, perf.cacheWrite
 
 	h.appendRequestLog(entry)
 	h.autoRouter.Record(accountID, model, true, durationMs)
+	h.metrics.RecordCache(perf.cacheRead, perf.cacheWrite)
 	h.metrics.Record(endpoint, model, accountID, true, tokens, credits, durationMs)
 }
 
@@ -1965,6 +2015,8 @@ func classifyError(msg string) string {
 		return "overage"
 	case isSuspensionErrorMessage(msg):
 		return "suspended"
+	case isModelRejectionMessage(msg):
+		return "model"
 	case isAuthErrorMessage(msg):
 		return "auth"
 	case isProfileUnavailableErrorMessage(msg):
@@ -2037,6 +2089,7 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, req *ClaudeReques
 			OnCredits: func(c float64) {
 				credits = c
 			},
+			OnCacheUsage: func(read, write int) { perf.setCacheUsage(read, write) },
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
 			},
@@ -2219,6 +2272,12 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 		var thinkingStarted bool
 		var eventThinkingOpen bool
 		responseStarted := false
+		// upstreamProduced records that the model said something, even if it is
+		// still sitting in textBuffer. responseStarted alone is not enough: text
+		// is held back until ~50 runes to detect <thinking> tags, so a stream
+		// that dies early looked to the error path exactly like one that never
+		// answered — and the partial reply was discarded.
+		upstreamProduced := false
 
 		sendChunk := func(content string, thinkingState int) {
 			if content == "" && thinkingState == 2 {
@@ -2321,6 +2380,9 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 		processText := func(text string, isThinking bool, forceFlush bool) {
 			if isThinking && !thinking {
 				return
+			}
+			if text != "" {
+				upstreamProduced = true
 			}
 
 			if isThinking {
@@ -2483,6 +2545,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 				outputTokens = outTok
 			},
 			OnCredits: func(c float64) { credits = c },
+			OnCacheUsage: func(read, write int) { perf.setCacheUsage(read, write) },
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
 			},
@@ -2493,10 +2556,20 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 			lastErr = err
 			excluded[account.ID] = true
 			h.handleModelFailure(account, model, err)
-			if !responseStarted {
-				continue
+			if !responseStarted && !upstreamProduced {
+				continue // nothing was said yet: another account can answer cleanly
 			}
-			h.recordFailureWithDetails(w, "openai", model, account.ID, err)
+			// The model has produced something, so failover is out — a second
+			// attempt cannot un-send it. Flush whatever is still buffered and
+			// close the SSE stream properly instead of dropping it: a stream
+			// that just stops makes strict clients ("stream closed before a
+			// finish_reason") discard the partial answer entirely.
+			processText("", false, true)
+			if eventThinkingOpen {
+				sendChunk("", 3)
+			}
+			h.recordFailureTimed(w, "openai", model, account.ID, err, time.Since(reqStart).Milliseconds(), perf.finalise().ttftMs)
+			endOpenAIStreamTruncated(w, flusher, chatID, model, inputTokens, outputTokens)
 			return
 		}
 
@@ -2564,6 +2637,36 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 	h.sendOpenAIError(w, 500, "server_error", lastErr.Error())
 }
 
+// endOpenAIStreamTruncated closes a half-delivered SSE stream with a terminal
+// chunk. finish_reason is "length" rather than "stop" because the reply really
+// was cut short — a client that keeps the partial text should know it is
+// incomplete. The failure itself is already in the request log.
+func endOpenAIStreamTruncated(w http.ResponseWriter, flusher http.Flusher, chatID, model string, inputTokens, outputTokens int) {
+	if flusher == nil {
+		return
+	}
+	chunk := map[string]interface{}{
+		"id":      chatID,
+		"object":  "chat.completion.chunk",
+		"created": time.Now().Unix(),
+		"model":   model,
+		"choices": []map[string]interface{}{{
+			"index":         0,
+			"delta":         map[string]interface{}{},
+			"finish_reason": "length",
+		}},
+		"usage": map[string]int{
+			"prompt_tokens":     inputTokens,
+			"completion_tokens": outputTokens,
+			"total_tokens":      inputTokens + outputTokens,
+		},
+	}
+	data, _ := json.Marshal(chunk)
+	fmt.Fprintf(w, "data: %s\n\n", string(data))
+	fmt.Fprintf(w, "data: [DONE]\n\n")
+	flusher.Flush()
+}
+
 // handleOpenAINonStream OpenAI 非流式响应
 func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, req *OpenAIRequest, model string, thinking bool, estimatedInputTokens int, apiKeyID string, affinityKey string) {
 	excluded := make(map[string]bool)
@@ -2610,6 +2713,7 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, req *OpenAIReques
 				outputTokens = outTok
 			},
 			OnCredits: func(c float64) { credits = c },
+			OnCacheUsage: func(read, write int) { perf.setCacheUsage(read, write) },
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
 			},
@@ -2811,6 +2915,8 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiUpdateAccount(w, r, strings.TrimPrefix(path, "/accounts/"))
 	case path == "/auth/credentials" && r.Method == "POST":
 		h.apiImportCredentials(w, r)
+	case path == "/models-dev" && r.Method == "GET":
+		h.apiGetModelsDev(w, r)
 	case path == "/status" && r.Method == "GET":
 		h.apiGetStatus(w, r)
 	case path == "/settings" && r.Method == "GET":
@@ -2930,6 +3036,8 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 			"weight":            a.Weight,
 			"probeModel":        a.ProbeModel,
 			"extraModels":       a.ExtraModels,
+			"enabledModels":     a.EnabledModels,
+			"allowPaidModels":   a.AllowPaidModels,
 			"overageStatus":     a.OverageStatus,
 			"overageCapability": a.OverageCapability,
 			"overageCap":        a.OverageCap,
@@ -3038,8 +3146,8 @@ func (h *Handler) apiUpdateAccount(w http.ResponseWriter, r *http.Request, id st
 
 	// 只更新传入的字段
 	oldEnabled := existing.Enabled
-	if v, ok := updates["enabled"].(bool); ok {
-		existing.Enabled = v
+	if v, ok := updates["enabled"].(bool); ok && (v != existing.Enabled || v && stuckBanned(existing)) {
+		setEnabledByOperator(existing, v)
 	}
 	if v, ok := updates["nickname"].(string); ok {
 		existing.Nickname = v
@@ -3054,12 +3162,44 @@ func (h *Handler) apiUpdateAccount(w http.ResponseWriter, r *http.Request, id st
 		existing.ProbeModel = strings.TrimSpace(v)
 	}
 	if v, ok := updates["extraModels"].([]interface{}); ok {
+		known := make(map[string]bool, len(existing.ExtraModels))
+		for _, m := range existing.ExtraModels {
+			known[strings.ToLower(strings.TrimSpace(m))] = true
+		}
 		existing.ExtraModels = existing.ExtraModels[:0:0]
 		for _, item := range v {
-			if id, ok := item.(string); ok && strings.TrimSpace(id) != "" {
-				existing.ExtraModels = append(existing.ExtraModels, strings.TrimSpace(id))
+			id, ok := item.(string)
+			if !ok || strings.TrimSpace(id) == "" {
+				continue
+			}
+			id = strings.TrimSpace(id)
+			existing.ExtraModels = append(existing.ExtraModels, id)
+			// Adding a model by hand is a statement of intent to use it, so a
+			// new one joins an active allowlist. Without this it would be
+			// added and then silently refused by the allowlist that predates it.
+			if !known[strings.ToLower(id)] && existing.EnabledModels != nil && !existing.ServesModel(id) {
+				existing.EnabledModels = append(existing.EnabledModels, id)
 			}
 		}
+	}
+	if raw, present := updates["enabledModels"]; present {
+		// null clears the allowlist (everything advertised routes again);
+		// [] is an allowlist permitting nothing. The two must not collapse.
+		switch v := raw.(type) {
+		case nil:
+			existing.EnabledModels = nil
+		case []interface{}:
+			list := make([]string, 0, len(v))
+			for _, item := range v {
+				if id, ok := item.(string); ok && strings.TrimSpace(id) != "" {
+					list = append(list, strings.TrimSpace(id))
+				}
+			}
+			existing.EnabledModels = list
+		}
+	}
+	if v, ok := updates["allowPaidModels"].(bool); ok {
+		existing.AllowPaidModels = v
 	}
 	if v, ok := updates["proxyURL"].(string); ok {
 		if v != "" && !strings.HasPrefix(v, "http://") && !strings.HasPrefix(v, "https://") && !strings.HasPrefix(v, "socks5://") && !strings.HasPrefix(v, "socks5h://") {
@@ -3238,11 +3378,8 @@ func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 				if enabled && !a.Enabled && hasCredential(&a) {
 					toRefreshModels = append(toRefreshModels, a)
 				}
-				a.Enabled = enabled
-				if enabled && a.BanStatus != "" && a.BanStatus != "ACTIVE" {
-					a.BanStatus = "ACTIVE"
-					a.BanReason = ""
-					a.BanTime = 0
+				if a.Enabled != enabled || enabled && stuckBanned(&a) {
+					setEnabledByOperator(&a, enabled)
 				}
 				config.UpdateAccount(a.ID, a)
 			}
@@ -3683,6 +3820,7 @@ func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
 		"allowOverUsage":        config.GetAllowOverUsage(),
 		"logLevel":              config.GetLogLevel(),
 		"accountRefreshMinutes": config.GetAccountRefreshMinutes(),
+		"modelsDevSyncHours":    config.GetModelsDevSyncHours(),
 		"warmupProbe":           warmupProbe,
 		"warmupRecover":         warmupRecover,
 		"testModel":             config.GetTestModel(),
@@ -3741,6 +3879,7 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		AllowOverUsage        *bool                `json:"allowOverUsage,omitempty"`
 		LogLevel              *string              `json:"logLevel,omitempty"`
 		AccountRefreshMinutes *int                 `json:"accountRefreshMinutes,omitempty"`
+		ModelsDevSyncHours    *int                 `json:"modelsDevSyncHours,omitempty"`
 		WarmupProbe           *bool                `json:"warmupProbe,omitempty"`
 		WarmupRecover         *bool                `json:"warmupRecover,omitempty"`
 		TestModel             *string              `json:"testModel,omitempty"`
@@ -3803,6 +3942,20 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := config.UpdateAccountRefreshMinutes(*req.AccountRefreshMinutes); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
+	if req.ModelsDevSyncHours != nil {
+		// -1 disables the periodic sync; 0 means "default"; a week is the ceiling.
+		if *req.ModelsDevSyncHours < -1 || *req.ModelsDevSyncHours > 168 {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": "modelsDevSyncHours must be between -1 (disabled) and 168"})
+			return
+		}
+		if err := config.UpdateModelsDevSyncHours(*req.ModelsDevSyncHours); err != nil {
 			w.WriteHeader(500)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return

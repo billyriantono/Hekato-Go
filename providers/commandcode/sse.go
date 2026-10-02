@@ -318,6 +318,9 @@ func (s *streamState) captureUsage(u map[string]interface{}) {
 	if v, ok := providers.ReadTokenNumber(u, "totalTokens", "total_tokens"); ok {
 		s.usageTotal = v
 	}
+	if read, write, ok := providers.CacheSplitFromMap(u); ok && s.cb.OnCacheUsage != nil {
+		s.cb.OnCacheUsage(read, write)
+	}
 }
 
 func mapFinishReason(r string) string {

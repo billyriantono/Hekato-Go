@@ -86,6 +86,21 @@ type Account struct {
 	// ExtraModels are operator-added model IDs for this account, merged into the
 	// provider's advertised list (for models a catalog does not know yet).
 	ExtraModels []string `json:"extraModels,omitempty"`
+	// EnabledModels restricts routing to these model IDs. It is deliberately
+	// tri-state, and nil is not the same as empty:
+	//   nil   — no allowlist: every advertised model is routable (the default)
+	//   []    — an allowlist that permits nothing: the account routes no model
+	//   [ids] — only those ids
+	// It exists because a catalog is a menu, not an entitlement: a key may be
+	// offered 26 models and be authorised for one, and without this the gateway
+	// learns the difference one failed request at a time. The empty case is
+	// what "disable all" means — a deliberate, persisted "nothing", which an
+	// omitempty tag would quietly turn back into "everything" on reload.
+	EnabledModels []string `json:"enabledModels"`
+	// AllowPaidModels opts the account into the upstream's paid catalog. Default
+	// false keeps providers with a free tier (OpenCode Zen) on zero-cost models
+	// only, so auto-routing cannot pick a model the account has no credit for.
+	AllowPaidModels bool `json:"allowPaidModels,omitempty"`
 
 	// Upstream Overages state (mirrored from AWS Q `setUserPreference` / `getUsageLimits`).
 	// OverageStatus is the only switch that decides whether to keep dispatching once UsageLimit is reached.
@@ -260,6 +275,10 @@ type Config struct {
 	// AccountRefreshMinutes: how often account tokens and quotas are re-checked
 	// upstream. 0 = default (ACCOUNT_REFRESH_MINUTES env or 30).
 	AccountRefreshMinutes int `json:"accountRefreshMinutes,omitempty"`
+
+	// ModelsDevSyncHours: how often the models.dev pricing catalog is re-pulled
+	// and persisted. 0 = default (12h), negative = periodic sync disabled.
+	ModelsDevSyncHours int `json:"modelsDevSyncHours,omitempty"`
 
 	// AutoRoute configures the virtual "auto" model router (nil = defaults, disabled).
 	AutoRoute *AutoRouteConfig `json:"autoRoute,omitempty"`
@@ -1245,6 +1264,49 @@ func UpdateAccountRefreshMinutes(minutes int) error {
 	cfgLock.Lock()
 	defer cfgLock.Unlock()
 	cfg.AccountRefreshMinutes = minutes
+	return Save()
+}
+
+// GetProbeModel returns the account's configured probe model ("" when unset),
+// nil-safe for callers that may not have an account.
+func (a *Account) GetProbeModel() string {
+	if a == nil {
+		return ""
+	}
+	return a.ProbeModel
+}
+
+// ServesModel reports whether the account may be routed the given model.
+// A nil allowlist means "everything advertised"; an empty one means "nothing".
+func (a *Account) ServesModel(model string) bool {
+	if a == nil || a.EnabledModels == nil {
+		return true
+	}
+	model = strings.ToLower(strings.TrimSpace(model))
+	for _, m := range a.EnabledModels {
+		if strings.ToLower(strings.TrimSpace(m)) == model {
+			return true
+		}
+	}
+	return false
+}
+
+// GetModelsDevSyncHours returns the models.dev sync interval in hours
+// (0 = default, negative = disabled).
+func GetModelsDevSyncHours() int {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	if cfg == nil {
+		return 0
+	}
+	return cfg.ModelsDevSyncHours
+}
+
+// UpdateModelsDevSyncHours persists the models.dev sync interval.
+func UpdateModelsDevSyncHours(hours int) error {
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.ModelsDevSyncHours = hours
 	return Save()
 }
 

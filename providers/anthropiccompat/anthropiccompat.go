@@ -124,7 +124,7 @@ func doRequest(account *config.Account, body []byte, stream bool) (*http.Respons
 	} else {
 		req.Header.Set("Accept", "application/json")
 	}
-	return providers.GetRestClientForAccount(account).Do(req)
+	return providers.GetClientForAccount(account).Do(req)
 }
 
 // nonStreamResponse mirrors the Anthropic Messages non-stream response shape.

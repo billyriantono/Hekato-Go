@@ -8,6 +8,8 @@ export type Account = {
   providerKind?: string
   probeModel?: string
   extraModels?: string[]
+  enabledModels?: string[] | null
+  allowPaidModels?: boolean
   provider: string
   region: string
   enabled: boolean
@@ -80,10 +82,12 @@ export function ago(unixSeconds: number, lang = 'en'): string {
   return rtf.format(Math.round(s / 86400), 'day')
 }
 
-export type Status = 'active' | 'disabled' | 'banned' | 'noToken' | 'expired' | 'overQuota'
+export type Status = 'active' | 'disabled' | 'autoDisabled' | 'banned' | 'noToken' | 'expired' | 'overQuota'
 
 export function accountStatus(a: Account): Status {
-  if (!a.enabled) return 'disabled'
+  // The gateway sets banReason when it disables an account itself (429 in warmup,
+  // auth failure, suspension); an operator's disable never does.
+  if (!a.enabled) return a.banReason ? 'autoDisabled' : 'disabled'
   if (a.banStatus && a.banStatus !== 'ACTIVE') return 'banned'
   if (!a.hasToken) return 'noToken'
   if (a.expiresAt && a.expiresAt * 1000 < Date.now()) return 'expired'
@@ -94,6 +98,7 @@ export function accountStatus(a: Account): Status {
 export const statusTone: Record<Status, 'success' | 'warning' | 'danger' | 'muted'> = {
   active: 'success',
   disabled: 'muted',
+  autoDisabled: 'warning',
   banned: 'danger',
   noToken: 'warning',
   expired: 'warning',
@@ -103,6 +108,7 @@ export const statusTone: Record<Status, 'success' | 'warning' | 'danger' | 'mute
 export const statusKey: Record<Status, string> = {
   active: 'accounts.normal',
   disabled: 'accounts.disabled',
+  autoDisabled: 'accounts.autoDisabled',
   banned: 'accounts.banned',
   noToken: 'accounts.noToken',
   expired: 'accounts.expired',
@@ -155,6 +161,11 @@ export const isHttpUrl = (v: string) => /^https?:\/\//.test(v)
 export const isMachineId = (v: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v) || /^[0-9a-f]{32}$/i.test(v)
 
+
+/** OpenCode Zen serves a free tier alongside paid models, so it gets the paid-models opt-in. */
+export function hasFreeTier(a: { providerKind?: string }): boolean {
+  return a.providerKind === 'opencode_zen'
+}
 
 /** Kiro (AWS) accounts have upstream overage billing; other providers do not. */
 export function isKiroAccount(a: { authMethod?: string; provider?: string; providerKind?: string }): boolean {

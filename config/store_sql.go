@@ -97,8 +97,30 @@ var accountColumns = []string{
 	"usage_current", "usage_limit", "usage_percent", "next_reset_date", "last_refresh",
 	"trial_usage_current", "trial_usage_limit", "trial_usage_percent", "trial_status", "trial_expires_at",
 	"request_count", "error_count", "last_used", "total_tokens", "total_credits",
-	"warmup_status", "warmup_error", "last_warmup", "probe_model", "extra_models",
+	"warmup_status", "warmup_error", "last_warmup", "probe_model", "extra_models", "enabled_models", "allow_paid_models",
 	"base_url", "compat_api_key", "compat_protocol",
+}
+
+// enabledModelsValue maps the tri-state allowlist onto one nullable column:
+// NULL = no allowlist, '' = an allowlist permitting nothing, otherwise the
+// newline-joined ids. A plain TEXT DEFAULT '' column could not tell the first
+// two apart, and "disable all" would come back as "allow all" after a restart.
+func enabledModelsValue(models []string) any {
+	if models == nil {
+		return nil
+	}
+	return strings.Join(models, "\n")
+}
+
+// enabledModelsFromDB is the inverse of enabledModelsValue.
+func enabledModelsFromDB(v sql.NullString) []string {
+	if !v.Valid {
+		return nil
+	}
+	if v.String == "" {
+		return []string{}
+	}
+	return strings.Split(v.String, "\n")
 }
 
 func accountValues(a *Account) []any {
@@ -114,7 +136,7 @@ func accountValues(a *Account) []any {
 		a.UsageCurrent, a.UsageLimit, a.UsagePercent, a.NextResetDate, a.LastRefresh,
 		a.TrialUsageCurrent, a.TrialUsageLimit, a.TrialUsagePercent, a.TrialStatus, a.TrialExpiresAt,
 		a.RequestCount, a.ErrorCount, a.LastUsed, a.TotalTokens, a.TotalCredits,
-		a.WarmupStatus, a.WarmupError, a.LastWarmup, a.ProbeModel, strings.Join(a.ExtraModels, "\n"),
+		a.WarmupStatus, a.WarmupError, a.LastWarmup, a.ProbeModel, strings.Join(a.ExtraModels, "\n"), enabledModelsValue(a.EnabledModels), boolToInt(a.AllowPaidModels),
 		a.BaseURL, a.CompatAPIKey, a.CompatProtocol,
 	}
 }
@@ -123,6 +145,8 @@ func scanAccount(rows *sql.Rows) (Account, error) {
 	var a Account
 	var enabled int
 	var extraModels string
+	var allowPaid sql.NullInt64
+	var enabledModels sql.NullString
 	var baseURL, compatKey, compatProto sql.NullString
 	dest := []any{
 		&a.ID, &a.Email, &a.UserId, &a.Nickname,
@@ -136,17 +160,19 @@ func scanAccount(rows *sql.Rows) (Account, error) {
 		&a.UsageCurrent, &a.UsageLimit, &a.UsagePercent, &a.NextResetDate, &a.LastRefresh,
 		&a.TrialUsageCurrent, &a.TrialUsageLimit, &a.TrialUsagePercent, &a.TrialStatus, &a.TrialExpiresAt,
 		&a.RequestCount, &a.ErrorCount, &a.LastUsed, &a.TotalTokens, &a.TotalCredits,
-		&a.WarmupStatus, &a.WarmupError, &a.LastWarmup, &a.ProbeModel, &extraModels,
+		&a.WarmupStatus, &a.WarmupError, &a.LastWarmup, &a.ProbeModel, &extraModels, &enabledModels, &allowPaid,
 		&baseURL, &compatKey, &compatProto,
 	}
 	if err := rows.Scan(dest...); err != nil {
 		return Account{}, err
 	}
 	a.Enabled = enabled != 0
+	a.AllowPaidModels = allowPaid.Int64 != 0
 	a.BaseURL, a.CompatAPIKey, a.CompatProtocol = baseURL.String, compatKey.String, compatProto.String
 	if extraModels != "" {
 		a.ExtraModels = strings.Split(extraModels, "\n")
 	}
+	a.EnabledModels = enabledModelsFromDB(enabledModels)
 	return a, nil
 }
 
@@ -208,7 +234,7 @@ func (s *sqlStore) migrate() error {
 			trial_usage_percent DOUBLE PRECISION, trial_status TEXT, trial_expires_at BIGINT,
 			request_count BIGINT, error_count BIGINT, last_used BIGINT, total_tokens BIGINT, total_credits DOUBLE PRECISION,
 			warmup_status TEXT DEFAULT '', warmup_error TEXT DEFAULT '', last_warmup BIGINT DEFAULT 0,
-			probe_model TEXT DEFAULT '', extra_models TEXT DEFAULT '',
+			probe_model TEXT DEFAULT '', extra_models TEXT DEFAULT '', enabled_models TEXT, allow_paid_models INTEGER DEFAULT 0,
 			base_url TEXT DEFAULT '', compat_api_key TEXT DEFAULT '', compat_protocol TEXT DEFAULT '',
 			position BIGINT
 		)`,
@@ -266,7 +292,7 @@ func (s *sqlStore) migrate() error {
 	if err := addColumn("api_keys", "allowed_models", "TEXT DEFAULT ''"); err != nil {
 		return err
 	}
-	for col, typ := range map[string]string{"warmup_status": "TEXT DEFAULT ''", "warmup_error": "TEXT DEFAULT ''", "last_warmup": "BIGINT DEFAULT 0", "probe_model": "TEXT DEFAULT ''", "extra_models": "TEXT DEFAULT ''", "base_url": "TEXT DEFAULT ''", "compat_api_key": "TEXT DEFAULT ''", "compat_protocol": "TEXT DEFAULT ''"} {
+	for col, typ := range map[string]string{"warmup_status": "TEXT DEFAULT ''", "warmup_error": "TEXT DEFAULT ''", "last_warmup": "BIGINT DEFAULT 0", "probe_model": "TEXT DEFAULT ''", "extra_models": "TEXT DEFAULT ''", "enabled_models": "TEXT", "allow_paid_models": "INTEGER DEFAULT 0", "base_url": "TEXT DEFAULT ''", "compat_api_key": "TEXT DEFAULT ''", "compat_protocol": "TEXT DEFAULT ''"} {
 		if err := addColumn("accounts", col, typ); err != nil {
 			return err
 		}

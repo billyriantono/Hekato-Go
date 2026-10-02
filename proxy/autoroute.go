@@ -6,6 +6,7 @@ import (
 	"hekato-go/config"
 	"hekato-go/logger"
 	"hekato-go/pool"
+	"hekato-go/providers/modelsdev"
 	"math"
 	"math/rand"
 	"net/http"
@@ -22,27 +23,122 @@ import (
 const autoModelName = "auto"
 
 // routeSignals are the locally observable complexity signals of a request.
+// Content-derived flags are booleans by design: signals are persisted in the
+// decision ring and shown in the admin panel, so the prompt text that produced
+// them is deliberately not carried here.
 type routeSignals struct {
 	InputTokens int  `json:"inputTokens"`
 	Tools       int  `json:"tools"`
 	Turns       int  `json:"turns"`
 	Images      bool `json:"images"`
 	Thinking    bool `json:"thinking"`
+	// Code, Reasoning and Simple describe the last user message.
+	Code      bool `json:"code,omitempty"`
+	Reasoning bool `json:"reasoning,omitempty"`
+	Simple    bool `json:"simple,omitempty"`
+	// KeywordTier is a tier forced by an operator rule (0 = unset, else tier+1,
+	// so the zero value of the struct means "no rule matched").
+	KeywordTier int `json:"keywordTier,omitempty"`
 }
 
 var tierNames = [3]string{"fast", "balanced", "strong"}
 
-// classifyTier maps signals to a tier index (0 fast, 1 balanced, 2 strong).
-// ponytail: fixed thresholds; make them configurable if operators ask.
+// Tier thresholds over the additive complexity score below.
+// ponytail: fixed weights; make them configurable if operators ask.
+const (
+	strongScore   = 4
+	balancedScore = 2
+)
+
+// classifyTier scores a request and maps the score to a tier (0 fast,
+// 1 balanced, 2 strong).
+//
+// This used to be a cascade in which "tools >= 8" meant strong. Every coding
+// agent sends its whole toolset on every turn, so in production that single
+// clause decided nearly everything: 19 of 25 classified requests arrived with
+// exactly 13 tools, and a 300-token "hi" was sorted with a 70k-token refactor.
+// Tool count is now worth one point among several, and what the user actually
+// wrote carries real weight.
 func classifyTier(s routeSignals) int {
+	// An operator keyword rule is an instruction, not a hint.
+	if s.KeywordTier > 0 {
+		return s.KeywordTier - 1
+	}
+	score := 0
 	switch {
-	case s.Thinking || s.InputTokens > 40000 || s.Tools >= 8:
+	// A prompt this large is heavy work on its own terms, whatever else the
+	// request looks like — decisive, like explicit thinking, but still
+	// cancellable by a one-word message.
+	case s.InputTokens > 40000:
+		score += strongScore
+	case s.InputTokens > 12000:
+		score += 2
+	case s.InputTokens > 4000:
+		score++
+	}
+	if s.Turns > 20 {
+		score++
+	}
+	if s.Tools > 0 {
+		score++
+	}
+	if s.Images {
+		score++
+	}
+	if s.Code {
+		score++
+	}
+	if s.Reasoning {
+		score += 2
+	}
+	// A client explicitly asking for extended thinking is stating intent, not
+	// leaving a hint to be weighed: on its own it reaches the strong tier. It
+	// can still be pulled back down by a trivial message ("ok" with thinking
+	// on is not hard work).
+	if s.Thinking {
+		score += strongScore
+	}
+	// A one-line acknowledgement is cheap work whatever else the envelope says.
+	if s.Simple {
+		score -= 2
+	}
+	switch {
+	case score >= strongScore:
 		return 2
-	case s.InputTokens > 6000 || s.Tools > 0 || s.Turns > 6 || s.Images:
+	case score >= balancedScore:
 		return 1
 	default:
 		return 0
 	}
+}
+
+// effectiveTier is the tier a request routes to: the classified tier moved by
+// the quality/cost preference. Resolve and the affinity-pin check must agree on
+// it, or a pinned conversation is judged against a tier it never wanted.
+func effectiveTier(cfg config.AutoRouteConfig, sig routeSignals) int {
+	tier := classifyTier(sig)
+	// Quality pushes up, cost pushes down. Only a clear preference moves the tier.
+	shift := cfg.QualityWeight - cfg.CostWeight
+	if shift >= 0.5 {
+		tier++
+	} else if shift <= -0.5 {
+		tier--
+	}
+	return int(math.Max(0, math.Min(2, float64(tier))))
+}
+
+// tierOfModel reports the highest tier whose patterns match model, or -1 when
+// no tier claims it. Highest wins because patterns overlap (glm-5.3-flash sits
+// in both fast and balanced) and the generous reading avoids evicting a pin
+// that is in fact strong enough.
+func tierOfModel(cfg config.AutoRouteConfig, model string) int {
+	found := -1
+	for i, patterns := range [3][]string{cfg.Fast, cfg.Balanced, cfg.Strong} {
+		if matchesTier(model, patterns) {
+			found = i
+		}
+	}
+	return found
 }
 
 // candidateStats is the decayed reliability + latency record of one (account, model).
@@ -51,9 +147,28 @@ type candidateStats struct {
 	Failures    float64 `json:"failures"`
 	EwmaLatency float64 `json:"ewmaLatencyMs"`
 	Updated     time.Time
+	// QuarantinedUntil sidelines a pair the upstream keeps rejecting outright.
+	// Decayed reliability alone cannot express this: a hard rejection is
+	// certainty, not evidence to be averaged away.
+	QuarantinedUntil time.Time `json:"quarantinedUntil,omitempty"`
+	QuarantineReason string    `json:"quarantineReason,omitempty"`
 }
 
-const statsHalfLife = time.Hour
+func (c *candidateStats) quarantined(now time.Time) bool {
+	return c != nil && now.Before(c.QuarantinedUntil)
+}
+
+// statsHalfLife governs how fast the bandit forgets. An hour sounded prudent
+// but decayed faster than traffic accumulated per (account, model): every
+// candidate sat back at Beta(1,1) — a coin flip dressed up as Thompson
+// sampling. A day keeps enough signal to actually rank candidates.
+const statsHalfLife = 24 * time.Hour
+
+// quarantineWindow is how long a candidate sits out after a hard failure —
+// one the upstream will repeat for the same (account, model) pair, e.g. "model
+// not supported". Long enough to outlast a model-list refresh, short enough
+// that a fixed upstream returns on its own.
+const quarantineWindow = 30 * time.Minute
 
 func (c *candidateStats) decay(now time.Time) {
 	if c.Updated.IsZero() {
@@ -70,9 +185,14 @@ func (c *candidateStats) decay(now time.Time) {
 
 // routeDecision is what the router chose and why; kept in a ring for the dashboard.
 type routeDecision struct {
-	Time      int64   `json:"time"`
-	Endpoint  string  `json:"endpoint"`
-	Tier      string  `json:"tier"`
+	Time     int64  `json:"time"`
+	Endpoint string `json:"endpoint"`
+	Tier     string `json:"tier"`
+	// WantedTier is the tier the request classified into, when it differs from
+	// the tier that actually served it. A populated value means that tier was
+	// starved — no candidate offered it — which is invisible in Tier alone.
+	WantedTier string `json:"wantedTier,omitempty"`
+	Candidates int    `json:"candidates,omitempty"`
 	Model     string  `json:"model"`
 	AccountID string  `json:"accountId"`
 	Score     float64 `json:"score"`
@@ -173,11 +293,26 @@ func isAutoModel(model string) bool {
 	return strings.EqualFold(strings.TrimSpace(model), autoModelName)
 }
 
+// matchesTier reports whether model belongs to a tier.
+//
+// Entries are substrings by default, which is convenient and occasionally too
+// generous: "gemini" swept in gemini-3.0-flash, which one provider rejects
+// outright. An entry prefixed with "=" is matched exactly, so an operator can
+// name one model without also claiming everything that shares its prefix.
 func matchesTier(model string, patterns []string) bool {
-	m := strings.ToLower(model)
+	m := strings.ToLower(strings.TrimSpace(model))
 	for _, p := range patterns {
 		p = strings.ToLower(strings.TrimSpace(p))
-		if p != "" && strings.Contains(m, p) {
+		if p == "" {
+			continue
+		}
+		if exact, ok := strings.CutPrefix(p, "="); ok {
+			if m == strings.TrimSpace(exact) {
+				return true
+			}
+			continue
+		}
+		if strings.Contains(m, p) {
 			return true
 		}
 	}
@@ -206,15 +341,7 @@ func (r *autoRouter) Resolve(p *pool.AccountPool, cfg config.AutoRouteConfig, si
 	if r == nil || p == nil {
 		return nil
 	}
-	tier := classifyTier(sig)
-	// Quality pushes up, cost pushes down. Only a clear preference moves the tier.
-	shift := cfg.QualityWeight - cfg.CostWeight
-	if shift >= 0.5 {
-		tier++
-	} else if shift <= -0.5 {
-		tier--
-	}
-	tier = int(math.Max(0, math.Min(2, float64(tier))))
+	tier := effectiveTier(cfg, sig)
 	tiers := [3][]string{cfg.Fast, cfg.Balanced, cfg.Strong}
 
 	// Walk from the chosen tier outward until some account offers a model.
@@ -232,6 +359,12 @@ func (r *autoRouter) Resolve(p *pool.AccountPool, cfg config.AutoRouteConfig, si
 	// beats a neighbouring tier that can actually see the image.
 	var cands []routeCandidate
 	usedTier := tier
+	// anyFit holds the first non-empty tier ignoring the context check, so a
+	// request larger than every known window still routes somewhere instead of
+	// failing outright.
+	var anyFit []routeCandidate
+	anyFitTier := tier
+	truncatedFit := false
 	passes := []bool{false}
 	if sig.Images && r.vision != nil {
 		passes = []bool{true, false}
@@ -243,21 +376,33 @@ search:
 			if needVision {
 				cands = r.onlyVision(cands)
 			}
-			if len(cands) > 0 {
+			if len(cands) == 0 {
+				continue
+			}
+			if len(anyFit) == 0 {
+				anyFit, anyFitTier = cands, ti
+			}
+			if fits := onlyFitsContext(cands, sig.InputTokens); len(fits) > 0 {
+				cands = fits
 				usedTier = ti
 				break search
 			}
+			truncatedFit = true
+			cands = nil
 		}
 	}
 	if len(cands) == 0 {
-		return nil
+		if len(anyFit) == 0 {
+			return nil
+		}
+		cands, usedTier = anyFit, anyFitTier
 	}
 
 	now := time.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	explored := r.rng.Float64() < cfg.Explore
+	explored := r.rng.Float64() < exploreRate(cfg, cands, r.stats, now)
 	best := -1.0
 	var pick routeCandidate
 	var pickScore float64
@@ -275,11 +420,7 @@ search:
 		if st.EwmaLatency > 0 {
 			speed = 1 / (1 + st.EwmaLatency/2000)
 		}
-		budget := 1.0
-		if c.account.UsageLimit > 0 {
-			budget = math.Max(0, 1-c.account.UsagePercent)
-		}
-		score := reliability * (1 - cfg.SpeedWeight*(1-speed)) * (1 - cfg.CostWeight*(1-budget))
+		score := reliability * (1 - cfg.SpeedWeight*(1-speed)) * (1 - cfg.CostWeight*(1-affordability(c)))
 		if explored {
 			if c == pick {
 				pickScore = score
@@ -293,6 +434,11 @@ search:
 
 	reason := fmt.Sprintf("tier=%s tokens=%d tools=%d turns=%d thinking=%t images=%t candidates=%d",
 		tierNames[usedTier], sig.InputTokens, sig.Tools, sig.Turns, sig.Thinking, sig.Images, len(cands))
+	if truncatedFit {
+		// Every candidate with a known window was too small for this request;
+		// the pick may not hold the whole context.
+		reason += " context-overflow"
+	}
 	if usedTier != tier {
 		reason += fmt.Sprintf(" (wanted %s)", tierNames[tier])
 	}
@@ -302,13 +448,99 @@ search:
 	d := routeDecision{
 		Time: now.Unix(), Endpoint: endpoint, Tier: tierNames[usedTier], Model: pick.model,
 		AccountID: pick.account.ID, Score: math.Round(pickScore*1000) / 1000, Explored: explored,
-		Signals: sig, Reason: reason,
+		Candidates: len(cands), Signals: sig, Reason: reason,
+	}
+	if usedTier != tier {
+		d.WantedTier = tierNames[tier]
 	}
 	r.pushLocked(d)
 	return &d
 }
 
+// exploreMaturity is the number of observations across a candidate set beyond
+// which random exploration is considered redundant.
+const exploreMaturity = 20.0
+
+// exploreRate scales epsilon-exploration down as the bandit learns.
+//
+// Thompson sampling already explores: an unobserved candidate draws from a
+// wide posterior and wins often. The fixed epsilon on top of it was useful
+// only while every candidate sat at the same prior — and with the old
+// one-hour half-life that was always, so a tenth of all traffic was routed at
+// random forever. Exploration now fades as evidence accumulates.
+func exploreRate(cfg config.AutoRouteConfig, cands []routeCandidate, stats map[string]*candidateStats, now time.Time) float64 {
+	if cfg.Explore <= 0 || len(cands) == 0 {
+		return 0
+	}
+	observations := 0.0
+	for _, c := range cands {
+		if st := stats[statKey(c.account.ID, c.model)]; st != nil {
+			observations += st.Successes + st.Failures
+		}
+	}
+	maturity := math.Min(1, observations/exploreMaturity)
+	return cfg.Explore * (1 - maturity)
+}
+
+// priceReference is the per-1M price treated as "mid-market": a model at this
+// price scores 0.5 on affordability, free models score 1, and something ten
+// times dearer lands near 0.09. Chosen so the curve discriminates across the
+// range actually seen in the catalog ($0 to $30/1M) rather than saturating.
+const priceReference = 2.0
+
+// affordability scores what a candidate costs to use, from 1 (free and
+// unthrottled) down towards 0.
+//
+// It weighs two unrelated meanings of "expensive" and takes the harsher:
+// money (models.dev price per 1M tokens) and quota (how little of a metered
+// account is left). Multiplying them would compound two independent penalties
+// into a number that means neither; the minimum keeps the binding constraint
+// legible. A model the catalog does not price is treated as mid-market — an
+// unknown price is not evidence of a cheap one.
+func affordability(c routeCandidate) float64 {
+	money := 0.5
+	if price, ok := modelsdev.BlendedPrice(c.model); ok {
+		money = priceReference / (priceReference + price)
+	}
+	quota := 1.0
+	if c.account != nil && c.account.UsageLimit > 0 {
+		quota = math.Max(0, 1-c.account.UsagePercent)
+	}
+	return math.Min(money, quota)
+}
+
 // onlyVision keeps candidates whose model is known to accept images.
+// contextReserve is the room left for the reply (and for the token estimate
+// running low) when checking whether a request fits a model's window.
+const contextReserve = 32_000
+
+// onlyFitsContext drops candidates whose published context window cannot hold
+// inputTokens plus the reply reserve. Models the models.dev catalog does not
+// know are kept — an unknown window is not evidence of a small one, and
+// dropping them would empty the pool for every provider-specific id.
+func onlyFitsContext(cands []routeCandidate, inputTokens int) []routeCandidate {
+	if inputTokens <= 0 {
+		return cands
+	}
+	var out []routeCandidate
+	for _, c := range cands {
+		if modelFitsContext(c.model, inputTokens) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// modelFitsContext reports whether model can hold inputTokens plus the reply
+// reserve. Unknown windows count as fitting (see onlyFitsContext).
+func modelFitsContext(model string, inputTokens int) bool {
+	if inputTokens <= 0 {
+		return true
+	}
+	limit := modelsdev.ContextLimit(model)
+	return limit == 0 || limit >= inputTokens+contextReserve
+}
+
 func (r *autoRouter) onlyVision(cands []routeCandidate) []routeCandidate {
 	var out []routeCandidate
 	for _, c := range cands {
@@ -341,6 +573,9 @@ func (r *autoRouter) candidates(p *pool.AccountPool, patterns []string, filter p
 		prov, _ := config.ProviderForAccount(&acc)
 		for _, m := range models {
 			if !matchesTier(m, patterns) || cfg.Blacklisted(prov, m) {
+				continue
+			}
+			if r.isQuarantined(acc.ID, m) {
 				continue
 			}
 			if a := p.GetForModelByID(acc.ID, m, filter); a != nil {
@@ -381,6 +616,38 @@ func (r *autoRouter) Record(accountID, model string, success bool, latencyMs int
 	}
 }
 
+// isQuarantined reports whether a pair is currently sidelined.
+func (r *autoRouter) isQuarantined(accountID, model string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stats[statKey(accountID, model)].quarantined(time.Now())
+}
+
+// RecordHardFailure sidelines a pair the upstream rejected in a way that will
+// repeat: an unknown model, a malformed pairing, a revoked credential. Unlike
+// a 429 (which the pool already routes around and which resolves on its own),
+// retrying these burns a request to learn nothing.
+func (r *autoRouter) RecordHardFailure(accountID, model, reason string) {
+	if r == nil || accountID == "" || model == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	k := statKey(accountID, model)
+	st := r.stats[k]
+	if st == nil {
+		st = &candidateStats{}
+		r.stats[k] = st
+	}
+	st.QuarantinedUntil = time.Now().Add(quarantineWindow)
+	st.QuarantineReason = reason
+	r.dirty = true
+	logger.Warnf("[AutoRoute] quarantined %s for %s (%s)", model, quarantineWindow, reason)
+}
+
 func (r *autoRouter) RecordPinned(d routeDecision) {
 	r.mu.Lock()
 	r.pushLocked(d)
@@ -405,6 +672,10 @@ type candidateView struct {
 	EwmaLatency float64 `json:"ewmaLatencyMs"`
 	Reliability float64 `json:"reliability"`
 	LastUpdated int64   `json:"lastUpdated"`
+	// Quarantined pairs are skipped by the router; showing why (and until when)
+	// keeps the exclusion auditable instead of looking like a silent snub.
+	QuarantinedUntil int64  `json:"quarantinedUntil,omitempty"`
+	QuarantineReason string `json:"quarantineReason,omitempty"`
 }
 
 // Snapshot returns recent decisions (newest first) and per-candidate stats.
@@ -428,13 +699,18 @@ func (r *autoRouter) Snapshot() ([]routeDecision, []candidateView) {
 	for k, st := range r.stats {
 		st.decay(now)
 		parts := strings.SplitN(k, "|", 2)
-		cands = append(cands, candidateView{
+		view := candidateView{
 			AccountID: parts[0], Provider: providers[parts[0]], Email: emails[parts[0]], Model: parts[1],
 			Successes: math.Round(st.Successes*100) / 100, Failures: math.Round(st.Failures*100) / 100,
 			EwmaLatency: math.Round(st.EwmaLatency),
 			Reliability: math.Round((st.Successes+1)/(st.Successes+st.Failures+2)*1000) / 1000,
 			LastUpdated: st.Updated.Unix(),
-		})
+		}
+		if st.quarantined(now) {
+			view.QuarantinedUntil = st.QuarantinedUntil.Unix()
+			view.QuarantineReason = truncateReason(st.QuarantineReason)
+		}
+		cands = append(cands, view)
 	}
 	sort.Slice(cands, func(i, j int) bool { return cands[i].Reliability > cands[j].Reliability })
 	return dec, cands
@@ -462,7 +738,17 @@ func (h *Handler) resolveAutoModel(w http.ResponseWriter, endpoint, model string
 	// Cache affinity wins: a pinned conversation keeps its account and model.
 	if *affinityKey != "" {
 		if accID, pinnedModel := h.affinity.GetWithModel(*affinityKey); accID != "" && pinnedModel != "" && !isAutoModel(pinnedModel) {
-			if h.pool.GetForModelByID(accID, pinnedModel, capabilityFilter(cap)) != nil {
+			// A pin survives only while it still suits the conversation. It is
+			// dropped when the context outgrew the model's window, when the
+			// request now classifies above the pinned model's tier (a session
+			// that opened with "hi" and turned into a refactor), or when the
+			// pair has been quarantined. Otherwise the pin — which decides the
+			// overwhelming majority of requests — would outlive its own premise.
+			keep := h.pool.GetForModelByID(accID, pinnedModel, capabilityFilter(cap)) != nil &&
+				modelFitsContext(pinnedModel, sig.InputTokens) &&
+				!h.autoRouter.isQuarantined(accID, pinnedModel) &&
+				!pinOutranked(cfg, pinnedModel, sig)
+			if keep {
 				h.autoRouter.RecordPinned(routeDecision{Time: time.Now().Unix(), Endpoint: endpoint, Tier: "pinned", Model: pinnedModel, AccountID: accID, Pinned: true, Thinking: think, Signals: sig, Reason: "conversation pinned (warm cache)" + reasonSuffix})
 				w.Header().Set("X-Hekato-Routed-Model", pinnedModel)
 				w.Header().Set("X-Hekato-Route-Reason", "pinned"+reasonSuffix)
@@ -517,6 +803,18 @@ func (r *autoRouter) markThinking(ts int64, accountID, model string) {
 	}
 }
 
+// pinOutranked reports whether the request now classifies above the tier of
+// the pinned model. A model no tier claims (-1) is left alone: an operator who
+// pinned something outside the tier lists did so deliberately, and guessing
+// would churn pins for no gain.
+func pinOutranked(cfg config.AutoRouteConfig, pinnedModel string, sig routeSignals) bool {
+	pinnedTier := tierOfModel(cfg, pinnedModel)
+	if pinnedTier < 0 {
+		return false
+	}
+	return effectiveTier(cfg, sig) > pinnedTier
+}
+
 // fallbackAutoModel picks a concrete model when no tier has candidates.
 func (h *Handler) fallbackAutoModel(cfg config.AutoRouteConfig, filter pool.AccountFilter) string {
 	seen := map[string]bool{}
@@ -550,6 +848,7 @@ func (h *Handler) fallbackAutoModel(cfg config.AutoRouteConfig, filter pool.Acco
 
 func claudeRouteSignals(req *ClaudeRequest, inputTokens int, thinking bool) routeSignals {
 	s := routeSignals{InputTokens: inputTokens, Tools: len(req.Tools), Turns: len(req.Messages), Thinking: thinking}
+	s.applyContent(lastClaudeUserText(req))
 	for _, m := range req.Messages {
 		if blocks, ok := m.Content.([]interface{}); ok {
 			for _, b := range blocks {
@@ -564,6 +863,7 @@ func claudeRouteSignals(req *ClaudeRequest, inputTokens int, thinking bool) rout
 
 func openAIRouteSignals(req *OpenAIRequest, inputTokens int, thinking bool) routeSignals {
 	s := routeSignals{InputTokens: inputTokens, Tools: len(req.Tools), Turns: len(req.Messages), Thinking: thinking}
+	s.applyContent(lastOpenAIUserText(req))
 	for _, m := range req.Messages {
 		if parts, ok := m.Content.([]interface{}); ok {
 			for _, p := range parts {
@@ -574,6 +874,82 @@ func openAIRouteSignals(req *OpenAIRequest, inputTokens int, thinking bool) rout
 		}
 	}
 	return s
+}
+
+// applyContent folds the content signals of the last user message into s.
+// The text is analysed and discarded; only the resulting flags are kept.
+func (s *routeSignals) applyContent(text string) {
+	c := analyseText(text, config.GetAutoRouteConfig())
+	s.Code, s.Reasoning, s.Simple = c.Code, c.Reasoning, c.Simple
+	if c.KeywordTier >= 0 {
+		s.KeywordTier = c.KeywordTier + 1 // 0 stays "no rule matched"
+	}
+}
+
+// lastClaudeUserText flattens the final user message to plain text. Tool
+// results are skipped: a tool-output turn says nothing about how hard the
+// user's actual request is.
+func lastClaudeUserText(req *ClaudeRequest) string {
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		m := req.Messages[i]
+		if !strings.EqualFold(m.Role, "user") {
+			continue
+		}
+		switch v := m.Content.(type) {
+		case string:
+			if strings.TrimSpace(v) != "" {
+				return truncateForAnalysis(v)
+			}
+		case []interface{}:
+			var b strings.Builder
+			for _, blk := range v {
+				bm, ok := blk.(map[string]interface{})
+				if !ok || bm["type"] != "text" {
+					continue // tool_result / image blocks carry no user intent
+				}
+				if t, ok := bm["text"].(string); ok {
+					b.WriteString(t)
+					b.WriteByte('\n')
+				}
+			}
+			if strings.TrimSpace(b.String()) != "" {
+				return truncateForAnalysis(b.String())
+			}
+		}
+	}
+	return ""
+}
+
+// lastOpenAIUserText is lastClaudeUserText for the OpenAI message shape.
+func lastOpenAIUserText(req *OpenAIRequest) string {
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		m := req.Messages[i]
+		if !strings.EqualFold(m.Role, "user") {
+			continue
+		}
+		switch v := m.Content.(type) {
+		case string:
+			if strings.TrimSpace(v) != "" {
+				return truncateForAnalysis(v)
+			}
+		case []interface{}:
+			var b strings.Builder
+			for _, part := range v {
+				pm, ok := part.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if t, ok := pm["text"].(string); ok {
+					b.WriteString(t)
+					b.WriteByte('\n')
+				}
+			}
+			if strings.TrimSpace(b.String()) != "" {
+				return truncateForAnalysis(b.String())
+			}
+		}
+	}
+	return ""
 }
 
 // ---- admin API ----
@@ -613,5 +989,66 @@ func (h *Handler) apiGetAutoRouteDecisions(w http.ResponseWriter, r *http.Reques
 	if cands == nil {
 		cands = []candidateView{}
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{"decisions": dec, "candidates": cands})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"decisions":  dec,
+		"candidates": cands,
+		"tierHealth": h.tierHealth(dec),
+	})
+}
+
+// truncateReason keeps an upstream rejection readable in a tooltip.
+func truncateReason(s string) string {
+	const max = 160
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
+}
+
+// tierHealthRow is one tier's supply and demand: how many candidates it can
+// offer right now, how often requests asked for it, and how often it could not
+// serve them and a neighbouring tier stepped in.
+type tierHealthRow struct {
+	Tier       string `json:"tier"`
+	Candidates int    `json:"candidates"`
+	Wanted     int    `json:"wanted"`
+	Served     int    `json:"served"`
+	Starved    int    `json:"starved"`
+	// DeadPatterns are tier entries matching nothing routable right now —
+	// a typo, a retired model, or an account that has gone quiet. They are the
+	// usual reason a tier is starved while looking well populated in settings.
+	DeadPatterns []string `json:"deadPatterns,omitempty"`
+}
+
+// tierHealth answers the question the decision ring could only hint at: a tier
+// whose requests keep landing elsewhere is misconfigured, not unlucky.
+func (h *Handler) tierHealth(dec []routeDecision) []tierHealthRow {
+	cfg := config.GetAutoRouteConfig()
+	rows := make([]tierHealthRow, 3)
+	for i, patterns := range [3][]string{cfg.Fast, cfg.Balanced, cfg.Strong} {
+		rows[i] = tierHealthRow{
+			Tier:       tierNames[i],
+			Candidates: len(h.autoRouter.candidates(h.pool, patterns, nil, cfg)),
+		}
+		for _, p := range patterns {
+			if len(h.autoRouter.candidates(h.pool, []string{p}, nil, cfg)) == 0 {
+				rows[i].DeadPatterns = append(rows[i].DeadPatterns, p)
+			}
+		}
+	}
+	index := map[string]int{tierNames[0]: 0, tierNames[1]: 1, tierNames[2]: 2}
+	for _, d := range dec {
+		if i, ok := index[d.Tier]; ok {
+			rows[i].Served++
+			// A decision with no WantedTier wanted the tier that served it.
+			if d.WantedTier == "" {
+				rows[i].Wanted++
+			}
+		}
+		if i, ok := index[d.WantedTier]; ok {
+			rows[i].Wanted++
+			rows[i].Starved++
+		}
+	}
+	return rows
 }

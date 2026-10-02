@@ -56,7 +56,7 @@ func doGrokRequest(account *config.Account, req *providers.ResponsesRequest) (*h
 		return nil, fmt.Errorf("build grok request: %w", err)
 	}
 	setGrokHeaders(httpReq, account)
-	resp, err := providers.GetRestClientForAccount(account).Do(httpReq)
+	resp, err := providers.GetClientForAccount(account).Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("grok upstream: %w", err)
 	}

@@ -33,6 +33,31 @@ func isProfileUnavailableErrorMessage(msg string) bool {
 	return strings.Contains(msg, "no available kiro profile")
 }
 
+// isModelRejectionMessage matches upstreams refusing a specific model on this
+// account — an unknown id, a model the plan does not include, a provider that
+// does not recognise the pairing. These repeat verbatim on retry, so the
+// router quarantines the pair instead of learning the same "no" again.
+//
+// Deliberately narrow: a bare HTTP 400 can equally mean a malformed request of
+// our own making, and quarantining a healthy model over our own bug would be
+// worse than the retries.
+func isModelRejectionMessage(msg string) bool {
+	m := strings.ToLower(msg)
+	switch {
+	case strings.Contains(m, "model/provider not recognized"),
+		strings.Contains(m, "model not supported"),
+		strings.Contains(m, "unsupported model"),
+		strings.Contains(m, "unknown model"),
+		strings.Contains(m, "model_not_found"),
+		strings.Contains(m, "does not exist or you do not have access"),
+		strings.Contains(m, `"code":11102`): // CodeBuddy: model [x] not supported
+		return true
+	}
+	// "model [gemini-3.0-flash] is not supported" and friends: a message that
+	// names a model and rejects it, without the exact phrasings above.
+	return strings.Contains(m, "model [") && (strings.Contains(m, "not supported") || strings.Contains(m, "not available"))
+}
+
 func isAuthErrorMessage(msg string) bool {
 	msg = strings.ToLower(msg)
 	return strings.Contains(msg, "http 401") ||
@@ -68,6 +93,28 @@ func capResetFromMessage(msg string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return time.Now().Add(d + time.Minute), true
+}
+
+// banStatusRateLimited marks an account warmup disabled after HTTP 429; see warmupRateLimited.
+const banStatusRateLimited = "RATE_LIMITED"
+
+// setEnabledByOperator applies an operator's enable/disable. The ban fields are
+// cleared either way: enabling must make the account routable on every path
+// (pickProviderAccount also requires an ACTIVE ban status), and disabling must
+// not leave a BanReason behind, or warmup auto-recover would undo the decision.
+func setEnabledByOperator(a *config.Account, enabled bool) {
+	a.Enabled = enabled
+	a.BanReason, a.BanTime = "", 0
+	a.BanStatus = ""
+	if enabled {
+		a.BanStatus = "ACTIVE"
+	}
+}
+
+// stuckBanned: enabled but still carrying a ban status, left behind by the
+// old single-account toggle; enabling again repairs it.
+func stuckBanned(a *config.Account) bool {
+	return a.Enabled && a.BanStatus != "" && a.BanStatus != "ACTIVE"
 }
 
 func (h *Handler) disableAccount(account *config.Account, banStatus, banReason string) {

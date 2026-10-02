@@ -206,6 +206,7 @@ func (h *Handler) handleResponsesNonStream(
 				outputTokens = outTok
 			},
 			OnCredits: func(c float64) { credits = c },
+			OnCacheUsage: func(read, write int) { perf.setCacheUsage(read, write) },
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
 			},
@@ -540,6 +541,7 @@ func (h *Handler) handleResponsesStream(
 				perf.setFinalTokens(outTok)
 			},
 			OnCredits: func(c float64) { credits = c },
+			OnCacheUsage: func(read, write int) { perf.setCacheUsage(read, write) },
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
 			},

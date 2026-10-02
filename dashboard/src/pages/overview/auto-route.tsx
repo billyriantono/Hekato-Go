@@ -9,7 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { get } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
-import { short } from './charts'
+import { short } from './bits'
 
 type Decision = {
   time: number
@@ -25,8 +25,11 @@ type Decision = {
   provider?: string
   signals: { inputTokens: number; tools: number; turns: number; images: number; thinking: boolean }
   reason: string
+  wantedTier?: string
+  candidates?: number
 }
-type Candidate = { accountId: string; email?: string; provider?: string; model: string; successes: number; failures: number; ewmaLatencyMs: number; reliability: number; lastUpdated: number }
+type TierHealth = { tier: string; candidates: number; wanted: number; served: number; starved: number; deadPatterns?: string[] }
+type Candidate = { accountId: string; email?: string; provider?: string; model: string; successes: number; failures: number; ewmaLatencyMs: number; reliability: number; lastUpdated: number; quarantinedUntil?: number; quarantineReason?: string }
 const who = (email?: string, id = '') => email || short(id)
 
 const REFETCH = 15000
@@ -37,7 +40,7 @@ export function AutoRouteCard() {
   const enabled = !!config.data?.enabled
   const data = useQuery({
     queryKey: ['auto-route', 'decisions'],
-    queryFn: () => get<{ decisions: Decision[]; candidates: Candidate[] }>('/auto-route/decisions'),
+    queryFn: () => get<{ decisions: Decision[]; candidates: Candidate[]; tierHealth?: TierHealth[] }>('/auto-route/decisions'),
     refetchInterval: REFETCH,
     enabled,
   })
@@ -53,6 +56,12 @@ export function AutoRouteCard() {
     )
   }
 
+  const tierHealth = data.data?.tierHealth ?? []
+  // A tier is starved when requests classified into it had to be served
+  // elsewhere — misconfiguration, not bad luck, and invisible in the decision
+  // list because each row shows only the tier that answered.
+  const starved = tierHealth.filter((h) => h.starved > 0 || (h.wanted > 0 && h.candidates <= 1))
+  const dead = tierHealth.filter((h) => (h.deadPatterns ?? []).length > 0)
   const decisions = (data.data?.decisions ?? []).slice(0, 10)
   const candidates = (data.data?.candidates ?? []).slice().sort((a, b) => b.reliability - a.reliability)
   // ponytail: reliability may arrive as 0..1 or 0..100; normalise by magnitude
@@ -64,12 +73,37 @@ export function AutoRouteCard() {
         <CardTitle>{t('overview.autoRoute')}</CardTitle>
         <CardDescription>{t('overview.autoRouteHint')}</CardDescription>
       </CardHeader>
+      {(starved.length > 0 || dead.length > 0) && (
+        <div className="mx-6 mb-2 space-y-1 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs">
+          {starved.map((h) => (
+            <div key={h.tier} className="text-amber-700 dark:text-amber-400">
+              {t('overview.tierStarved', h.tier, h.starved, h.wanted, h.candidates)}
+            </div>
+          ))}
+          {dead.map((h) => (
+            <div key={`dead-${h.tier}`} className="text-muted-foreground">
+              <span className="font-mono">{h.tier}</span> · {t('overview.deadPatterns', (h.deadPatterns ?? []).join(', '))}
+            </div>
+          ))}
+        </div>
+      )}
       <CardContent className="grid gap-6 xl:grid-cols-2">
         {data.isPending ? (
           <LoadingBlock />
         ) : (
           <>
             <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="text-xs font-medium text-muted-foreground">{t('overview.tiers')}</div>
+                {tierHealth.map((h) => (
+                  <Tooltip key={h.tier}>
+                    <TooltipTrigger render={<Badge variant={h.candidates === 0 ? 'destructive' : 'outline'} className="cursor-help font-mono text-[10px]" />}>
+                      {h.tier} {h.candidates}
+                    </TooltipTrigger>
+                    <TooltipContent>{t('overview.tierHealthHint', h.candidates, h.wanted, h.served, h.starved)}</TooltipContent>
+                  </Tooltip>
+                ))}
+              </div>
               <div className="text-xs font-medium text-muted-foreground">{t('overview.decisions')}</div>
               {decisions.length === 0 ? (
                 <EmptyState title={t('overview.noDecisions')} />
@@ -91,6 +125,7 @@ export function AutoRouteCard() {
                         </TooltipContent>
                       </Tooltip>
                       <span className="shrink-0 tabular-nums text-muted-foreground">{d.score.toFixed(2)}</span>
+                      {d.wantedTier && <Badge variant="outline" className="text-amber-600 dark:text-amber-400">{t('overview.wantedTier', d.wantedTier)}</Badge>}
                       {d.pinned && <Badge variant="outline">{t('overview.pinned')}</Badge>}
                       {d.explored && <Badge variant="outline">{t('overview.explored')}</Badge>}
                       {d.thinking && <Badge variant="outline">{t('overview.thinking')}</Badge>}
@@ -120,7 +155,20 @@ export function AutoRouteCard() {
                     {candidates.map((c) => (
                       <TableRow key={`${c.accountId}/${c.model}`}>
                         <TableCell className="text-xs">{c.provider ? <Badge variant="outline">{c.provider}</Badge> : '—'}</TableCell>
-                        <TableCell className="font-mono text-xs">{c.model}</TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {c.model}
+                          {c.quarantinedUntil && (
+                            <Tooltip>
+                              <TooltipTrigger render={<Badge variant="destructive" className="ml-1.5 cursor-help text-[10px]" />}>
+                                {t('overview.quarantined')}
+                              </TooltipTrigger>
+                              <TooltipContent className="max-w-xs break-words">
+                                {t('overview.quarantinedUntil', formatTime(c.quarantinedUntil))}
+                                {c.quarantineReason ? <div className="mt-1 opacity-70">{c.quarantineReason}</div> : null}
+                              </TooltipContent>
+                            </Tooltip>
+                          )}
+                        </TableCell>
                         <TableCell className="max-w-48 truncate text-xs" title={`${c.email || ''} ${c.accountId} · ${formatTime(c.lastUpdated)}`}>{who(c.email, c.accountId)}</TableCell>
                         <TableCell className="text-right text-xs tabular-nums">{pct(c.reliability)}</TableCell>
                         <TableCell className="text-right text-xs tabular-nums">{Math.round(c.ewmaLatencyMs)}ms</TableCell>

@@ -98,6 +98,11 @@ type StreamCallback struct {
 	OnError        func(err error)
 	OnCredits      func(credits float64)
 	OnContextUsage func(percentage float64)
+	// OnCacheUsage reports the prompt-cache split of the input tokens as the
+	// upstream billed it: read = served from cache, write = newly cached.
+	// Providers that do not report a split never call it, which is why the
+	// dashboard distinguishes "no cache data" from "zero hits".
+	OnCacheUsage func(read, write int)
 	// OnStopReason receives the upstream stop reason, normalized to Anthropic
 	// vocabulary where known: "end_turn", "tool_use", "max_tokens"; other values
 	// are passed through lower-cased.

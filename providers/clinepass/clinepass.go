@@ -67,7 +67,7 @@ func doClinepassRequest(account *config.Account, body []byte, stream bool) (*htt
 	if stream {
 		req.Header.Set("Accept", "text/event-stream")
 	}
-	return providers.GetRestClientForAccount(account).Do(req)
+	return providers.GetClientForAccount(account).Do(req)
 }
 
 // CallOpenAI forwards an OpenAI Chat-Completions request to ClinePass. The
@@ -117,11 +117,7 @@ type clinepassChoiceMsg struct {
 
 type clinepassResponse struct {
 	Choices []clinepassChoice `json:"choices"`
-	Usage   struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage"`
+	Usage   providers.OpenAIUsage `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
@@ -164,6 +160,7 @@ func decodeClinepassNonStream(r io.Reader, callback *providers.StreamCallback) e
 		}
 		if callback.OnComplete != nil {
 			callback.OnComplete(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
+			providers.ReportCacheUsage(callback, resp.Usage)
 		}
 	}
 	return nil
@@ -180,6 +177,7 @@ func consumeClinepassSSE(r io.Reader, callback *providers.StreamCallback) error 
 	var promptTokens, completionTokens int
 	var sawCompletion bool
 	stopReason := ""
+	var toolCalls providers.ToolCallAccumulator
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -209,7 +207,7 @@ func consumeClinepassSSE(r io.Reader, callback *providers.StreamCallback) error 
 						callback.OnText(text, false)
 					}
 					if len(choice.Delta.ToolCalls) > 0 && callback.OnToolUse != nil {
-						emitClinepassToolCalls(choice.Delta.ToolCalls, callback)
+						toolCalls.Add(choice.Delta.ToolCalls)
 					}
 				}
 				// Non-streaming fallback (some test fixtures / models emit one
@@ -230,6 +228,7 @@ func consumeClinepassSSE(r io.Reader, callback *providers.StreamCallback) error 
 		if chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0 {
 			promptTokens = chunk.Usage.PromptTokens
 			completionTokens = chunk.Usage.CompletionTokens
+			providers.ReportCacheUsage(callback, chunk.Usage)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -237,6 +236,8 @@ func consumeClinepassSSE(r io.Reader, callback *providers.StreamCallback) error 
 	}
 
 	if callback != nil {
+		// Deltas are fragments; only the finished stream holds whole calls.
+		emitClinepassToolCalls(toolCalls.Calls(), callback)
 		if callback.OnComplete != nil && (sawCompletion || promptTokens > 0 || completionTokens > 0) {
 			callback.OnComplete(promptTokens, completionTokens)
 		}

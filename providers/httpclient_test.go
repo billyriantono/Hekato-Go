@@ -55,15 +55,17 @@ func TestAccountRelayOverridesGlobalOutbound(t *testing.T) {
 	}
 }
 
-func TestInitHTTPClientsKeepsShortRestTimeout(t *testing.T) {
+// Streaming must carry no overall deadline (it would cut long responses
+// mid-body); liveness is the idle-timeout transport's job. REST keeps its cap.
+func TestInitHTTPClientsTimeouts(t *testing.T) {
 	InitHTTPClients("")
 	t.Cleanup(func() { InitHTTPClients("") })
 
 	streamClient := streamClientStore.Load()
 	restClient := restClientStore.Load()
 
-	if streamClient.Timeout != 5*time.Minute {
-		t.Fatalf("expected streaming timeout to be 5m, got %s", streamClient.Timeout)
+	if streamClient.Timeout != 0 {
+		t.Fatalf("expected no overall streaming timeout, got %s", streamClient.Timeout)
 	}
 	if restClient.Timeout != 30*time.Second {
 		t.Fatalf("expected REST timeout to stay 30s, got %s", restClient.Timeout)

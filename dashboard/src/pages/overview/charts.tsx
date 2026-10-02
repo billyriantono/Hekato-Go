@@ -7,52 +7,49 @@ import {
   BarChart,
   CartesianGrid,
   Legend,
-  Line,
-  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from 'recharts'
-import { EmptyState, LoadingBlock, formatNumber } from '@/components/common'
+import { EmptyState, LoadingBlock, formatMs, formatNumber } from '@/components/common'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useI18n } from '@/lib/i18n'
-import { useTheme } from '@/lib/theme'
-import { cn } from '@/lib/utils'
+import { StackedBar, short, type Bucket, type Metrics, type Range } from './bits'
 
-export type Range = '1h' | '6h' | '24h' | '7d'
-export const RANGES: Range[] = ['1h', '6h', '24h', '7d']
+// Series colours are theme tokens, so charts retint with the theme for free.
+const slots = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)']
+const error = 'var(--destructive)'
 
-export type Point = { t: number; requests: number; errors: number; tokens: number; credits: number; avgLatencyMs: number; p50Ms: number; p95Ms: number }
-export type Bucket = { key: string; requests: number; errors: number; tokens: number; credits: number; avgLatencyMs: number }
-export type Metrics = { rangeMinutes: number; stepMinutes: number; series: Point[]; totals: Point; byModel: Bucket[]; byAccount: Bucket[]; byEndpoint: Bucket[] }
-
-const PALETTE = {
-  light: { slots: ['#2a78d6', '#eb6834', '#1baf7a'], error: '#e34948' },
-  dark: { slots: ['#3987e5', '#d95926', '#199e70'], error: '#e66767' },
-}
-export const short = (s: string) => (s.length > 14 ? s.slice(0, 6) + '…' + s.slice(-4) : s)
-
-const tick = { fill: 'var(--muted-foreground)', fontSize: 11 }
+const tick = { fill: 'var(--muted-foreground)', fontSize: 10.5, fontFamily: 'var(--font-mono)' }
 const tooltipProps = {
-  contentStyle: { background: 'var(--popover)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--popover-foreground)', fontSize: 12 },
-  labelStyle: { color: 'var(--muted-foreground)' },
-  itemStyle: { color: 'var(--popover-foreground)' },
+  contentStyle: {
+    background: 'color-mix(in oklch, var(--popover) 92%, transparent)',
+    backdropFilter: 'blur(8px)',
+    border: '1px solid var(--border)',
+    borderRadius: 10,
+    boxShadow: '0 16px 40px -12px hsl(var(--shadow-color) / 0.45)',
+    color: 'var(--popover-foreground)',
+    fontSize: 12,
+    fontFamily: 'var(--font-mono)',
+    padding: '8px 12px',
+  },
+  labelStyle: { color: 'var(--muted-foreground)', fontSize: 10.5, letterSpacing: '0.08em', marginBottom: 4 },
+  itemStyle: { color: 'var(--popover-foreground)', padding: 0 },
+  animationDuration: 200,
 }
-const legendText = (v: string) => <span style={{ color: 'var(--muted-foreground)', fontSize: 11 }}>{v}</span>
-const grid = <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--border)" />
-
-/** Horizontal stacked bar; segments are [colour (css class or hex), value]. */
-export function StackedBar({ segments, className }: { segments: [string, number][]; className?: string }) {
-  const total = segments.reduce((n, [, v]) => n + v, 0) || 1
-  return (
-    <div className={cn('flex h-2 w-full overflow-hidden rounded-full bg-muted', className)}>
-      {segments.map(([c, v], i) =>
-        v > 0 ? <div key={i} className={c.startsWith('#') ? undefined : c} style={{ width: `${(v / total) * 100}%`, background: c.startsWith('#') ? c : undefined }} /> : null,
-      )}
-    </div>
-  )
-}
+const legendText = (v: string) => <span style={{ color: 'var(--muted-foreground)', fontSize: 11, fontFamily: 'var(--font-mono)' }}>{v}</span>
+const grid = <CartesianGrid vertical={false} strokeDasharray="2 4" stroke="var(--border)" />
+const ms = (v: unknown) => formatMs(Number(v))
+/** Vertical fade under a series, for area fills and bar faces. */
+const Fade = ({ id, color, from = 0.35, to = 0 }: { id: string; color: string; from?: number; to?: number }) => (
+  <defs>
+    <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stopColor={color} stopOpacity={from} />
+      <stop offset="100%" stopColor={color} stopOpacity={to} />
+    </linearGradient>
+  </defs>
+)
 
 function ChartCard({ title, description, empty, loading, children }: { title: string; description: string; empty: boolean; loading: boolean; children: React.ReactNode }) {
   const { t } = useI18n()
@@ -62,7 +59,7 @@ function ChartCard({ title, description, empty, loading, children }: { title: st
         <CardTitle>{title}</CardTitle>
         <CardDescription>{description}</CardDescription>
       </CardHeader>
-      <CardContent>{loading ? <LoadingBlock /> : empty ? <EmptyState title={t('overview.noTraffic')} /> : <div className="h-[220px]">{children}</div>}</CardContent>
+      <CardContent>{loading ? <div className="skeleton h-[220px] rounded-lg" /> : empty ? <EmptyState title={t('overview.noTraffic')} /> : <div className="h-[220px] animate-[fade_0.6s_var(--ease-out-expo)_both]">{children}</div>}</CardContent>
     </Card>
   )
 }
@@ -77,7 +74,7 @@ function TopList({ rows, colour, error, label }: { rows: Bucket[]; colour: strin
         <div key={r.key} className="space-y-1">
           <div className="flex justify-between gap-2 text-xs">
             <span className="truncate font-mono" title={r.key}>{label(r.key)}</span>
-            <span className="shrink-0 tabular-nums text-muted-foreground">
+            <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">
               {formatNumber(r.requests)}
               {r.errors > 0 && <span className="ml-1.5" style={{ color: error }}>{t('overview.errCount', formatNumber(r.errors))}</span>}
             </span>
@@ -91,10 +88,8 @@ function TopList({ rows, colour, error, label }: { rows: Bucket[]; colour: strin
   )
 }
 
-export function MetricsCharts({ data, range, loading, accountNames }: { data?: Metrics; range: Range; loading: boolean; accountNames?: Record<string, string> }) {
+export default function MetricsCharts({ data, range, loading, accountNames }: { data?: Metrics; range: Range; loading: boolean; accountNames?: Record<string, string> }) {
   const { t } = useI18n()
-  const { theme } = useTheme()
-  const { slots, error } = PALETTE[theme]
   const empty = !loading && (data?.totals.requests ?? 0) === 0
 
   const fmtTime = useMemo(() => {
@@ -112,13 +107,14 @@ export function MetricsCharts({ data, range, loading, accountNames }: { data?: M
       <div className="grid gap-6 lg:grid-cols-3">
         <ChartCard title={t('overview.throughput')} description={t('overview.throughputHint')} empty={empty} loading={loading}>
           <ResponsiveContainer>
-            <BarChart data={series} margin={{ top: 4, right: 4, left: -16, bottom: 0 }}>
+            <BarChart data={series} margin={{ top: 4, right: 4, left: -16, bottom: 0 }} barCategoryGap="18%">
+              <Fade id="bar-ok" color={slots[0]} from={1} to={0.55} />
               {grid}
               <XAxis dataKey="label" tick={tick} tickLine={false} axisLine={false} minTickGap={24} />
               <YAxis tick={tick} tickLine={false} axisLine={false} tickFormatter={num} allowDecimals={false} />
-              <Tooltip {...tooltipProps} cursor={{ fill: 'var(--muted)' }} formatter={num} />
+              <Tooltip {...tooltipProps} cursor={{ fill: 'var(--foreground)', fillOpacity: 0.04 }} formatter={num} />
               <Legend formatter={legendText} iconType="square" iconSize={8} />
-              <Bar dataKey="ok" name={t('overview.seriesOk')} stackId="r" fill={slots[0]} radius={[2, 2, 0, 0]} isAnimationActive={false} />
+              <Bar dataKey="ok" name={t('overview.seriesOk')} stackId="r" fill="url(#bar-ok)" isAnimationActive={false} />
               <Bar dataKey="errors" name={t('overview.seriesErrors')} stackId="r" fill={error} radius={[2, 2, 0, 0]} isAnimationActive={false} />
             </BarChart>
           </ResponsiveContainer>
@@ -126,26 +122,29 @@ export function MetricsCharts({ data, range, loading, accountNames }: { data?: M
 
         <ChartCard title={t('overview.latency')} description={t('overview.latencyHint')} empty={empty} loading={loading}>
           <ResponsiveContainer>
-            <LineChart data={series} margin={{ top: 4, right: 4, left: -16, bottom: 0 }}>
+            <AreaChart data={series} margin={{ top: 4, right: 4, left: -16, bottom: 0 }}>
+              <Fade id="lat-p95" color={slots[1]} from={0.18} />
+              <Fade id="lat-p50" color={slots[0]} from={0.3} />
               {grid}
               <XAxis dataKey="label" tick={tick} tickLine={false} axisLine={false} minTickGap={24} />
-              <YAxis tick={tick} tickLine={false} axisLine={false} tickFormatter={(v) => `${num(v)}ms`} />
-              <Tooltip {...tooltipProps} cursor={{ stroke: 'var(--border)' }} formatter={(v) => `${num(v)} ms`} />
+              <YAxis tick={tick} tickLine={false} axisLine={false} tickFormatter={ms} />
+              <Tooltip {...tooltipProps} cursor={{ stroke: 'var(--signal)', strokeOpacity: 0.4, strokeDasharray: '3 3' }} formatter={(v) => ms(v)} />
               <Legend formatter={legendText} iconType="plainline" iconSize={12} />
-              <Line type="monotone" dataKey="p50Ms" name="p50" stroke={slots[0]} strokeWidth={2} dot={false} activeDot={{ r: 3 }} isAnimationActive={false} />
-              <Line type="monotone" dataKey="p95Ms" name="p95" stroke={slots[1]} strokeWidth={2} dot={false} activeDot={{ r: 3 }} isAnimationActive={false} />
-            </LineChart>
+              <Area type="monotone" dataKey="p95Ms" name="p95" stroke={slots[1]} strokeWidth={1.5} fill="url(#lat-p95)" dot={false} activeDot={{ r: 3, strokeWidth: 0 }} isAnimationActive={false} />
+              <Area type="monotone" dataKey="p50Ms" name="p50" stroke={slots[0]} strokeWidth={2} fill="url(#lat-p50)" dot={false} activeDot={{ r: 3, strokeWidth: 0 }} isAnimationActive={false} />
+            </AreaChart>
           </ResponsiveContainer>
         </ChartCard>
 
         <ChartCard title={t('overview.tokensOverTime')} description={t('overview.tokensOverTimeHint')} empty={empty} loading={loading}>
           <ResponsiveContainer>
             <AreaChart data={series} margin={{ top: 4, right: 4, left: -16, bottom: 0 }}>
+              <Fade id="tok" color={slots[2]} from={0.32} />
               {grid}
               <XAxis dataKey="label" tick={tick} tickLine={false} axisLine={false} minTickGap={24} />
               <YAxis tick={tick} tickLine={false} axisLine={false} tickFormatter={num} />
-              <Tooltip {...tooltipProps} cursor={{ stroke: 'var(--border)' }} formatter={num} />
-              <Area type="monotone" dataKey="tokens" name={t('stats.tokens')} stroke={slots[2]} strokeWidth={2} fill={slots[2]} fillOpacity={0.15} dot={false} activeDot={{ r: 3 }} isAnimationActive={false} />
+              <Tooltip {...tooltipProps} cursor={{ stroke: 'var(--signal)', strokeOpacity: 0.4, strokeDasharray: '3 3' }} formatter={num} />
+              <Area type="monotone" dataKey="tokens" name={t('stats.tokens')} stroke={slots[2]} strokeWidth={2} fill="url(#tok)" dot={false} activeDot={{ r: 3, strokeWidth: 0 }} isAnimationActive={false} />
             </AreaChart>
           </ResponsiveContainer>
         </ChartCard>
