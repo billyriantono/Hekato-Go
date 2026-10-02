@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useMemo } from 'react'
 import { EmptyState, LoadingBlock, errorMessage, formatNumber } from '@/components/common'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { iconUrl } from '@/components/brand'
 import { get } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
 
@@ -72,9 +73,9 @@ function endpointLabel(endpoint: string) {
 }
 
 function tone(node: RouteNode) {
-  if (!node.failures) return '#34d399'
-  if (!node.successes) return '#fb7185'
-  return '#fbbf24'
+  if (!node.failures) return 'var(--success)'
+  if (!node.successes) return 'var(--destructive)'
+  return 'var(--warning)'
 }
 
 export function LiveRoutingMap({ logs: externalLogs }: { logs?: RequestLog[] } = {}) {
@@ -93,15 +94,12 @@ export function LiveRoutingMap({ logs: externalLogs }: { logs?: RequestLog[] } =
   const routerY = height / 2
 
   return (
-    <Card className="overflow-hidden border-emerald-500/20 bg-card/95 shadow-[0_0_35px_-24px_rgba(16,185,129,0.7)]">
-      <CardHeader className="flex flex-row items-start justify-between gap-4 border-b border-emerald-500/10">
+    <Card className="overflow-hidden">
+      <CardHeader className="flex flex-row items-start justify-between gap-4 border-b">
         <div>
           <div className="mb-2 flex items-center gap-2">
-            <span className="relative flex size-2.5" aria-hidden="true">
-              <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-50 motion-reduce:animate-none" />
-              <span className="relative inline-flex size-2.5 rounded-full bg-emerald-400" />
-            </span>
-            <span className="font-mono text-[10px] font-semibold tracking-[0.2em] text-emerald-500 uppercase">{t('overview.routing.live')}</span>
+            <span className="lamp size-1.5 text-success shadow-[0_0_8px_currentColor]" data-live="true" aria-hidden="true" />
+            <span className="eyebrow text-[10px] tracking-[0.2em] text-success">{t('overview.routing.live')}</span>
           </div>
           <CardTitle>{t('overview.routing.title')}</CardTitle>
           <CardDescription>{t('overview.routing.hint')}</CardDescription>
@@ -121,9 +119,9 @@ export function LiveRoutingMap({ logs: externalLogs }: { logs?: RequestLog[] } =
         ) : routes.recent.length === 0 ? (
           <div className="p-6"><EmptyState title={t('overview.routing.empty')} /></div>
         ) : (
-          <div className="relative overflow-x-auto bg-[radial-gradient(circle_at_50%_50%,rgba(16,185,129,0.08),transparent_42%)]">
+          <div className="relative overflow-x-auto bg-[radial-gradient(circle_at_50%_50%,color-mix(in_oklch,var(--signal)_9%,transparent),transparent_45%)]">
             <svg
-              className="block min-w-[920px] text-foreground"
+              className="routing-map block min-w-[920px] text-foreground"
               style={{ height: `${height}px`, width: '100%' }}
               viewBox={`0 0 1000 ${height}`}
               role="img"
@@ -133,14 +131,10 @@ export function LiveRoutingMap({ logs: externalLogs }: { logs?: RequestLog[] } =
                 <pattern id="routing-grid" width="24" height="24" patternUnits="userSpaceOnUse">
                   <path d="M 24 0 L 0 0 0 24" fill="none" stroke="var(--border)" strokeWidth="0.7" opacity="0.55" />
                 </pattern>
-                <filter id="router-glow" x="-50%" y="-50%" width="200%" height="200%">
-                  <feGaussianBlur stdDeviation="8" result="blur" />
-                  <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-                </filter>
-              </defs>
+                              </defs>
               <style>{`
-                .routing-flow { animation: routing-flow 2.2s linear infinite; }
-                @keyframes routing-flow { to { stroke-dashoffset: -28; } }
+                .routing-flow { animation: flow 2.2s linear infinite; }
+                .routing-map text { font-family: var(--font-mono); }
                 @media (prefers-reduced-motion: reduce) { .routing-flow { animation: none; } }
               `}</style>
               <rect width="1000" height={height} fill="url(#routing-grid)" opacity="0.7" />
@@ -160,7 +154,7 @@ export function LiveRoutingMap({ logs: externalLogs }: { logs?: RequestLog[] } =
                     <rect x="42" y={y - 31} width="208" height="62" rx="9" fill="var(--card)" stroke={color} strokeOpacity="0.55" />
                     <circle cx="60" cy={y - 10} r="4" fill={color} />
                     <text x="72" y={y - 6} fill="currentColor" fontSize="13" fontWeight="650">{endpointLabel(source.key)}</text>
-                    <text x="60" y={y + 16} fill="var(--muted-foreground)" fontSize="10" fontFamily="monospace">
+                    <text x="60" y={y + 16} fill="var(--muted-foreground)" fontSize="10" >
                       {t('overview.routing.requestCount', formatNumber(source.requests))}
                     </text>
                   </g>
@@ -177,23 +171,24 @@ export function LiveRoutingMap({ logs: externalLogs }: { logs?: RequestLog[] } =
                     <path className="routing-flow" d={path} fill="none" stroke={color} strokeWidth="1.5" strokeDasharray="5 9" opacity="0.85" />
                     <rect x="718" y={y - 31} width="240" height="62" rx="9" fill="var(--card)" stroke={color} strokeOpacity="0.62" />
                     <circle cx="736" cy={y - 11} r="4" fill={color} />
-                    <text x="748" y={y - 7} fill="currentColor" fontSize="11" fontWeight="650" fontFamily="monospace">
+                    <text x="748" y={y - 7} fill="currentColor" fontSize="11" fontWeight="650" >
                       {model.hiddenModels ? t('overview.routing.otherModels', model.hiddenModels) : model.key}
                     </text>
-                    <text x="736" y={y + 16} fill="var(--muted-foreground)" fontSize="10" fontFamily="monospace">
+                    <text x="736" y={y + 16} fill="var(--muted-foreground)" fontSize="10" >
                       {t('overview.routing.modelStats', formatNumber(model.requests), formatNumber(model.successes), formatNumber(model.failures))}
                     </text>
                   </g>
                 )
               })}
 
-              <g filter="url(#router-glow)">
-                <rect x="402" y={routerY - 62} width="196" height="124" rx="14" fill="var(--card)" stroke="#34d399" strokeWidth="1.5" />
-                <rect x="414" y={routerY - 50} width="172" height="100" rx="10" fill="none" stroke="#34d399" strokeOpacity="0.2" />
-                <circle cx="500" cy={routerY - 29} r="5" fill="#34d399" />
-                <text x="500" y={routerY - 8} textAnchor="middle" fill="currentColor" fontSize="17" fontWeight="750" letterSpacing="2">HEKATO</text>
-                <text x="500" y={routerY + 9} textAnchor="middle" fill="#34d399" fontSize="9" fontFamily="monospace" letterSpacing="2.5">ROUTER</text>
-                <text x="500" y={routerY + 34} textAnchor="middle" fill="var(--muted-foreground)" fontSize="10" fontFamily="monospace">
+              <g>
+                <circle cx="500" cy={routerY} r="92" fill="var(--signal)" opacity="0.06" />
+                <rect x="402" y={routerY - 62} width="196" height="124" rx="16" fill="var(--card)" stroke="var(--signal)" strokeOpacity="0.55" strokeWidth="1.2" />
+                <rect x="410" y={routerY - 54} width="180" height="108" rx="11" fill="none" stroke="var(--border)" strokeDasharray="2 4" />
+                <image href={iconUrl} x="476" y={routerY - 54} width="48" height="48" />
+                <text x="500" y={routerY + 12} textAnchor="middle" fill="currentColor" fontSize="15" fontWeight="700" letterSpacing="0.5" style={{ fontFamily: 'var(--font-sans)' }}>Hekato</text>
+                <text x="500" y={routerY + 24} textAnchor="middle" fill="var(--signal)" fontSize="8.5" letterSpacing="3">ROUTER</text>
+                <text x="500" y={routerY + 44} textAnchor="middle" fill="var(--muted-foreground)" fontSize="10">
                   {t('overview.routing.routerStats', formatNumber(routes.recent.length), formatNumber(totalFailures))}
                 </text>
               </g>

@@ -9,7 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { get } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
-import { short } from './charts'
+import { short } from './bits'
 
 type Decision = {
   time: number

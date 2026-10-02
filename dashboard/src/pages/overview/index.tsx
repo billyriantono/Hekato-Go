@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import type { ColumnDef } from '@tanstack/react-table'
-import { useMemo, useState } from 'react'
+import { lazy, Suspense, useMemo, useState } from 'react'
 import {
   LuActivity,
   LuArrowRight,
@@ -28,6 +28,7 @@ import {
   StatCard,
   StatusDot,
   errorMessage,
+  formatMs,
   formatNumber,
   formatTime,
 } from '@/components/common'
@@ -38,10 +39,15 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { get, post } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
+import { Tween } from '@/lib/motion'
 import { AutoRouteCard } from './auto-route'
 import { LiveRoutingMap } from './routing-map'
 import { WarmupCard } from './warmup'
-import { MetricsCharts, RANGES, StackedBar, short, type Metrics, type Range } from './charts'
+import { RANGES, StackedBar, short, type Metrics, type Range } from './bits'
+
+// recharts is the heaviest dependency in the console; it streams in after the
+// readouts have painted.
+const MetricsCharts = lazy(() => import('./charts'))
 
 type Status = {
   version?: string
@@ -242,7 +248,7 @@ export function OverviewPage() {
 
       {/* Range selector */}
       <div className="flex items-center justify-between gap-3">
-        <span className="text-xs font-medium text-muted-foreground">{t('overview.range')}</span>
+        <span className="eyebrow">{t('overview.range')}</span>
         <Tabs value={range} onValueChange={(v) => setRange(v as Range)}>
           <TabsList>
             {RANGES.map((r) => (
@@ -254,17 +260,17 @@ export function OverviewPage() {
 
       {/* KPI row: lifetime counters */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
-        <StatCard label={t('stats.requests')} value={formatNumber(total)} icon={<LuActivity className="size-4" />} />
+        <StatCard label={t('stats.requests')} value={<Tween value={total} format={formatNumber} />} icon={<LuActivity className="size-4" />} />
         <StatCard
           label={t('overview.successRate')}
-          value={`${rate.toFixed(1)}%`}
+          value={<Tween value={rate} format={(n) => `${n.toFixed(1)}%`} />}
           tone={rate >= 95 ? 'success' : rate >= 80 ? 'warning' : 'danger'}
           hint={<StackedBar segments={[['bg-emerald-500', ok], ['bg-red-500', failed]]} className="mt-2 h-1.5" />}
           icon={<LuCircleCheck className="size-4" />}
         />
-        <StatCard label={t('stats.failed')} value={formatNumber(failed)} tone={failed ? 'danger' : 'default'} icon={<LuCircleX className="size-4" />} />
-        <StatCard label={t('stats.tokens')} value={formatNumber(s?.totalTokens)} icon={<LuCpu className="size-4" />} />
-        <StatCard label={t('stats.credits')} value={(s?.totalCredits ?? 0).toFixed(2)} icon={<LuCoins className="size-4" />} />
+        <StatCard label={t('stats.failed')} value={<Tween value={failed} format={formatNumber} />} tone={failed ? 'danger' : 'default'} icon={<LuCircleX className="size-4" />} />
+        <StatCard label={t('stats.tokens')} value={<Tween value={s?.totalTokens ?? 0} format={formatNumber} />} icon={<LuCpu className="size-4" />} />
+        <StatCard label={t('stats.credits')} value={<Tween value={s?.totalCredits ?? 0} format={(n) => n.toFixed(2)} />} icon={<LuCoins className="size-4" />} />
         <StatCard label={t('overview.uptime')} value={formatUptime(s?.uptime)} icon={<LuClock className="size-4" />} />
         <StatCard
           label={t('stats.accounts')}
@@ -279,7 +285,7 @@ export function OverviewPage() {
 
       {/* KPI row: selected range */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
-        <StatCard label={t('overview.requestsInRange', range)} value={formatNumber(mReq)} icon={<LuActivity className="size-4" />} />
+        <StatCard label={t('overview.requestsInRange', range)} value={<Tween value={mReq} format={formatNumber} />} icon={<LuActivity className="size-4" />} />
         <StatCard
           label={t('overview.errorRateInRange', range)}
           value={`${mErrRate.toFixed(1)}%`}
@@ -287,7 +293,7 @@ export function OverviewPage() {
           hint={t('overview.errCount', formatNumber(m?.errors))}
           icon={<LuGauge className="size-4" />}
         />
-        <StatCard label={t('overview.latencyInRange')} value={`${formatNumber(m?.p50Ms)} / ${formatNumber(m?.p95Ms)} ms`} hint="p50 / p95" icon={<LuTimer className="size-4" />} />
+        <StatCard label={t('overview.latencyInRange')} value={`${formatMs(m?.p50Ms)} / ${formatMs(m?.p95Ms)}`} hint="p50 / p95" icon={<LuTimer className="size-4" />} />
         <StatCard label={t('overview.tokensInRange', range)} value={formatNumber(m?.tokens)} hint={t('overview.creditsHint', (m?.credits ?? 0).toFixed(2))} icon={<LuCpu className="size-4" />} />
         <StatCard
           label={t('overview.cacheHitInRange', range)}
@@ -298,7 +304,15 @@ export function OverviewPage() {
         />
       </div>
 
-      <MetricsCharts data={metrics.data} range={range} loading={metrics.isPending} accountNames={accountNames} />
+      <Suspense
+        fallback={
+          <div className="grid gap-6 lg:grid-cols-3">
+            {[0, 1, 2].map((i) => <div key={i} className="skeleton h-[330px] rounded-xl" />)}
+          </div>
+        }
+      >
+        <MetricsCharts data={metrics.data} range={range} loading={metrics.isPending} accountNames={accountNames} />
+      </Suspense>
 
       <WarmupCard />
 

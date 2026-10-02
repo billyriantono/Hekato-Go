@@ -2,12 +2,46 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" href="/admin/favicon.ico" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Hekato-Go</title>
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" href="/admin/favicon.ico" sizes="16x16 32x32 48x48" />
+    <link rel="apple-touch-icon" href="/admin/apple-touch-icon.png" />
+    <title>Hekato — Gateway Console</title>
+    <script>
+      // Resolve theme + language before first paint so nothing flashes.
+      try {
+        var t = localStorage.getItem('kiro_theme')
+        if (t !== 'light' && t !== 'dark') t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+        document.documentElement.classList.toggle('dark', t === 'dark')
+        if (localStorage.getItem('kiro_lang') === 'zh') document.documentElement.lang = 'zh-CN'
+      } catch (e) {}
+    </script>
+    <style>
+      /* Boot splash: painted from this HTML alone, before any JS or CSS file
+         arrives, so a slow link shows the console booting instead of white. */
+      html { background: #f5f8fc; color: #1f2a44 }
+      html.dark { background: #0e1a2e; color: #eef3fa }
+      .boot { position: fixed; inset: 0; display: grid; place-items: center; font: 14px/1.4 ui-sans-serif, system-ui, sans-serif }
+      .boot-in { display: flex; flex-direction: column; align-items: center; gap: 18px; opacity: 0; animation: boot-fade .5s .12s cubic-bezier(.16,1,.3,1) forwards }
+      .boot-icon { animation: boot-pop .7s .1s cubic-bezier(.34,1.56,.64,1) both, boot-glow 2s 1s ease-in-out infinite }
+      .boot-bar { width: 120px; height: 1px; overflow: hidden; position: relative; background: rgba(128,128,128,.25) }
+      .boot-bar::after { content: ""; position: absolute; inset: 0; width: 40%; background: linear-gradient(90deg, #1e88ff, #ff8a3d); animation: boot-scan 1.3s cubic-bezier(.65,0,.35,1) infinite }
+      @keyframes boot-fade { to { opacity: 1 } }
+      @keyframes boot-pop { from { transform: scale(.6); opacity: 0 } }
+      @keyframes boot-glow { 50% { filter: drop-shadow(0 0 14px rgba(30,136,255,.45)) } }
+      @keyframes boot-scan { from { transform: translateX(-100%) } to { transform: translateX(250%) } }
+      @media (prefers-reduced-motion: reduce) { .boot * { animation-duration: .01ms !important; animation-iteration-count: 1 !important } }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="boot" role="status" aria-label="Loading Hekato">
+        <div class="boot-in">
+          <img class="boot-icon" src="/src/assets/icon.webp" width="72" height="72" alt="" fetchpriority="high" />
+          <div class="boot-bar"></div>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
