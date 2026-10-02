@@ -705,7 +705,6 @@ The encrypted secrets cannot be recovered. Restore the key from your backup, or 
 |---|---|
 | 🧪 Proposed | **LLM tier classifier for `auto`**: a configurable small model answers the bounded question *fast / balanced / strong*, while the bandit keeps choosing the account. Planned to ship in shadow mode (logged beside the heuristic), with a hard timeout that falls back to today's classifier. |
 | ⏳ Waiting on upstream | **OpenAI Decisions API backend** for that classifier, once OpenAI publishes its official contract (it is in limited preview, without public documentation). |
-| 📝 Docs | Bring `README_CN.md` up to date with this document. |
 
 ---
 
