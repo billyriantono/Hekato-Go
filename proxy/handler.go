@@ -114,6 +114,9 @@ type logMetaWriter struct {
 	clientIP  string
 	requested string // client-requested model when it was rewritten (e.g. "auto")
 	apiKeyID  string // caller's API-key ID; empty when the request had no key
+	// reroute picks another (account, model) for an "auto" request after a
+	// failed attempt; nil for explicit models. See armAutoReroute.
+	reroute func(accountID, model string) string
 }
 
 // findLogMeta unwraps to the logMetaWriter bound by withClientLogMeta (nil if none).
@@ -1253,11 +1256,20 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, req *ClaudeRequest, 
 		messageStarted = true
 	}
 
+	var prevAccount string
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
+		// Only a failed attempt loops back here; an "auto" request moves on to
+		// another model instead of retrying the one that just failed.
+		if attempt > 0 {
+			if next := rerouteAuto(w, prevAccount, model); next != "" {
+				model, req.Model, excluded = next, next, map[string]bool{}
+			}
+		}
 		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capClaudeChat))
 		if account == nil {
 			break
 		}
+		prevAccount = account.ID
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
 			excluded[account.ID] = true
@@ -2047,11 +2059,20 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, req *ClaudeReques
 	reqStart := time.Now()
 	perf := newPerfTracker(reqStart)
 
+	var prevAccount string
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
+		// Only a failed attempt loops back here; an "auto" request moves on to
+		// another model instead of retrying the one that just failed.
+		if attempt > 0 {
+			if next := rerouteAuto(w, prevAccount, model); next != "" {
+				model, req.Model, excluded = next, next, map[string]bool{}
+			}
+		}
 		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capClaudeChat))
 		if account == nil {
 			break
 		}
+		prevAccount = account.ID
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
 			excluded[account.ID] = true
@@ -2246,11 +2267,20 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 	var lastErr error
 	reqStart := time.Now()
 	perf := newPerfTracker(reqStart)
+	var prevAccount string
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
+		// Only a failed attempt loops back here; an "auto" request moves on to
+		// another model instead of retrying the one that just failed.
+		if attempt > 0 {
+			if next := rerouteAuto(w, prevAccount, model); next != "" {
+				model, req.Model, excluded = next, next, map[string]bool{}
+			}
+		}
 		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capOpenAIChat))
 		if account == nil {
 			break
 		}
+		prevAccount = account.ID
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
 			excluded[account.ID] = true
@@ -2674,11 +2704,20 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, req *OpenAIReques
 	reqStart := time.Now()
 	perf := newPerfTracker(reqStart)
 
+	var prevAccount string
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
+		// Only a failed attempt loops back here; an "auto" request moves on to
+		// another model instead of retrying the one that just failed.
+		if attempt > 0 {
+			if next := rerouteAuto(w, prevAccount, model); next != "" {
+				model, req.Model, excluded = next, next, map[string]bool{}
+			}
+		}
 		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capOpenAIChat))
 		if account == nil {
 			break
 		}
+		prevAccount = account.ID
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
 			excluded[account.ID] = true

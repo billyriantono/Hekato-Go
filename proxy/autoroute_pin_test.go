@@ -22,19 +22,19 @@ func TestPinOutranked(t *testing.T) {
 	cfg := testRouteCfg()
 
 	small := routeSignals{InputTokens: 300, Turns: 2}
-	if pinOutranked(cfg, "glm-5.3", small) {
+	if pinOutranked(cfg, "glm-5.3", small, nil) {
 		t.Error("a small follow-up must not evict a balanced pin")
 	}
 
 	heavy := routeSignals{InputTokens: 80_000, Turns: 40, Thinking: true}
-	if !pinOutranked(cfg, "glm-5.3", heavy) {
+	if !pinOutranked(cfg, "glm-5.3", heavy, nil) {
 		t.Error("a strong-tier request must evict a balanced pin")
 	}
-	if pinOutranked(cfg, "claude-opus-4.6", heavy) {
+	if pinOutranked(cfg, "claude-opus-4.6", heavy, nil) {
 		t.Error("a strong pin already satisfies a strong request")
 	}
 	// A model no tier claims was pinned deliberately; leave it alone.
-	if pinOutranked(cfg, "some-operator-choice", heavy) {
+	if pinOutranked(cfg, "some-operator-choice", heavy, nil) {
 		t.Error("an unclassified pin must be left alone")
 	}
 }
@@ -43,10 +43,10 @@ func TestPinOutranked(t *testing.T) {
 // model listed in two tiers would be evicted for being in the lower one.
 func TestTierOfModelTakesHighest(t *testing.T) {
 	cfg := config.AutoRouteConfig{Fast: []string{"glm"}, Balanced: []string{"glm-5.3"}, Strong: []string{"opus"}}
-	if got := tierOfModel(cfg, "glm-5.3"); got != 1 {
+	if got := tierOfModel(cfg, "glm-5.3", nil); got != 1 {
 		t.Errorf("glm-5.3 matches fast and balanced; want balanced (1), got %d", got)
 	}
-	if got := tierOfModel(cfg, "nothing-matches"); got != -1 {
+	if got := tierOfModel(cfg, "nothing-matches", nil); got != -1 {
 		t.Errorf("unclaimed model should report -1, got %d", got)
 	}
 }
