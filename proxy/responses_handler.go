@@ -146,11 +146,20 @@ func (h *Handler) handleResponsesNonStream(
 	var lastErr error
 	reqStart := time.Now()
 	perf := newPerfTracker(reqStart)
+	var prevAccount string
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
+		// Only a failed attempt loops back here; an "auto" request moves on to
+		// another model instead of retrying the one that just failed.
+		if attempt > 0 {
+			if next := rerouteAuto(w, prevAccount, model); next != "" {
+				model, openaiReq.Model, excluded = next, next, map[string]bool{}
+			}
+		}
 		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capResponses))
 		if account == nil {
 			break
 		}
+		prevAccount = account.ID
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
 			excluded[account.ID] = true
@@ -364,11 +373,20 @@ func (h *Handler) handleResponsesStream(
 	reqStart := time.Now()
 	perf := newPerfTracker(reqStart)
 
+	var prevAccount string
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
+		// Only a failed attempt loops back here; an "auto" request moves on to
+		// another model instead of retrying the one that just failed.
+		if attempt > 0 {
+			if next := rerouteAuto(w, prevAccount, model); next != "" {
+				model, openaiReq.Model, excluded = next, next, map[string]bool{}
+			}
+		}
 		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capResponses))
 		if account == nil {
 			break
 		}
+		prevAccount = account.ID
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
 			excluded[account.ID] = true

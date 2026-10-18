@@ -304,6 +304,8 @@ func parseCodeBuddySSE(body io.Reader, callback *providers.StreamCallback) error
 	toolStates := map[int]*codeBuddyToolDeltaState{}
 	var inputTokens, outputTokens int
 	var credits float64
+	var finishReason string
+	var gotOutput bool
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -342,12 +344,24 @@ func parseCodeBuddySSE(body io.Reader, callback *providers.StreamCallback) error
 				continue
 			}
 			if delta, _ := choice["delta"].(map[string]interface{}); delta != nil {
-				dispatchCodeBuddyDelta(delta, toolStates, callback)
+				if dispatchCodeBuddyDelta(delta, toolStates, callback) {
+					gotOutput = true
+				}
+			}
+			if fr, _ := choice["finish_reason"].(string); fr != "" {
+				finishReason = fr
 			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return err
+	}
+	// CodeBuddy refuses some models (e.g. a withdrawn gpt-5.6-*) with HTTP 200 and
+	// a single empty chunk whose finish_reason is "error". Passed through, that
+	// reads as an empty successful answer; surface it so failover and the
+	// client see a failure. A partial answer is kept, never discarded.
+	if finishReason == "error" && !gotOutput {
+		return providers.Errorf(http.StatusBadGateway, "HTTP 502 from codebuddy: stream ended with finish_reason \"error\" and no output")
 	}
 	flushCodeBuddyTools(toolStates, callback)
 	if credits > 0 && callback.OnCredits != nil {
@@ -374,16 +388,27 @@ func codeBuddyCredit(usage map[string]interface{}) float64 {
 	return 0
 }
 
-func dispatchCodeBuddyDelta(delta map[string]interface{}, toolStates map[int]*codeBuddyToolDeltaState, callback *providers.StreamCallback) {
-	if text, ok := delta["content"].(string); ok && text != "" && callback.OnText != nil {
-		callback.OnText(text, false)
+// dispatchCodeBuddyDelta reports whether the delta carried any output.
+func dispatchCodeBuddyDelta(delta map[string]interface{}, toolStates map[int]*codeBuddyToolDeltaState, callback *providers.StreamCallback) bool {
+	got := false
+	if text, ok := delta["content"].(string); ok && text != "" {
+		got = true
+		if callback.OnText != nil {
+			callback.OnText(text, false)
+		}
 	}
 	for _, key := range []string{"reasoning_content", "reasoning", "reasoningContent"} {
-		if text, ok := delta[key].(string); ok && text != "" && callback.OnText != nil {
-			callback.OnText(text, true)
+		if text, ok := delta[key].(string); ok && text != "" {
+			got = true
+			if callback.OnText != nil {
+				callback.OnText(text, true)
+			}
 		}
 	}
 	calls, _ := delta["tool_calls"].([]interface{})
+	if len(calls) > 0 {
+		got = true
+	}
 	for _, rawCall := range calls {
 		call, _ := rawCall.(map[string]interface{})
 		if call == nil {
@@ -410,6 +435,7 @@ func dispatchCodeBuddyDelta(delta map[string]interface{}, toolStates map[int]*co
 			}
 		}
 	}
+	return got
 }
 
 func flushCodeBuddyTools(toolStates map[int]*codeBuddyToolDeltaState, callback *providers.StreamCallback) {
