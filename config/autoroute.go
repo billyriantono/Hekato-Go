@@ -24,7 +24,8 @@ type AutoRouteConfig struct {
 	// Blacklist entries are "provider:pattern" (provider = kiro, codebuddy,
 	// grok, codex, clinepass or "*"; pattern = case-insensitive substring of
 	// the model ID). A match removes that (provider, model) pair from auto
-	// routing only; the same model on another provider stays eligible.
+	// routing only; the same model on another provider stays eligible. A pool
+	// key or custom prefix ("codebuddy-cn:", "cn:") narrows it to one pool.
 	Blacklist []string `json:"blacklist"`
 	// KeywordRules force a tier when a literal keyword appears in the last user
 	// message, short-circuiting the heuristic. The operator's escape hatch for
@@ -43,8 +44,9 @@ type KeywordRule struct {
 	Tier     string   `json:"tier"`
 }
 
-// Blacklisted reports whether auto routing must skip model on provider.
-func (c AutoRouteConfig) Blacklisted(provider AccountProvider, model string) bool {
+// Blacklisted reports whether auto routing must skip model on provider, in
+// the account pool pool ("" when the caller has no account).
+func (c AutoRouteConfig) Blacklisted(provider AccountProvider, pool, model string) bool {
 	m := strings.ToLower(model)
 	for _, e := range c.Blacklist {
 		prov, pat, ok := strings.Cut(strings.ToLower(strings.TrimSpace(e)), ":")
@@ -52,7 +54,7 @@ func (c AutoRouteConfig) Blacklisted(provider AccountProvider, model string) boo
 			prov, pat = "*", prov
 		}
 		pat = strings.TrimSpace(pat)
-		if pat == "" || (prov != "*" && prov != string(provider)) {
+		if pat == "" || (prov != "*" && prov != string(provider) && (pool == "" || ResolvePoolPrefix(prov) != pool)) {
 			continue
 		}
 		if strings.Contains(m, pat) {

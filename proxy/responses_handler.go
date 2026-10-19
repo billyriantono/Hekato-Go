@@ -111,7 +111,8 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 	estimatedInputTokens := estimateOpenAIRequestInputTokens(openaiReq)
 
 	apiKeyID := apiKeyIDFromContext(r.Context())
-	if !keyAllowsModel(apiKeyID, actualModel) {
+	var allowed bool
+	if actualModel, allowed = pinModelPool(w, apiKeyID, actualModel); !allowed {
 		h.sendOpenAIError(w, 403, "permission_error", "model "+actualModel+" is not enabled for this API key")
 		return
 	}
@@ -155,7 +156,7 @@ func (h *Handler) handleResponsesNonStream(
 				model, openaiReq.Model, excluded = next, next, map[string]bool{}
 			}
 		}
-		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capResponses))
+		account := h.pickAccount(affinityKey, model, excluded, requestFilter(w, capResponses))
 		if account == nil {
 			break
 		}
@@ -382,7 +383,7 @@ func (h *Handler) handleResponsesStream(
 				model, openaiReq.Model, excluded = next, next, map[string]bool{}
 			}
 		}
-		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capResponses))
+		account := h.pickAccount(affinityKey, model, excluded, requestFilter(w, capResponses))
 		if account == nil {
 			break
 		}

@@ -121,7 +121,7 @@ function SystemPanel() {
         </div>
       </div>
       <div className="mt-3 flex items-center justify-between border-t pt-2.5 font-mono text-[10px] text-muted-foreground/80">
-        <span>{version.data?.version ? `v${version.data.version.replace(/^v/, '')}` : '—'}</span>
+        <span>{version.data?.version?.replace(/^v?(?=\d)/, 'v') || '—'}</span>
         <span>{t('shell.uptime')} {formatUptime(s?.uptime)}</span>
       </div>
     </div>

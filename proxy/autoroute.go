@@ -303,13 +303,31 @@ func isAutoModel(model string) bool {
 // An entry that is itself an advertised model name (in known) is matched
 // exactly too: listing glm-5.3 as strong must not drag glm-5.3-flash along.
 func matchesTier(model string, patterns []string, known map[string]bool) bool {
+	return matchesTierIn("", model, patterns, known)
+}
+
+// matchesTierIn is matchesTier for a model served from account pool pool.
+// An entry with a pool prefix ("codebuddy/deepseek-v4.1-flash", or a custom
+// prefix) only matches that pool; with pool "" (no account in hand) it
+// matches the model in any pool.
+func matchesTierIn(pool, model string, patterns []string, known map[string]bool) bool {
 	m := strings.ToLower(strings.TrimSpace(model))
 	for _, p := range patterns {
 		p = strings.ToLower(strings.TrimSpace(p))
+		exact, isExact := strings.CutPrefix(p, "=")
+		if key, rest := config.SplitPoolModel(strings.TrimSpace(exact)); key != "" {
+			if pool != "" && pool != key {
+				continue
+			}
+			exact = rest
+			if !isExact {
+				p = rest
+			}
+		}
 		if p == "" {
 			continue
 		}
-		if exact, ok := strings.CutPrefix(p, "="); ok {
+		if isExact {
 			if m == strings.TrimSpace(exact) {
 				return true
 			}
@@ -594,8 +612,9 @@ func (r *autoRouter) candidates(p *pool.AccountPool, patterns []string, filter p
 		seen[acc.ID] = true
 		models := p.GetModelList(acc.ID)
 		prov, _ := config.ProviderForAccount(&acc)
+		poolKey := config.PoolKey(&acc)
 		for _, m := range models {
-			if !matchesTier(m, patterns, known) || cfg.Blacklisted(prov, m) {
+			if !matchesTierIn(poolKey, m, patterns, known) || cfg.Blacklisted(prov, poolKey, m) {
 				continue
 			}
 			if r.isQuarantined(acc.ID, m) || len(skip) > 0 && skip[0][statKey(acc.ID, m)] {
@@ -768,7 +787,7 @@ func (h *Handler) resolveAutoModel(w http.ResponseWriter, endpoint, model string
 			// that opened with "hi" and turned into a refactor), or when the
 			// pair has been quarantined. Otherwise the pin — which decides the
 			// overwhelming majority of requests — would outlive its own premise.
-			keep := h.pool.GetForModelByID(accID, pinnedModel, capabilityFilter(cap)) != nil &&
+			keep := h.pool.GetForModelByID(accID, pinnedModel, requestFilter(w, cap)) != nil &&
 				modelFitsContext(pinnedModel, sig.InputTokens) &&
 				!h.autoRouter.isQuarantined(accID, pinnedModel) &&
 				!pinOutranked(cfg, pinnedModel, sig, advertisedModels(h.pool))
@@ -780,14 +799,14 @@ func (h *Handler) resolveAutoModel(w http.ResponseWriter, endpoint, model string
 			}
 		}
 	}
-	d := h.autoRouter.Resolve(h.pool, cfg, sig, capabilityFilter(cap), endpoint)
+	d := h.autoRouter.Resolve(h.pool, cfg, sig, requestFilter(w, cap), endpoint)
 	if d == nil {
 		// No tier has a candidate. Fall back to a concrete model that a routable
 		// account actually advertises (balanced, then fast, then strong patterns,
 		// then anything) so the literal "auto" never leaks upstream while
 		// routing is enabled. Only when no account advertises any model at all
 		// is "auto" passed through (Kiro / CodeBuddy CN serve it natively).
-		if fb := h.fallbackAutoModel(cfg, capabilityFilter(cap)); fb != "" {
+		if fb := h.fallbackAutoModel(cfg, requestFilter(w, cap)); fb != "" {
 			w.Header().Set("X-Hekato-Routed-Model", fb)
 			w.Header().Set("X-Hekato-Route-Reason", "no tier candidates; fallback to advertised model"+reasonSuffix)
 			h.autoRouter.RecordPinned(routeDecision{Time: time.Now().Unix(), Endpoint: endpoint, Tier: "fallback", Model: fb, Thinking: think, Signals: sig, Reason: "no tier candidates; first advertised model" + reasonSuffix})
@@ -1094,7 +1113,7 @@ func (h *Handler) armAutoReroute(w http.ResponseWriter, endpoint string, sig rou
 	failed := map[string]bool{}
 	m.reroute = func(accountID, model string) string {
 		failed[statKey(accountID, model)] = true
-		d := h.autoRouter.Resolve(h.pool, config.GetAutoRouteConfig(), sig, capabilityFilter(cap), endpoint, failed)
+		d := h.autoRouter.Resolve(h.pool, config.GetAutoRouteConfig(), sig, requestFilter(w, cap), endpoint, failed)
 		if d == nil {
 			return ""
 		}

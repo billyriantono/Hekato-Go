@@ -2,11 +2,15 @@
 import {
   flexRender,
   getCoreRowModel,
+  getExpandedRowModel,
   getFilteredRowModel,
+  getGroupedRowModel,
   getPaginationRowModel,
   getSortedRowModel,
   useReactTable,
   type ColumnDef,
+  type ExpandedState,
+  type Row,
   type RowSelectionState,
   type SortingState,
 } from '@tanstack/react-table'
@@ -34,7 +38,28 @@ type Props<T> = {
   className?: string
   /** Rows per page (default 25). Pass 0 to disable pagination. */
   pageSize?: number
+  /** Collapse rows sharing a key under one header row; undefined = not grouped. */
+  groupBy?: (row: T) => string | undefined
+  /** Content of a group's header row (spans the whole table). */
+  renderGroup?: (group: GroupRow<T>) => ReactNode
 }
+
+export type GroupRow<T> = {
+  key: string
+  rows: T[]
+  expanded: boolean
+  toggleExpanded: () => void
+  selected: boolean | 'some'
+  toggleSelected: (on: boolean) => void
+}
+
+const GROUP_COL = '__group'
+const SOLO = '\u0000solo:'
+// Module-level so their identity is stable: a fresh array/object per render
+// makes TanStack recompute the grouped model, whose auto-reset sets state,
+// which re-renders — an infinite loop.
+const GROUPING = [GROUP_COL]
+const HIDE_GROUP_COL = { [GROUP_COL]: false }
 
 export function DataTable<T>({
   data,
@@ -49,16 +74,32 @@ export function DataTable<T>({
   onRowClick,
   className,
   pageSize = 25,
+  groupBy,
+  renderGroup,
 }: Props<T>) {
   const { t } = useI18n()
   const [sorting, setSorting] = useState<SortingState>([])
+  const [expanded, setExpanded] = useState<ExpandedState>({})
+  // Grouping runs on a hidden column; rows without a group get a unique key so
+  // they form a group of one, rendered as a plain row.
+  const allColumns: ColumnDef<T, unknown>[] = groupBy
+    ? [...columns, { id: GROUP_COL, accessorFn: (r, i) => groupBy(r) ?? SOLO + i }]
+    : columns
   const [globalFilter, setGlobalFilter] = useState('')
   const paginate = pageSize > 0
 
   const table = useReactTable({
     data,
-    columns,
-    state: { sorting, globalFilter, rowSelection: rowSelection ?? {} },
+    columns: allColumns,
+    state: {
+      sorting,
+      globalFilter,
+      rowSelection: rowSelection ?? {},
+      ...(groupBy && { grouping: GROUPING, expanded, columnVisibility: HIDE_GROUP_COL }),
+    },
+    onExpandedChange: setExpanded,
+    // Keep pools open across data refetches (every action refetches the list).
+    autoResetExpanded: false,
     initialState: { pagination: { pageSize: paginate ? pageSize : Number.MAX_SAFE_INTEGER } },
     autoResetPageIndex: true,
     onSortingChange: setSorting,
@@ -74,7 +115,39 @@ export function DataTable<T>({
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
+    ...(groupBy && { getGroupedRowModel: getGroupedRowModel(), getExpandedRowModel: getExpandedRowModel() }),
   })
+
+  const leafRow = (row: Row<T>) => (
+    <TableRow
+      key={row.id}
+      data-state={row.getIsSelected() ? 'selected' : undefined}
+      className={cn(onRowClick && 'cursor-pointer', row.depth > 0 && 'bg-muted/20')}
+      onClick={onRowClick ? () => onRowClick(row.original) : undefined}
+    >
+      {row.getVisibleCells().map((cell) => (
+        <TableCell key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</TableCell>
+      ))}
+    </TableRow>
+  )
+  const groupRow = (row: Row<T>) => {
+    const key = String(row.groupingValue)
+    if (key.startsWith(SOLO) || !renderGroup) return leafRow(row.subRows[0])
+    return (
+      <TableRow key={row.id} className="bg-muted/40 hover:bg-muted/50">
+        <TableCell colSpan={columns.length}>
+          {renderGroup({
+            key,
+            rows: row.subRows.map((r) => r.original),
+            expanded: row.getIsExpanded(),
+            toggleExpanded: row.getToggleExpandedHandler(),
+            selected: row.getIsAllSubRowsSelected() || (row.getIsSomeSelected() && 'some'),
+            toggleSelected: (on) => row.toggleSelected(on),
+          })}
+        </TableCell>
+      </TableRow>
+    )
+  }
 
   const rows = table.getRowModel().rows
   const total = table.getFilteredRowModel().rows.length
@@ -135,18 +208,7 @@ export function DataTable<T>({
                 </TableCell>
               </TableRow>
             ) : (
-              rows.map((row) => (
-                <TableRow
-                  key={row.id}
-                  data-state={row.getIsSelected() ? 'selected' : undefined}
-                  className={cn(onRowClick && 'cursor-pointer')}
-                  onClick={onRowClick ? () => onRowClick(row.original) : undefined}
-                >
-                  {row.getVisibleCells().map((cell) => (
-                    <TableCell key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</TableCell>
-                  ))}
-                </TableRow>
-              ))
+              rows.map((row) => (row.getIsGrouped() ? groupRow(row) : leafRow(row)))
             )}
           </TableBody>
         </Table>

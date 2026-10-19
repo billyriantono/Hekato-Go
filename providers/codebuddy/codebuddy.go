@@ -120,8 +120,7 @@ func variantForAccount(account *config.Account) codeBuddyVariant {
 	if account == nil {
 		return codeBuddyGlobal
 	}
-	joined := strings.ToLower(strings.TrimSpace(account.AuthMethod + " " + account.Provider + " " + account.Region))
-	if strings.Contains(joined, "cn") || strings.Contains(joined, "china") || strings.Contains(joined, "tencent") || strings.Contains(joined, "copilot") {
+	if config.IsCodeBuddyCN(account) {
 		return codeBuddyCN
 	}
 	return codeBuddyGlobal

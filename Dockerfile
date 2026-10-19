@@ -5,6 +5,8 @@ FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
+# .git is not in the build context, so CI passes `git describe --tags` here.
+ARG VERSION=dev
 
 WORKDIR /app
 COPY go.mod go.sum ./
@@ -14,7 +16,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o hekato-go .
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -ldflags "-s -w -X hekato-go/config.Version=${VERSION}" -o hekato-go .
 
 FROM alpine:latest
 RUN apk --no-cache add ca-certificates
