@@ -131,7 +131,7 @@ func pinModelPool(w http.ResponseWriter, apiKeyID, model string) (string, bool) 
 	if key == "" {
 		return model, keyAllowsModel(apiKeyID, model)
 	}
-	if !keyAllowsModel(apiKeyID, key+"/"+bare) && !keyAllowsModel(apiKeyID, bare) {
+	if apiKeyID != "" && !config.GetApiKeyEntry(apiKeyID).AllowsPoolModel(key, bare) {
 		return bare, false
 	}
 	if m := findLogMeta(w); m != nil {
@@ -857,7 +857,7 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, pm := range h.poolModels() {
 		bareOK := entry.AllowsModel(pm.model)
-		if bareOK && !pm.multi || !bareOK && !entry.AllowsModel(pm.key+"/"+pm.model) {
+		if bareOK && !pm.multi || !bareOK && !entry.AllowsPoolModel(pm.key, pm.model) {
 			continue
 		}
 		id := pm.prefix + "/" + pm.model

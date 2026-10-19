@@ -53,6 +53,19 @@ func TestPoolPrefixRouting(t *testing.T) {
 		}
 	}
 
+	// An allowlist written with the custom prefix ("cn/*", what the picker
+	// offers) must allow the same requests as the pool-key form.
+	cnKey, err := config.AddApiKey(config.ApiKeyEntry{Name: "cn-prefix", Key: "sk-cnp", Enabled: true, AllowedModels: []string{"cn/*"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model, ok := pinModelPool(&logMetaWriter{ResponseWriter: httptest.NewRecorder()}, cnKey.ID, "cn/deepseek-v4.1-flash"); !ok || model != "deepseek-v4.1-flash" {
+		t.Fatalf("custom-prefix allowlist refused its own pool: %q, %v", model, ok)
+	}
+	if _, ok := pinModelPool(&logMetaWriter{ResponseWriter: httptest.NewRecorder()}, cnKey.ID, "codebuddy/deepseek-v4.1-flash"); ok {
+		t.Fatal("custom-prefix allowlist allowed another pool")
+	}
+
 	// Auto-route: a pool-qualified tier entry keeps only that pool's pair, and
 	// a pool-scoped blacklist entry drops only that pool's pair.
 	pairs := func(patterns, blacklist []string) map[string]bool {
