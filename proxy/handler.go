@@ -438,6 +438,7 @@ func NewHandler() *Handler {
 	h.autoRouter.vision = h.modelHasVision
 	h.autoRouter.Load(config.Blobs())
 	go h.runTelemetryFlusher()
+	go runUpdateChecker()
 	// 从持久化存储加载最近请求日志，使重启后 /logs 与 dashboard telemetry 不再清空。
 	// 容量不足 (e.g. 历史未持久化、或后端未实现 RequestLogStore) 时静默回退到内存环。
 	if rs := config.RequestLogs(); rs != nil {
@@ -872,6 +873,43 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 		"data":   models,
 	})
 	return
+}
+
+// apiModelOptions lists what an API-key allowlist can name, for the admin
+// picker: "auto", a "<prefix>/*" wildcard per pool, prefixed IDs of models
+// several pools offer, then every advertised model.
+func (h *Handler) apiModelOptions(w http.ResponseWriter, r *http.Request) {
+	h.modelsCacheMu.RLock()
+	cached := h.cachedModels
+	h.modelsCacheMu.RUnlock()
+	out := []string{autoModelName}
+	seen := map[string]bool{autoModelName: true}
+	add := func(id string) {
+		if k := strings.ToLower(id); !seen[k] {
+			seen[k] = true
+			out = append(out, id)
+		}
+	}
+	var bare []string
+	for _, m := range cached {
+		if !isAutoModel(m.ModelId) {
+			bare = append(bare, m.ModelId)
+		}
+	}
+	pooled := h.poolModels()
+	for _, pm := range pooled {
+		add(pm.prefix + "/*")
+	}
+	for _, pm := range pooled {
+		if pm.multi {
+			add(pm.prefix + "/" + pm.model)
+		}
+	}
+	sort.Strings(bare)
+	for _, m := range bare {
+		add(m)
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"models": out})
 }
 
 type pooledModel struct {
@@ -3062,6 +3100,8 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiUpdateAccount(w, r, strings.TrimPrefix(path, "/accounts/"))
 	case path == "/auth/credentials" && r.Method == "POST":
 		h.apiImportCredentials(w, r)
+	case path == "/model-options" && r.Method == "GET":
+		h.apiModelOptions(w, r)
 	case path == "/models-dev" && r.Method == "GET":
 		h.apiGetModelsDev(w, r)
 	case path == "/status" && r.Method == "GET":
@@ -4969,10 +5009,11 @@ func generateRelaySecret() string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-// apiGetVersion 获取版本信息
+// apiGetVersion 获取版本信息, plus the latest release when a check has run.
 func (h *Handler) apiGetVersion(w http.ResponseWriter, r *http.Request) {
-	json.NewEncoder(w).Encode(map[string]string{
+	json.NewEncoder(w).Encode(map[string]interface{}{
 		"version": config.Version,
+		"update":  latestUpdate.Load(),
 	})
 }
 
