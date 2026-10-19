@@ -1,5 +1,5 @@
 {
-  "version": "1.1.4",
-  "changelog": "✨ Update check: the dashboard tells you when a newer release is out.\n✨ API key allowed models is now a picker (auto, pool wildcards like cn/*, every available model).\n✨ 更新检查：有新版本时控制台会提示。\n✨ API Key 允许的模型改为下拉选择（auto、账号池通配如 cn/*、全部可用模型）。",
+  "version": "1.1.5",
+  "changelog": "🐛 Fix: saving settings, API keys and usage could fail with \"invalid byte sequence for encoding UTF8\" when an upstream error was cut mid-character.\n🐛 修复：上游错误信息被截断在字符中间时，保存设置、API Key 和用量会因 \"invalid byte sequence for encoding UTF8\" 失败。",
   "download": "https://github.com/billyriantono/Hekato-Go"
 }
