@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import { useState } from 'react'
-import { LuCopy, LuKeyRound, LuLoader, LuPencil, LuPlus, LuRotateCcw, LuTrash2 } from 'react-icons/lu'
+import { LuCopy, LuKeyRound, LuLoader, LuPencil, LuPlus, LuRotateCcw, LuTrash2, LuX } from 'react-icons/lu'
 import { toast } from 'sonner'
 import { ConfirmDialog, CopyButton, EmptyState, LoadingBlock, PageHeader, errorMessage, formatNumber, formatTime } from '@/components/common'
 import { DataTable } from '@/components/data-table'
+import { ModelCombobox } from '@/components/model-combobox'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -326,6 +327,9 @@ function KeyDialog({ initial, onClose, onCreated }: { initial: ApiKey | null; on
   const qc = useQueryClient()
   const [form, setForm] = useState<Form>(initial ? toForm(initial) : emptyForm)
   const set = (patch: Partial<Form>) => setForm((f) => ({ ...f, ...patch }))
+  const optionsQ = useQuery({ queryKey: ['model-options'], queryFn: () => get<{ models: string[] }>('/model-options') })
+  const allowed = splitModels(form.allowedModels)
+  const setAllowed = (list: string[]) => set({ allowedModels: list.join(', ') })
 
   const numFields: { field: keyof Form; label: string; integer: boolean }[] = [
     { field: 'tokenLimit', label: t('apiKeys.limitTokens'), integer: true },
@@ -409,8 +413,31 @@ function KeyDialog({ initial, onClose, onCreated }: { initial: ApiKey | null; on
             ))}
           </div>
           <div className="space-y-1">
-            <Label htmlFor="k-models">{t('apiKeys.allowedModels')}</Label>
-            <Input id="k-models" value={form.allowedModels} onChange={(e) => set({ allowedModels: e.target.value })} placeholder={t('apiKeys.allowedModelsPlaceholder')} className="font-mono text-xs" />
+            <Label>{t('apiKeys.allowedModels')}</Label>
+            {allowed.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 pb-1">
+                {allowed.map((m) => (
+                  <Badge key={m} variant="secondary" className="max-w-full gap-1 font-mono text-xs">
+                    <span className="truncate">{m}</span>
+                    <button
+                      type="button"
+                      aria-label={t('common.remove')}
+                      className="opacity-60 hover:opacity-100"
+                      onClick={() => setAllowed(allowed.filter((x) => x !== m))}
+                    >
+                      <LuX className="size-3" />
+                    </button>
+                  </Badge>
+                ))}
+              </div>
+            )}
+            <ModelCombobox
+              value=""
+              onChange={(m) => m && !allowed.includes(m) && setAllowed([...allowed, m])}
+              options={(optionsQ.data?.models ?? []).filter((m) => !allowed.includes(m))}
+              placeholder={t('apiKeys.addModel')}
+              className="w-full"
+            />
             <p className="text-xs text-muted-foreground">{t('apiKeys.allowedModelsHint')}</p>
           </div>
           <DialogFooter>

@@ -86,7 +86,12 @@ function formatUptime(s = 0) {
 function SystemPanel() {
   const { t } = useI18n()
   const status = useQuery({ queryKey: ['status'], queryFn: () => get<Status>('/status'), refetchInterval: 15_000 })
-  const version = useQuery({ queryKey: ['version'], queryFn: () => get<{ version?: string }>('/version'), staleTime: 600_000 })
+  const version = useQuery({
+    queryKey: ['version'],
+    queryFn: () => get<{ version?: string; update?: { latest: string; url: string; available: boolean } | null }>('/version'),
+    staleTime: 600_000,
+  })
+  const update = version.data?.update
   const s = status.data
   const total = s?.accounts ?? 0
   const live = s?.available ?? 0
@@ -121,9 +126,20 @@ function SystemPanel() {
         </div>
       </div>
       <div className="mt-3 flex items-center justify-between border-t pt-2.5 font-mono text-[10px] text-muted-foreground/80">
-        <span>{version.data?.version ? `v${version.data.version.replace(/^v/, '')}` : '—'}</span>
+        <span>{version.data?.version?.replace(/^v?(?=\d)/, 'v') || '—'}</span>
         <span>{t('shell.uptime')} {formatUptime(s?.uptime)}</span>
       </div>
+      {update?.available && (
+        <a
+          href={update.url}
+          target="_blank"
+          rel="noreferrer"
+          className="mt-2 flex items-center justify-between gap-2 rounded-md border border-success/40 bg-success/10 px-2 py-1 text-[11px] text-success hover:bg-success/15"
+        >
+          <span>{t('shell.updateAvailable')}</span>
+          <span className="font-mono">v{update.latest} ↗</span>
+        </a>
+      )}
     </div>
   )
 }

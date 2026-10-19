@@ -234,6 +234,17 @@ func ApiKeyOverLimit(e ApiKeyEntry) (overToken bool, overCredit bool) {
 	return
 }
 
+// AllowsPoolModel reports whether the key may request model from account
+// pool pool: a bare entry covers every pool, and a pool-qualified entry may
+// use the pool key ("codebuddy-cn/*") or its custom prefix ("cn/*").
+func (k *ApiKeyEntry) AllowsPoolModel(pool, model string) bool {
+	if k.AllowsModel(model) || k.AllowsModel(pool+"/"+model) {
+		return true
+	}
+	p := GetPoolPrefixes()[pool]
+	return p != "" && k.AllowsModel(p+"/"+model)
+}
+
 // AllowsModel reports whether the key may request model. Thinking-suffix
 // variants are matched on the base ID by the caller. Empty list = allow all.
 func (k *ApiKeyEntry) AllowsModel(model string) bool {

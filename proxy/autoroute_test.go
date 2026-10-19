@@ -169,13 +169,13 @@ func TestMetricsPersistAcrossRestart(t *testing.T) {
 
 func TestAutoRouteBlacklistIsPerProvider(t *testing.T) {
 	cfg := config.AutoRouteConfig{Blacklist: []string{"codebuddy:claude-opus", " *:gemini-3 ", "haiku"}}
-	if !cfg.Blacklisted(config.ProviderCodeBuddy, "claude-opus-4.8") {
+	if !cfg.Blacklisted(config.ProviderCodeBuddy, "", "claude-opus-4.8") {
 		t.Fatal("codebuddy opus should be blacklisted")
 	}
-	if cfg.Blacklisted(config.ProviderKiro, "claude-opus-4.8") {
+	if cfg.Blacklisted(config.ProviderKiro, "", "claude-opus-4.8") {
 		t.Fatal("same model on kiro must stay eligible")
 	}
-	if !cfg.Blacklisted(config.ProviderGrok, "gemini-3-pro") || !cfg.Blacklisted(config.ProviderKiro, "claude-haiku-4.5") {
+	if !cfg.Blacklisted(config.ProviderGrok, "", "gemini-3-pro") || !cfg.Blacklisted(config.ProviderKiro, "", "claude-haiku-4.5") {
 		t.Fatal("wildcard / bare entries should apply to every provider")
 	}
 }

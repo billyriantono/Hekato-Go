@@ -252,8 +252,8 @@ func (h *Handler) finishWarmup(res warmupResult, account *config.Account, err er
 	if err != nil {
 		res.Status = "error"
 		res.Error = err.Error()
-		if len(res.Error) > 500 {
-			res.Error = res.Error[:500]
+		if r := []rune(res.Error); len(r) > 500 {
+			res.Error = string(r[:500]) // by rune: a byte cut splits CJK text into invalid UTF-8
 		}
 		config.UpdateAccountWarmup(account.ID, "error", res.Error, now)
 		logger.Warnf("[Warmup] %s failed: %s", account.Email, res.Error)

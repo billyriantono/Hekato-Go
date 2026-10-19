@@ -21,6 +21,7 @@ func TestAccountFailureClassifiers(t *testing.T) {
 		{name: "suspension", fn: isSuspensionErrorMessage, msg: "Your User ID temporarily is suspended"},
 		{name: "profile", fn: isProfileUnavailableErrorMessage, msg: "no available Kiro profile"},
 		{name: "auth", fn: isAuthErrorMessage, msg: "Authentication failed - token invalid or expired"},
+		{name: "codebuddy error stop", fn: isModelRejectionMessage, msg: `HTTP 502 from codebuddy: stream ended with finish_reason "error" and no output`},
 	}
 
 	for _, tc := range tests {

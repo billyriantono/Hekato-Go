@@ -128,17 +128,32 @@ func TestExploreRateDecaysWithEvidence(t *testing.T) {
 // "=id" pins a tier entry to one model instead of everything sharing its prefix.
 func TestExactTierEntries(t *testing.T) {
 	patterns := []string{"=gemini-3.1-pro"}
-	if !matchesTier("gemini-3.1-pro", patterns) {
+	if !matchesTier("gemini-3.1-pro", patterns, nil) {
 		t.Error("exact entry should match its model")
 	}
-	if matchesTier("gemini-3.1-pro-preview", patterns) {
+	if matchesTier("gemini-3.1-pro-preview", patterns, nil) {
 		t.Error("exact entry must not match a longer id")
 	}
-	if !matchesTier("GEMINI-3.1-PRO", patterns) {
+	if !matchesTier("GEMINI-3.1-PRO", patterns, nil) {
 		t.Error("exact matching stays case-insensitive")
 	}
 	// Substring entries keep working alongside.
-	if !matchesTier("gemini-3.0-flash", []string{"gemini"}) {
+	if !matchesTier("gemini-3.0-flash", []string{"gemini"}, nil) {
 		t.Error("substring entries must still match")
+	}
+}
+
+// A tier entry that names an advertised model claims only that model, not
+// every sibling that shares its prefix.
+func TestMatchesTierKnownModelIsExact(t *testing.T) {
+	known := map[string]bool{"glm-5.3": true, "glm-5.3-flash": true}
+	if !matchesTier("glm-5.3", []string{"glm-5.3"}, known) {
+		t.Error("glm-5.3 must match its own entry")
+	}
+	if matchesTier("glm-5.3-flash", []string{"glm-5.3"}, known) {
+		t.Error("glm-5.3 entry must not claim glm-5.3-flash when glm-5.3 is a real model")
+	}
+	if !matchesTier("glm-5.3-flash", []string{"glm"}, known) {
+		t.Error("a family entry like glm still matches by substring")
 	}
 }

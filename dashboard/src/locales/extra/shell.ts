@@ -18,6 +18,7 @@ export const en: Record<string, string> = {
   'login.tagline': 'Every request finds its road.',
   'login.taglineSub': 'One gateway in front of every provider — routed, metered and watched.',
   'login.secure': 'Admin session · encrypted',
+  'shell.updateAvailable': 'Update available',
 }
 
 export const zh: Record<string, string> = {
@@ -40,4 +41,5 @@ export const zh: Record<string, string> = {
   'login.tagline': '每个请求，都有它的去路。',
   'login.taglineSub': '一个网关，挡在所有供应商之前 —— 路由、计量、监控。',
   'login.secure': '管理员会话 · 加密',
+  'shell.updateAvailable': '有新版本',
 }

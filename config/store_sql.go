@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver name "pgx"
 	_ "modernc.org/sqlite"             // pure-Go driver name "sqlite" (CGO-free)
@@ -413,9 +414,21 @@ func (s *sqlStore) Save(cfg *Config) error {
 		}
 	}()
 	rb := s.rebind
+	// exec scrubs invalid UTF-8 from string arguments. Postgres rejects such a
+	// value, and as every row is rewritten here one byte-truncated upstream
+	// error (cut mid-rune) would otherwise block every save.
+	exec := func(query string, args ...any) error {
+		for i, a := range args {
+			if str, ok := a.(string); ok && !utf8.ValidString(str) {
+				args[i] = strings.ToValidUTF8(str, "\uFFFD")
+			}
+		}
+		_, err := tx.Exec(query, args...)
+		return err
+	}
 
 	for k, v := range settingsFrom(cfg) {
-		if _, err := tx.Exec(rb(`INSERT INTO settings (key, value) VALUES (?, ?)
+		if err := exec(rb(`INSERT INTO settings (key, value) VALUES (?, ?)
 			ON CONFLICT (key) DO UPDATE SET value = excluded.value`), k, v); err != nil {
 			return fmt.Errorf("save setting %s: %w", k, err)
 		}
@@ -428,7 +441,7 @@ func (s *sqlStore) Save(cfg *Config) error {
 		placeholders(len(accountColumns)+1) + `)`)
 	for i := range cfg.Accounts {
 		args := append(accountValues(&cfg.Accounts[i]), i)
-		if _, err := tx.Exec(insAcc, args...); err != nil {
+		if err := exec(insAcc, args...); err != nil {
 			return fmt.Errorf("save account %s: %w", cfg.Accounts[i].ID, err)
 		}
 	}
@@ -440,7 +453,7 @@ func (s *sqlStore) Save(cfg *Config) error {
 		placeholders(len(apiKeyColumns)+1) + `)`)
 	for i := range cfg.ApiKeys {
 		args := append(apiKeyValues(&cfg.ApiKeys[i]), i)
-		if _, err := tx.Exec(insKey, args...); err != nil {
+		if err := exec(insKey, args...); err != nil {
 			return fmt.Errorf("save api key %s: %w", cfg.ApiKeys[i].ID, err)
 		}
 	}
@@ -452,7 +465,7 @@ func (s *sqlStore) Save(cfg *Config) error {
 		VALUES (?, ?, ?, ?, ?, ?, ?)`)
 	for i := range cfg.PromptFilterRules {
 		r := &cfg.PromptFilterRules[i]
-		if _, err := tx.Exec(insRule, r.ID, r.Name, r.Type, r.Match, r.Replace, boolToInt(r.Enabled), i); err != nil {
+		if err := exec(insRule, r.ID, r.Name, r.Type, r.Match, r.Replace, boolToInt(r.Enabled), i); err != nil {
 			return fmt.Errorf("save filter rule %s: %w", r.ID, err)
 		}
 	}

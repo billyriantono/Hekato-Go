@@ -50,7 +50,8 @@ func isModelRejectionMessage(msg string) bool {
 		strings.Contains(m, "unknown model"),
 		strings.Contains(m, "model_not_found"),
 		strings.Contains(m, "does not exist or you do not have access"),
-		strings.Contains(m, `"code":11102`): // CodeBuddy: model [x] not supported
+		strings.Contains(m, `"code":11102`),                        // CodeBuddy: model [x] not supported
+		strings.Contains(m, `finish_reason "error" and no output`): // CodeBuddy: withdrawn model, HTTP 200 + empty error stop
 		return true
 	}
 	// "model [gemini-3.0-flash] is not supported" and friends: a message that
@@ -167,6 +168,11 @@ func (h *Handler) disableAccountOverage(account *config.Account) {
 func (h *Handler) handleModelFailure(account *config.Account, model string, err error) {
 	if account != nil && err != nil {
 		h.autoRouter.Record(account.ID, model, false, 0)
+		// Quarantine per attempt: once a reroute rescues the request, the
+		// end-of-request failure log (the other quarantine site) never runs.
+		if classifyError(err.Error()) == "model" {
+			h.autoRouter.RecordHardFailure(account.ID, model, err.Error())
+		}
 	}
 	h.handleAccountFailure(account, err)
 }

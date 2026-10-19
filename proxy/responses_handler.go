@@ -111,7 +111,8 @@ func (h *Handler) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) 
 	estimatedInputTokens := estimateOpenAIRequestInputTokens(openaiReq)
 
 	apiKeyID := apiKeyIDFromContext(r.Context())
-	if !keyAllowsModel(apiKeyID, actualModel) {
+	var allowed bool
+	if actualModel, allowed = pinModelPool(w, apiKeyID, actualModel); !allowed {
 		h.sendOpenAIError(w, 403, "permission_error", "model "+actualModel+" is not enabled for this API key")
 		return
 	}
@@ -146,11 +147,20 @@ func (h *Handler) handleResponsesNonStream(
 	var lastErr error
 	reqStart := time.Now()
 	perf := newPerfTracker(reqStart)
+	var prevAccount string
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
-		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capResponses))
+		// Only a failed attempt loops back here; an "auto" request moves on to
+		// another model instead of retrying the one that just failed.
+		if attempt > 0 {
+			if next := rerouteAuto(w, prevAccount, model); next != "" {
+				model, openaiReq.Model, excluded = next, next, map[string]bool{}
+			}
+		}
+		account := h.pickAccount(affinityKey, model, excluded, requestFilter(w, capResponses))
 		if account == nil {
 			break
 		}
+		prevAccount = account.ID
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
 			excluded[account.ID] = true
@@ -364,11 +374,20 @@ func (h *Handler) handleResponsesStream(
 	reqStart := time.Now()
 	perf := newPerfTracker(reqStart)
 
+	var prevAccount string
 	for attempt := 0; attempt < maxAccountRetryAttempts; attempt++ {
-		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capResponses))
+		// Only a failed attempt loops back here; an "auto" request moves on to
+		// another model instead of retrying the one that just failed.
+		if attempt > 0 {
+			if next := rerouteAuto(w, prevAccount, model); next != "" {
+				model, openaiReq.Model, excluded = next, next, map[string]bool{}
+			}
+		}
+		account := h.pickAccount(affinityKey, model, excluded, requestFilter(w, capResponses))
 		if account == nil {
 			break
 		}
+		prevAccount = account.ID
 		if err := h.ensureValidToken(account); err != nil {
 			lastErr = err
 			excluded[account.ID] = true

@@ -131,10 +131,10 @@ func effectiveTier(cfg config.AutoRouteConfig, sig routeSignals) int {
 // no tier claims it. Highest wins because patterns overlap (glm-5.3-flash sits
 // in both fast and balanced) and the generous reading avoids evicting a pin
 // that is in fact strong enough.
-func tierOfModel(cfg config.AutoRouteConfig, model string) int {
+func tierOfModel(cfg config.AutoRouteConfig, model string, known map[string]bool) int {
 	found := -1
 	for i, patterns := range [3][]string{cfg.Fast, cfg.Balanced, cfg.Strong} {
-		if matchesTier(model, patterns) {
+		if matchesTier(model, patterns, known) {
 			found = i
 		}
 	}
@@ -299,15 +299,42 @@ func isAutoModel(model string) bool {
 // generous: "gemini" swept in gemini-3.0-flash, which one provider rejects
 // outright. An entry prefixed with "=" is matched exactly, so an operator can
 // name one model without also claiming everything that shares its prefix.
-func matchesTier(model string, patterns []string) bool {
+//
+// An entry that is itself an advertised model name (in known) is matched
+// exactly too: listing glm-5.3 as strong must not drag glm-5.3-flash along.
+func matchesTier(model string, patterns []string, known map[string]bool) bool {
+	return matchesTierIn("", model, patterns, known)
+}
+
+// matchesTierIn is matchesTier for a model served from account pool pool.
+// An entry with a pool prefix ("codebuddy/deepseek-v4.1-flash", or a custom
+// prefix) only matches that pool; with pool "" (no account in hand) it
+// matches the model in any pool.
+func matchesTierIn(pool, model string, patterns []string, known map[string]bool) bool {
 	m := strings.ToLower(strings.TrimSpace(model))
 	for _, p := range patterns {
 		p = strings.ToLower(strings.TrimSpace(p))
+		exact, isExact := strings.CutPrefix(p, "=")
+		if key, rest := config.SplitPoolModel(strings.TrimSpace(exact)); key != "" {
+			if pool != "" && pool != key {
+				continue
+			}
+			exact = rest
+			if !isExact {
+				p = rest
+			}
+		}
 		if p == "" {
 			continue
 		}
-		if exact, ok := strings.CutPrefix(p, "="); ok {
+		if isExact {
 			if m == strings.TrimSpace(exact) {
+				return true
+			}
+			continue
+		}
+		if known[p] {
+			if m == p {
 				return true
 			}
 			continue
@@ -317,6 +344,18 @@ func matchesTier(model string, patterns []string) bool {
 		}
 	}
 	return false
+}
+
+// advertisedModels is the lowercased set of every model any account lists,
+// which matchesTier uses to tell a model name from a family substring.
+func advertisedModels(p *pool.AccountPool) map[string]bool {
+	known := make(map[string]bool)
+	for _, acc := range p.GetAllAccounts() {
+		for _, m := range p.GetModelList(acc.ID) {
+			known[strings.ToLower(strings.TrimSpace(m))] = true
+		}
+	}
+	return known
 }
 
 // thompsonSample approximates a Beta(s+1, f+1) draw with a clamped normal.
@@ -336,8 +375,9 @@ type routeCandidate struct {
 
 // Resolve picks a concrete (account, model) for an "auto" request. It returns
 // nil when nothing in the pool matches any tier (caller falls back to normal
-// routing with the balanced default).
-func (r *autoRouter) Resolve(p *pool.AccountPool, cfg config.AutoRouteConfig, sig routeSignals, filter pool.AccountFilter, endpoint string) *routeDecision {
+// routing with the balanced default). skip holds statKey pairs that already
+// failed this request, so a reroute never lands on them again.
+func (r *autoRouter) Resolve(p *pool.AccountPool, cfg config.AutoRouteConfig, sig routeSignals, filter pool.AccountFilter, endpoint string, skip ...map[string]bool) *routeDecision {
 	if r == nil || p == nil {
 		return nil
 	}
@@ -372,7 +412,7 @@ func (r *autoRouter) Resolve(p *pool.AccountPool, cfg config.AutoRouteConfig, si
 search:
 	for _, needVision := range passes {
 		for _, ti := range order {
-			cands = r.candidates(p, tiers[ti], filter, cfg)
+			cands = r.candidates(p, tiers[ti], filter, cfg, skip...)
 			if needVision {
 				cands = r.onlyVision(cands)
 			}
@@ -558,12 +598,13 @@ func wantsThinking(cfg config.AutoRouteConfig, sig routeSignals) bool {
 }
 
 // candidates lists routable (account, model) pairs whose model matches the tier.
-func (r *autoRouter) candidates(p *pool.AccountPool, patterns []string, filter pool.AccountFilter, cfg config.AutoRouteConfig) []routeCandidate {
+func (r *autoRouter) candidates(p *pool.AccountPool, patterns []string, filter pool.AccountFilter, cfg config.AutoRouteConfig, skip ...map[string]bool) []routeCandidate {
 	if len(patterns) == 0 {
 		return nil
 	}
 	var out []routeCandidate
 	seen := make(map[string]bool)
+	known := advertisedModels(p)
 	for _, acc := range p.GetAllAccounts() {
 		if seen[acc.ID] {
 			continue
@@ -571,11 +612,12 @@ func (r *autoRouter) candidates(p *pool.AccountPool, patterns []string, filter p
 		seen[acc.ID] = true
 		models := p.GetModelList(acc.ID)
 		prov, _ := config.ProviderForAccount(&acc)
+		poolKey := config.PoolKey(&acc)
 		for _, m := range models {
-			if !matchesTier(m, patterns) || cfg.Blacklisted(prov, m) {
+			if !matchesTierIn(poolKey, m, patterns, known) || cfg.Blacklisted(prov, poolKey, m) {
 				continue
 			}
-			if r.isQuarantined(acc.ID, m) {
+			if r.isQuarantined(acc.ID, m) || len(skip) > 0 && skip[0][statKey(acc.ID, m)] {
 				continue
 			}
 			if a := p.GetForModelByID(acc.ID, m, filter); a != nil {
@@ -731,6 +773,7 @@ func (h *Handler) resolveAutoModel(w http.ResponseWriter, endpoint, model string
 		return model, false
 	}
 	think := wantsThinking(cfg, sig)
+	h.armAutoReroute(w, endpoint, sig, affinityKey, cap)
 	reasonSuffix := ""
 	if think {
 		reasonSuffix = "; thinking=auto"
@@ -744,10 +787,10 @@ func (h *Handler) resolveAutoModel(w http.ResponseWriter, endpoint, model string
 			// that opened with "hi" and turned into a refactor), or when the
 			// pair has been quarantined. Otherwise the pin — which decides the
 			// overwhelming majority of requests — would outlive its own premise.
-			keep := h.pool.GetForModelByID(accID, pinnedModel, capabilityFilter(cap)) != nil &&
+			keep := h.pool.GetForModelByID(accID, pinnedModel, requestFilter(w, cap)) != nil &&
 				modelFitsContext(pinnedModel, sig.InputTokens) &&
 				!h.autoRouter.isQuarantined(accID, pinnedModel) &&
-				!pinOutranked(cfg, pinnedModel, sig)
+				!pinOutranked(cfg, pinnedModel, sig, advertisedModels(h.pool))
 			if keep {
 				h.autoRouter.RecordPinned(routeDecision{Time: time.Now().Unix(), Endpoint: endpoint, Tier: "pinned", Model: pinnedModel, AccountID: accID, Pinned: true, Thinking: think, Signals: sig, Reason: "conversation pinned (warm cache)" + reasonSuffix})
 				w.Header().Set("X-Hekato-Routed-Model", pinnedModel)
@@ -756,14 +799,14 @@ func (h *Handler) resolveAutoModel(w http.ResponseWriter, endpoint, model string
 			}
 		}
 	}
-	d := h.autoRouter.Resolve(h.pool, cfg, sig, capabilityFilter(cap), endpoint)
+	d := h.autoRouter.Resolve(h.pool, cfg, sig, requestFilter(w, cap), endpoint)
 	if d == nil {
 		// No tier has a candidate. Fall back to a concrete model that a routable
 		// account actually advertises (balanced, then fast, then strong patterns,
 		// then anything) so the literal "auto" never leaks upstream while
 		// routing is enabled. Only when no account advertises any model at all
 		// is "auto" passed through (Kiro / CodeBuddy CN serve it natively).
-		if fb := h.fallbackAutoModel(cfg, capabilityFilter(cap)); fb != "" {
+		if fb := h.fallbackAutoModel(cfg, requestFilter(w, cap)); fb != "" {
 			w.Header().Set("X-Hekato-Routed-Model", fb)
 			w.Header().Set("X-Hekato-Route-Reason", "no tier candidates; fallback to advertised model"+reasonSuffix)
 			h.autoRouter.RecordPinned(routeDecision{Time: time.Now().Unix(), Endpoint: endpoint, Tier: "fallback", Model: fb, Thinking: think, Signals: sig, Reason: "no tier candidates; first advertised model" + reasonSuffix})
@@ -807,8 +850,8 @@ func (r *autoRouter) markThinking(ts int64, accountID, model string) {
 // the pinned model. A model no tier claims (-1) is left alone: an operator who
 // pinned something outside the tier lists did so deliberately, and guessing
 // would churn pins for no gain.
-func pinOutranked(cfg config.AutoRouteConfig, pinnedModel string, sig routeSignals) bool {
-	pinnedTier := tierOfModel(cfg, pinnedModel)
+func pinOutranked(cfg config.AutoRouteConfig, pinnedModel string, sig routeSignals, known map[string]bool) bool {
+	pinnedTier := tierOfModel(cfg, pinnedModel, known)
 	if pinnedTier < 0 {
 		return false
 	}
@@ -833,9 +876,13 @@ func (h *Handler) fallbackAutoModel(cfg config.AutoRouteConfig, filter pool.Acco
 			}
 		}
 	}
+	known := make(map[string]bool, len(advertised))
+	for _, m := range advertised {
+		known[strings.ToLower(strings.TrimSpace(m))] = true
+	}
 	for _, patterns := range [][]string{cfg.Balanced, cfg.Fast, cfg.Strong} {
 		for _, m := range advertised {
-			if matchesTier(m, patterns) {
+			if matchesTier(m, patterns, known) {
 				return m
 			}
 		}
@@ -1051,4 +1098,41 @@ func (h *Handler) tierHealth(dec []routeDecision) []tierHealthRow {
 		}
 	}
 	return rows
+}
+
+// armAutoReroute lets the retry loops move an "auto" request to another
+// (account, model) when an attempt fails before producing output. Without it a
+// request routed to a dead model (CodeBuddy's withdrawn gpt-5.6-*, which
+// answers 200 with an empty error stop) failed outright: the loops only retry
+// other accounts for the same model.
+func (h *Handler) armAutoReroute(w http.ResponseWriter, endpoint string, sig routeSignals, affinityKey *string, cap providerCapability) {
+	m := findLogMeta(w)
+	if m == nil {
+		return
+	}
+	failed := map[string]bool{}
+	m.reroute = func(accountID, model string) string {
+		failed[statKey(accountID, model)] = true
+		d := h.autoRouter.Resolve(h.pool, config.GetAutoRouteConfig(), sig, requestFilter(w, cap), endpoint, failed)
+		if d == nil {
+			return ""
+		}
+		if *affinityKey == "" {
+			*affinityKey = "auto:" + uuid.NewString()
+		}
+		h.affinity.SetWithModel(*affinityKey, d.AccountID, d.Model)
+		w.Header().Set("X-Hekato-Routed-Model", d.Model)
+		w.Header().Set("X-Hekato-Route-Reason", "rerouted after "+model+" failed; "+d.Reason)
+		logger.Warnf("[AutoRoute] %s failed before output; rerouted to %s", model, d.Model)
+		return d.Model
+	}
+}
+
+// rerouteAuto asks an "auto" request's hook for a fresh model after a failed
+// attempt; "" when the request was not auto or nothing else is routable.
+func rerouteAuto(w http.ResponseWriter, accountID, model string) string {
+	if m := findLogMeta(w); m != nil && m.reroute != nil {
+		return m.reroute(accountID, model)
+	}
+	return ""
 }
