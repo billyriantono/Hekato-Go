@@ -1,5 +1,5 @@
 {
-  "version": "1.1.3",
-  "changelog": "✨ Provider account pools: pooled accounts grouped in the dashboard, pool-wide model switches, and pool-prefixed models (codebuddy-cn/…, custom prefixes) for API keys and auto-route.\n✨ 账号池：控制台按池分组显示账号，支持按池批量启用/禁用模型，以及带池前缀的模型名（codebuddy-cn/…、自定义前缀），可用于 API Key 与自动路由。",
+  "version": "1.1.4",
+  "changelog": "✨ Update check: the dashboard tells you when a newer release is out.\n✨ API key allowed models is now a picker (auto, pool wildcards like cn/*, every available model).\n✨ 更新检查：有新版本时控制台会提示。\n✨ API Key 允许的模型改为下拉选择（auto、账号池通配如 cn/*、全部可用模型）。",
   "download": "https://github.com/billyriantono/Hekato-Go"
 }
