@@ -57,9 +57,9 @@ func codeBuddyPoolIDs(h *Handler, id string) map[string]bool {
 func TestCodeBuddyAccountRefreshReplacesRetiredAggregateModels(t *testing.T) {
 	for _, endpoint := range []string{"fetch", "admin-get"} {
 		t.Run(endpoint, func(t *testing.T) {
-			a := config.Account{ID: "cb-refresh", ProviderKind: "codebuddy", AccessToken: "sk-test", Enabled: true,
+			a := config.Account{ID: "cb-refresh", ProviderKind: "codebuddy", Region: "cn", AccessToken: "sk-test", Enabled: true,
 				EnabledModels: []string{"old", "new", "shared", "custom", "extra"}, ExtraModels: []string{"extra"}}
-			b := config.Account{ID: "cb-other", ProviderKind: "codebuddy", AccessToken: "sk-other", Enabled: true}
+			b := config.Account{ID: "cb-other", ProviderKind: "codebuddy", Region: "cn", AccessToken: "sk-other", Enabled: true}
 			h := setupCodeBuddyModelHandler(t, a, b)
 			if err := config.UpdateCustomModelIDs("codebuddy", []string{"custom"}); err != nil {
 				t.Fatal(err)
@@ -138,7 +138,7 @@ func TestCodeBuddyTargetedRefreshReplacesSameIDMetadata(t *testing.T) {
 	for _, endpoint := range []string{"fetch", "admin-get"} {
 		for _, initial := range []string{"live", "fallback"} {
 			t.Run(endpoint+"/"+initial, func(t *testing.T) {
-				a := config.Account{ID: "cb-metadata", ProviderKind: "codebuddy", AccessToken: "sk-meta", Enabled: true}
+				a := config.Account{ID: "cb-metadata", ProviderKind: "codebuddy", Region: "cn", AccessToken: "sk-meta", Enabled: true}
 				h := setupCodeBuddyModelHandler(t, a)
 				phase := 0
 				restore := providers.SwapClientsForTest(nil, &http.Client{Transport: codeBuddyModelsTransport(func(*http.Request) (*http.Response, error) {
@@ -171,8 +171,8 @@ func TestCodeBuddyTargetedRefreshReplacesSameIDMetadata(t *testing.T) {
 func TestCodeBuddyTargetedRefreshPreservesSharedAccountMetadata(t *testing.T) {
 	for _, endpoint := range []string{"fetch", "admin-get"} {
 		t.Run(endpoint, func(t *testing.T) {
-			a := config.Account{ID: "cb-meta-a", ProviderKind: "codebuddy", AccessToken: "sk-a", Enabled: true}
-			b := config.Account{ID: "cb-meta-b", ProviderKind: "codebuddy", AccessToken: "sk-b", Enabled: true}
+			a := config.Account{ID: "cb-meta-a", ProviderKind: "codebuddy", Region: "cn", AccessToken: "sk-a", Enabled: true}
+			b := config.Account{ID: "cb-meta-b", ProviderKind: "codebuddy", Region: "cn", AccessToken: "sk-b", Enabled: true}
 			h := setupCodeBuddyModelHandler(t, a, b)
 			images := map[string]bool{"Bearer sk-a": true, "Bearer sk-b": true}
 			restore := providers.SwapClientsForTest(nil, &http.Client{Transport: codeBuddyModelsTransport(func(r *http.Request) (*http.Response, error) {
@@ -215,12 +215,12 @@ func TestCodeBuddyRefreshRegionalIsolationAndUnavailableFallback(t *testing.T) {
 	})})
 	defer restore()
 	h.refreshModelsCache()
-	if g, c := codeBuddyPoolIDs(h, global.ID), codeBuddyPoolIDs(h, cn.ID); !g["global-live"] || g["cn-live"] || !c["cn-live"] || c["global-live"] {
-		t.Fatalf("regional catalogs leaked: global=%v cn=%v", g, c)
+	if g, c := codeBuddyPoolIDs(h, global.ID), codeBuddyPoolIDs(h, cn.ID); !g["gpt-5.6-terra"] || g["global-live"] || g["cn-live"] || !c["cn-live"] || c["gpt-5.6-terra"] {
+		t.Fatalf("global must use the CLI picker, cn the live catalog: global=%v cn=%v", g, c)
 	}
 	unavailable = true
 	h.refreshModelsCache()
-	if g, c := codeBuddyPoolIDs(h, global.ID), codeBuddyPoolIDs(h, cn.ID); !g["claude-opus-4.8"] || c["claude-opus-4.8"] || !c["glm-5.3"] || g["global-live"] || c["cn-live"] {
+	if g, c := codeBuddyPoolIDs(h, global.ID), codeBuddyPoolIDs(h, cn.ID); !g["gpt-5.6-terra"] || c["gpt-5.6-terra"] || !c["glm-5.3"] || c["cn-live"] {
 		t.Errorf("regional static fallback incorrect: global=%v cn=%v", g, c)
 	}
 	for _, a := range config.GetAccounts() {

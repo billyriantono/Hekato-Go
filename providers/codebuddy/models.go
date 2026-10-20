@@ -14,11 +14,12 @@ import (
 	"hekato-go/providers"
 )
 
-// ModelsForAccount refreshes the account's regional catalog on every call.
-// The proxy owns scheduling, pool routing caches and persistence. A failed
-// metadata request must not disable an otherwise usable inference account.
+// ModelsForAccount returns the CLI's bundled picker for global accounts and
+// refreshes the China catalog from /v3/config on every call. The proxy owns
+// scheduling, pool routing caches and persistence. A failed metadata request
+// must not disable an otherwise usable inference account.
 func ModelsForAccount(account *config.Account) []providers.ModelInfo {
-	if codeBuddyToken(account) == "" {
+	if variantForAccount(account).Name == codeBuddyGlobal.Name || codeBuddyToken(account) == "" {
 		return staticModelsForAccount(account)
 	}
 	models, err := FetchModels(account)

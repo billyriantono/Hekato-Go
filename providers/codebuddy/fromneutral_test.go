@@ -114,11 +114,11 @@ func TestModelsForAccountUsesPublishedStaticCatalogs(t *testing.T) {
 		}
 		return false
 	}
-	if !has(global, "claude-opus-4.8") || !has(global, "gpt-5.5-xhigh") || !has(global, "gemini-3.5-flash") {
-		t.Fatalf("global catalog missing representative models: %+v", global)
+	if !has(global, "default-model") || !has(global, "gpt-5.6-terra") || !has(global, "glm-5.3") {
+		t.Fatalf("global catalog missing CLI picker models: %+v", global)
 	}
-	if has(global, "claude-haiku-4.5") {
-		t.Fatal("global catalog must not publish unavailable claude-haiku-4.5")
+	if has(global, "nes-1.1") || has(global, "completion-1.0") {
+		t.Fatal("global catalog must not publish IDE-internal models")
 	}
 	for _, model := range []string{"glm-5.3", "glm-5.3-flash", "kimi-k3-1", "hy3", "hy4-preview", "deepseek-v4.1-flash"} {
 		if !has(cn, model) {

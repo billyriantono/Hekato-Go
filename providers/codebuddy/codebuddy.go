@@ -46,50 +46,39 @@ type codeBuddyModel struct {
 	Image   bool
 }
 
-// Offline catalogs used when /v3/config is unavailable or credentials are
-// missing. Successful live discovery replaces these lists, rather than merging
-// potentially retired IDs into the upstream catalog. Operators can still add
-// IDs via Settings → Custom model IDs.
+// codeBuddyGlobalModels is the official CLI's model picker: agents[cli].models
+// from the product.json bundled in @tencent-ai/codebuddy-code 2.170.0. The
+// global /v3/config only returns IDE agents (craft/ask/plan and completion
+// helpers), so global accounts advertise this list instead of live discovery.
+// Refresh it from a newer CLI release when the picker changes. Operators can
+// still add IDs via Settings → Custom model IDs.
 var codeBuddyGlobalModels = []codeBuddyModel{
-	// Anthropic / OpenAI / Google lineup (etteum-pool catalog, 2026-09) plus the
-	// shared CN lineup 9router's intl registry lists. gemini-3.1-flash-lite was
-	// removed: upstream answers "model service info not found" (code 11102).
-	{ID: "claude-opus-4.8", OwnedBy: "anthropic", Image: true},
-	{ID: "claude-opus-4.8-1m", OwnedBy: "anthropic", Image: true},
-	{ID: "claude-opus-4.7", OwnedBy: "anthropic", Image: true},
-	{ID: "claude-opus-4.7-1m", OwnedBy: "anthropic", Image: true},
-	{ID: "claude-opus-4.6", OwnedBy: "anthropic", Image: true},
-	{ID: "claude-sonnet-4.6", OwnedBy: "anthropic", Image: true},
+	{ID: "default-model", OwnedBy: "codebuddy", Image: true},
+	{ID: "fast-model", OwnedBy: "codebuddy", Image: true},
+	{ID: "balanced-model", OwnedBy: "codebuddy", Image: true},
+	{ID: "primary-model", OwnedBy: "codebuddy", Image: true},
+	{ID: "deep-model", OwnedBy: "codebuddy", Image: true},
+	{ID: "hy4-preview", OwnedBy: "tencent", Image: true},
+	{ID: "hy3", OwnedBy: "tencent", Image: true},
+	{ID: "deepseek-v4.1-flash", OwnedBy: "deepseek", Image: true},
+	{ID: "gpt-6-astra", OwnedBy: "openai", Image: true},
+	{ID: "gpt-5.6-sol", OwnedBy: "openai", Image: true},
+	{ID: "gpt-5.6-terra", OwnedBy: "openai", Image: true},
+	{ID: "gpt-5.6-luna", OwnedBy: "openai", Image: true},
 	{ID: "gpt-5.5", OwnedBy: "openai", Image: true},
-	{ID: "gpt-5.5-xhigh", OwnedBy: "openai", Image: true},
 	{ID: "gpt-5.4", OwnedBy: "openai", Image: true},
-	{ID: "gpt-5.3-codex", OwnedBy: "openai"},
-	{ID: "gpt-5.2", OwnedBy: "openai", Image: true},
-	{ID: "gpt-5.2-codex", OwnedBy: "openai"},
-	{ID: "gpt-5.1", OwnedBy: "openai", Image: true},
-	{ID: "gpt-5.1-codex", OwnedBy: "openai"},
-	{ID: "gpt-5.1-codex-max", OwnedBy: "openai"},
-	{ID: "gpt-5.1-codex-mini", OwnedBy: "openai"},
 	{ID: "gemini-3.5-flash", OwnedBy: "google", Image: true},
-	{ID: "gemini-3.1-pro", OwnedBy: "google", Image: true},
-	{ID: "gemini-3.0-flash", OwnedBy: "google", Image: true},
-	{ID: "gemini-2.5-pro", OwnedBy: "google", Image: true},
-	{ID: "gemini-2.5-flash", OwnedBy: "google", Image: true},
-	{ID: "glm-5.2", OwnedBy: "zhipu"},
-	{ID: "glm-5.1", OwnedBy: "zhipu"},
-	{ID: "glm-5.0-turbo", OwnedBy: "zhipu"},
-	{ID: "glm-5v-turbo", OwnedBy: "zhipu", Image: true},
-	{ID: "minimax-m3", OwnedBy: "minimax"},
-	{ID: "minimax-m2.7", OwnedBy: "minimax"},
-	{ID: "kimi-k2.7", OwnedBy: "moonshot"},
-	{ID: "kimi-k2.6", OwnedBy: "moonshot"},
-	{ID: "kimi-k2.5", OwnedBy: "moonshot"},
-	{ID: "hy3-preview", OwnedBy: "tencent"},
-	{ID: "deepseek-v4-pro", OwnedBy: "deepseek"},
-	{ID: "deepseek-v4.1-flash", OwnedBy: "deepseek"},
-	{ID: "deepseek-v3-2-volc", OwnedBy: "deepseek"},
+	{ID: "glm-5.3-flash", OwnedBy: "zhipu", Image: true},
+	{ID: "glm-5.3", OwnedBy: "zhipu", Image: true},
+	{ID: "glm-5.2", OwnedBy: "zhipu", Image: true},
+	{ID: "kimi-k3", OwnedBy: "moonshot", Image: true},
+	{ID: "kimi-k2.6", OwnedBy: "moonshot", Image: true},
+	{ID: "kimi-k2.8-preview", OwnedBy: "moonshot", Image: true},
 }
 
+// codeBuddyCNModels is the China offline catalog, used only when /v3/config
+// is unavailable or credentials are missing; successful live discovery
+// replaces it.
 var codeBuddyCNModels = []codeBuddyModel{
 	// Verified 2026-09-23 by probing www.codebuddy.cn: every ID below answers
 	// the chat endpoint; glm-4.x, glm-5.0, hunyuan-image and all Claude / GPT /

@@ -485,11 +485,11 @@ func TestProbeModelForUsesConfiguredModelWhenAdvertised(t *testing.T) {
 	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
 		t.Fatalf("config.Init: %v", err)
 	}
-	if err := config.UpdateTestModel("claude-opus-4.8"); err != nil {
+	if err := config.UpdateTestModel("gpt-5.6-terra"); err != nil {
 		t.Fatalf("UpdateTestModel: %v", err)
 	}
 	account := &config.Account{ProviderKind: "codebuddy"}
-	if got := probeModelFor(account); got != "claude-opus-4.8" {
+	if got := probeModelFor(account); got != "gpt-5.6-terra" {
 		t.Fatalf("probe model = %q, want configured model", got)
 	}
 }

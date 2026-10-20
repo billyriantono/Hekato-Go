@@ -22,7 +22,6 @@ func catalogResponse(status int, body string) *http.Response {
 
 func TestModelsForAccountFetchesRegionalCatalog(t *testing.T) {
 	for _, tt := range []struct{ name, region, host, domain, token string }{
-		{"global", "global", "www.codebuddy.ai", "www.codebuddy.ai", "sk-global"},
 		{"china", "cn", "copilot.tencent.com", "www.codebuddy.cn", "eyJheader.payload.signature"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -115,7 +114,7 @@ func TestModelsForAccountRefreshReplacesCatalog(t *testing.T) {
 		return catalogResponse(200, `{"data":{"models":[{"id":"`+id+`"}]}}`), nil
 	})})
 	defer restore()
-	account := &config.Account{ID: "refresh", AccessToken: "sk-test"}
+	account := &config.Account{ID: "refresh", Region: "cn", AccessToken: "sk-test"}
 	first := ModelsForAccount(account)
 	id = "second-live-model"
 	second := ModelsForAccount(account)
@@ -182,5 +181,17 @@ func TestFetchModelsUsesCLIAgentPicker(t *testing.T) {
 	}
 	if !reflect.DeepEqual(ids, []string{"GPT-5.5", "glm-5.3"}) {
 		t.Fatalf("got %v, want CLI picker order without internal models", ids)
+	}
+}
+
+func TestModelsForAccountGlobalUsesCLIPicker(t *testing.T) {
+	restore := providers.SwapClientsForTest(nil, &http.Client{Transport: catalogRoundTrip(func(r *http.Request) (*http.Response, error) {
+		t.Fatalf("global catalog must not be fetched: %s", r.URL)
+		return nil, nil
+	})})
+	defer restore()
+	got := ModelsForAccount(&config.Account{Region: "global", AccessToken: "sk-global"})
+	if len(got) != len(codeBuddyGlobalModels) || got[0].ModelId != "default-model" {
+		t.Fatalf("got %d models starting %q, want the CLI picker", len(got), got[0].ModelId)
 	}
 }
