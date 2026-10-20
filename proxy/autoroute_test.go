@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestClassifyTier(t *testing.T) {
@@ -283,5 +284,52 @@ func TestSystemOneRouteNeedsZenAccount(t *testing.T) {
 	}
 	if h.pickProviderAccount(config.ProviderOpenCodeZen, nil) != nil {
 		t.Fatal("no zen accounts configured")
+	}
+}
+
+// A slow pair yields to its tier-mates until the slow window ends, but a tier
+// with only slow pairs still serves instead of jumping tiers.
+func TestAutoRouterSkipsSlowWithinTier(t *testing.T) {
+	mustInitConfig(t)
+	for _, id := range []string{"s1", "s2"} {
+		if err := config.AddAccount(config.Account{ID: id, Email: id + "@x", AccessToken: "t", Enabled: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := accountpool.GetPool()
+	p.Reload()
+	p.SetModelList("s1", []string{"claude-sonnet-4.5", "claude-haiku-4.5"})
+	p.SetModelList("s2", []string{"claude-sonnet-4.5"})
+	t.Cleanup(func() { p.SetModelList("s1", nil); p.SetModelList("s2", nil) })
+
+	r := newAutoRouter()
+	cfg := config.DefaultAutoRouteConfig()
+	cfg.Explore = 0
+	balanced := routeSignals{InputTokens: 500, Tools: 3, Reasoning: true}
+
+	if slowReason(cfg, requestPerf{ttftMs: 34_700, tps: 1.9}) == "" || slowReason(cfg, requestPerf{ttftMs: 13_000, tps: 1.2}) == "" {
+		t.Fatal("slow requests from the report must count as slow")
+	}
+	if slowReason(cfg, requestPerf{ttftMs: 2_943, tps: 39.2}) != "" || slowReason(cfg, requestPerf{}) != "" {
+		t.Fatal("normal and non-streaming requests must not count as slow")
+	}
+
+	r.RecordSlow("s1", "claude-sonnet-4.5", "test")
+	for i := 0; i < 10; i++ {
+		if d := r.Resolve(p, cfg, balanced, nil, "claude"); d == nil || d.AccountID != "s2" {
+			t.Fatalf("slow s1 should yield to s2, got %+v", d)
+		}
+	}
+	r.RecordSlow("s1", "claude-haiku-4.5", "test")
+	if d := r.Resolve(p, cfg, routeSignals{InputTokens: 100}, nil, "claude"); d == nil || d.Tier != "fast" || d.AccountID != "s1" {
+		t.Fatalf("an all-slow tier should still serve, got %+v", d)
+	}
+
+	// Window over: s1 is back in the rotation.
+	r.mu.Lock()
+	r.stats[statKey("s1", "claude-sonnet-4.5")].SlowUntil = time.Now().Add(-time.Second)
+	r.mu.Unlock()
+	if r.isSlow("s1", "claude-sonnet-4.5") {
+		t.Fatal("slow mark must expire")
 	}
 }

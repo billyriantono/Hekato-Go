@@ -9,6 +9,7 @@ const pages = [
   ['/api-keys', () => import('@/pages/api-keys').then((m) => ({ default: m.ApiKeysPage }))],
   ['/settings', () => import('@/pages/settings').then((m) => ({ default: m.SettingsPage }))],
   ['/logs', () => import('@/pages/logs').then((m) => ({ default: m.LogsPage }))],
+  ['/model-status', () => import('@/pages/model-status').then((m) => ({ default: m.ModelStatusPage }))],
   ['/model-prices', () => import('@/pages/model-prices').then((m) => ({ default: m.ModelPricesPage }))],
 ] as const
 

@@ -99,6 +99,7 @@ type Handler struct {
 	affinity        *accountAffinity
 	limiter         *keyLimiter
 	autoRouter      *autoRouter
+	modelHealth     *modelHealth
 	metrics         *metricsCollector
 	warmup          warmupState
 	tokenRefreshMu  sync.Mutex
@@ -440,12 +441,14 @@ func NewHandler() *Handler {
 		affinity:        newAccountAffinity(),
 		limiter:         newKeyLimiter(),
 		autoRouter:      newAutoRouter(),
+		modelHealth:     newModelHealth(),
 		metrics:         newMetricsCollector(),
 	}
 	// Restore persisted ops metrics and keep flushing them in the background.
 	h.metrics.Load(config.Metrics())
 	h.autoRouter.vision = h.modelHasVision
 	h.autoRouter.Load(config.Blobs())
+	h.modelHealth.Load(config.Blobs())
 	go h.runTelemetryFlusher()
 	go runUpdateChecker()
 	// 从持久化存储加载最近请求日志，使重启后 /logs 与 dashboard telemetry 不再清空。
@@ -512,9 +515,11 @@ func (h *Handler) runTelemetryFlusher() {
 		case <-ticker.C:
 			h.metrics.Flush()
 			h.autoRouter.Flush()
+			h.modelHealth.Flush()
 		case <-h.stopStatsSaver:
 			h.metrics.Flush()
 			h.autoRouter.Flush()
+			h.modelHealth.Flush()
 			return
 		}
 	}
@@ -527,6 +532,7 @@ func (h *Handler) Shutdown() {
 	h.saveStats()
 	h.metrics.Flush()
 	h.autoRouter.Flush()
+	h.modelHealth.Flush()
 	// Drain pending request logs to disk before exit. Non-blocking on shutdown:
 	// if no flusher was started (backend without RequestLogStore), logSaverDone
 	// was closed in NewHandler, so the select hits it immediately.
@@ -2049,6 +2055,7 @@ func (h *Handler) appendRequestLog(entry RequestLog) {
 	}
 	h.requestLogs = append(h.requestLogs, entry)
 	h.requestLogsMu.Unlock()
+	h.modelHealth.Record(entry)
 
 	// 非阻塞投递到持久化队列。队列满 = 上一批次还没刷盘，降级为丢弃本次
 	// 持久化条目（内存环照常保留，查询不丢），避免反向阻塞请求路径。
@@ -2139,6 +2146,9 @@ func (h *Handler) recordSuccessLog(w http.ResponseWriter, endpoint, model, accou
 
 	h.appendRequestLog(entry)
 	h.autoRouter.Record(accountID, model, true, durationMs)
+	if reason := slowReason(config.GetAutoRouteConfig(), perf); reason != "" {
+		h.autoRouter.RecordSlow(accountID, model, reason)
+	}
 	h.metrics.RecordCache(perf.cacheRead, perf.cacheWrite)
 	h.metrics.Record(endpoint, model, accountID, true, tokens, credits, durationMs)
 }
@@ -3186,6 +3196,8 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiTestRelay(w, r)
 	case path == "/relay/source" && r.Method == "GET":
 		h.apiGetRelaySource(w, r)
+	case path == "/model-health" && r.Method == "GET":
+		h.apiModelHealth(w, r)
 	case path == "/auto-route" && r.Method == "GET":
 		h.apiGetAutoRoute(w, r)
 	case path == "/auto-route" && r.Method == "POST":

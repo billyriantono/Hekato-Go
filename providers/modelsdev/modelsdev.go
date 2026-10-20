@@ -254,6 +254,32 @@ func ContextLimit(modelID string) int {
 	return best
 }
 
+// OutputLimit returns the smallest published max-output for modelID under
+// any of its spellings (0 when the catalog does not know it), like
+// ContextLimit. A plain scan: it backs an admin page, not the request path.
+func OutputLimit(modelID string) int {
+	models, _, err := List()
+	if err != nil {
+		return 0
+	}
+	want := map[string]bool{}
+	for _, k := range modelKeys(modelID) {
+		want[k] = true
+	}
+	best := 0
+	for _, m := range models {
+		if m.OutputLimit <= 0 {
+			continue
+		}
+		for _, k := range modelKeys(m.ID) {
+			if want[k] && (best == 0 || m.OutputLimit < best) {
+				best = m.OutputLimit
+			}
+		}
+	}
+	return best
+}
+
 // BlendedPrice returns a single USD-per-1M-token figure for modelID, weighting
 // input 3:1 against output — agent traffic is overwhelmingly prompt, not
 // completion. Returns false when the catalog does not price the model.

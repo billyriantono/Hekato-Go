@@ -6,6 +6,8 @@ export const en: Record<string, string> = {
   'overview.wantedTier': 'wanted {0}',
   'overview.quarantined': 'quarantined',
   'overview.quarantinedUntil': 'Skipped by the router until {0} — the upstream rejected this model on this account.',
+  'overview.slow': 'slow',
+  'overview.slowUntil': 'Answered too slowly; other models in its tier are preferred until {0}. The next request after that checks it again.',
   'overview.deadPatterns': 'Matching nothing routable: {0}',
   'settings.autoRoute.keywordRules': 'Keyword rules',
   'settings.autoRoute.keywordRulesHint':
@@ -21,6 +23,8 @@ export const zh: Record<string, string> = {
   'overview.wantedTier': '期望 {0}',
   'overview.quarantined': '已隔离',
   'overview.quarantinedUntil': '路由将跳过该组合直到 {0} —— 上游拒绝了该账号上的此模型。',
+  'overview.slow': '慢',
+  'overview.slowUntil': '响应过慢；在 {0} 之前优先使用同层级的其他模型，之后的下一个请求会重新检测。',
   'overview.deadPatterns': '未匹配到任何可用模型：{0}',
   'settings.autoRoute.keywordRules': '关键词规则',
   'settings.autoRoute.keywordRulesHint': '最后一条用户消息中出现这些字面关键词时强制使用该档位，优先于启发式判断。逗号分隔，首条匹配生效。',

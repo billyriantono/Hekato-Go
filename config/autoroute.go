@@ -39,6 +39,12 @@ type AutoRouteConfig struct {
 	// Aliases are extra model names that mean "auto", for clients that treat
 	// a literal "auto" as their own model switch. Matched case-insensitively.
 	Aliases []string `json:"aliases"`
+	// A request slower than this marks its (account, model) pair slow: time to
+	// first token above SlowTTFTMs, or streaming below SlowMinTPS tokens/s
+	// (0 disables either check). A slow pair is skipped for a few minutes
+	// while its tier has another candidate.
+	SlowTTFTMs int64   `json:"slowTtftMs"`
+	SlowMinTPS float64 `json:"slowMinTps"`
 }
 
 // IsAlias reports whether model is one of the configured "auto" aliases.
@@ -90,6 +96,8 @@ func DefaultAutoRouteConfig() AutoRouteConfig {
 		Strong:        []string{"opus"},
 		AutoThinking:  true,
 		Aliases:       []string{"hekato-auto"},
+		SlowTTFTMs:    20000,
+		SlowMinTPS:    3,
 	}
 }
 
@@ -121,8 +129,8 @@ func autoRouteFromString(s string) *AutoRouteConfig {
 	if s == "" {
 		return nil
 	}
-	// Configs saved before AutoThinking / Aliases existed keep their defaults.
-	c := AutoRouteConfig{AutoThinking: true, Aliases: []string{"hekato-auto"}}
+	// Configs saved before these fields existed keep their defaults.
+	c := AutoRouteConfig{AutoThinking: true, Aliases: []string{"hekato-auto"}, SlowTTFTMs: 20000, SlowMinTPS: 3}
 	if json.Unmarshal([]byte(s), &c) != nil {
 		return nil
 	}

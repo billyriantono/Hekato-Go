@@ -29,7 +29,7 @@ type Decision = {
   candidates?: number
 }
 type TierHealth = { tier: string; candidates: number; wanted: number; served: number; starved: number; deadPatterns?: string[] }
-type Candidate = { accountId: string; email?: string; provider?: string; model: string; successes: number; failures: number; ewmaLatencyMs: number; reliability: number; lastUpdated: number; quarantinedUntil?: number; quarantineReason?: string }
+type Candidate = { accountId: string; email?: string; provider?: string; model: string; successes: number; failures: number; ewmaLatencyMs: number; reliability: number; lastUpdated: number; quarantinedUntil?: number; quarantineReason?: string; slowUntil?: number; slowReason?: string }
 const who = (email?: string, id = '') => email || short(id)
 
 const REFETCH = 15000
@@ -165,6 +165,17 @@ export function AutoRouteCard() {
                               <TooltipContent className="max-w-xs break-words">
                                 {t('overview.quarantinedUntil', formatTime(c.quarantinedUntil))}
                                 {c.quarantineReason ? <div className="mt-1 opacity-70">{c.quarantineReason}</div> : null}
+                              </TooltipContent>
+                            </Tooltip>
+                          )}
+                          {c.slowUntil && (
+                            <Tooltip>
+                              <TooltipTrigger render={<Badge variant="secondary" className="ml-1.5 cursor-help text-[10px]" />}>
+                                {t('overview.slow')}
+                              </TooltipTrigger>
+                              <TooltipContent className="max-w-xs break-words">
+                                {t('overview.slowUntil', formatTime(c.slowUntil))}
+                                {c.slowReason ? <div className="mt-1 opacity-70">{c.slowReason}</div> : null}
                               </TooltipContent>
                             </Tooltip>
                           )}

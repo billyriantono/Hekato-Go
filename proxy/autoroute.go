@@ -161,11 +161,25 @@ type candidateStats struct {
 	// certainty, not evidence to be averaged away.
 	QuarantinedUntil time.Time `json:"quarantinedUntil,omitempty"`
 	QuarantineReason string    `json:"quarantineReason,omitempty"`
+	// SlowUntil sidelines a pair that just answered too slowly (see
+	// AutoRouteConfig.SlowTTFTMs). Softer than quarantine: it only yields to
+	// other candidates of the same tier.
+	SlowUntil  time.Time `json:"slowUntil,omitempty"`
+	SlowReason string    `json:"slowReason,omitempty"`
 }
 
 func (c *candidateStats) quarantined(now time.Time) bool {
 	return c != nil && now.Before(c.QuarantinedUntil)
 }
+
+func (c *candidateStats) slow(now time.Time) bool {
+	return c != nil && now.Before(c.SlowUntil)
+}
+
+// slowWindow is how long a slow pair sits out. When it ends the pair gets
+// traffic again, and that first real request is the probe: still slow and it
+// sits out another window, back to normal and it rejoins the rotation.
+const slowWindow = 5 * time.Minute
 
 // statsHalfLife governs how fast the bandit forgets. An hour sounded prudent
 // but decayed faster than traffic accumulated per (account, model): every
@@ -446,6 +460,13 @@ search:
 		}
 		cands, usedTier = anyFit, anyFitTier
 	}
+	// Slow pairs yield to the rest of their tier; a tier of only slow pairs
+	// still serves rather than pushing the request to another tier.
+	slowSkipped := 0
+	if fast := r.withoutSlow(cands); len(fast) > 0 {
+		slowSkipped = len(cands) - len(fast)
+		cands = fast
+	}
 
 	now := time.Now()
 	r.mu.Lock()
@@ -493,6 +514,9 @@ search:
 	}
 	if explored {
 		reason += " explore"
+	}
+	if slowSkipped > 0 {
+		reason += fmt.Sprintf(" slow-skipped=%d", slowSkipped)
 	}
 	d := routeDecision{
 		Time: now.Unix(), Endpoint: endpoint, Tier: tierNames[usedTier], Model: pick.model,
@@ -677,6 +701,60 @@ func (r *autoRouter) isQuarantined(accountID, model string) bool {
 	return r.stats[statKey(accountID, model)].quarantined(time.Now())
 }
 
+// withoutSlow drops the candidates currently marked slow.
+func (r *autoRouter) withoutSlow(cands []routeCandidate) []routeCandidate {
+	now := time.Now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []routeCandidate
+	for _, c := range cands {
+		if !r.stats[statKey(c.account.ID, c.model)].slow(now) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func (r *autoRouter) isSlow(accountID, model string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stats[statKey(accountID, model)].slow(time.Now())
+}
+
+// slowReason reports why a finished request counts as slow under cfg ("" if
+// it does not). Non-streaming requests carry no TTFT/TPS and never count.
+func slowReason(cfg config.AutoRouteConfig, perf requestPerf) string {
+	if cfg.SlowTTFTMs > 0 && perf.ttftMs > cfg.SlowTTFTMs {
+		return fmt.Sprintf("first token after %.1fs", float64(perf.ttftMs)/1000)
+	}
+	if cfg.SlowMinTPS > 0 && perf.tps > 0 && perf.tps < cfg.SlowMinTPS {
+		return fmt.Sprintf("%.1f tokens/s", perf.tps)
+	}
+	return ""
+}
+
+// RecordSlow sidelines a pair for slowWindow after a slow answer.
+func (r *autoRouter) RecordSlow(accountID, model, reason string) {
+	if r == nil || accountID == "" || model == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	k := statKey(accountID, model)
+	st := r.stats[k]
+	if st == nil {
+		st = &candidateStats{}
+		r.stats[k] = st
+	}
+	st.SlowUntil = time.Now().Add(slowWindow)
+	st.SlowReason = reason
+	r.dirty = true
+	logger.Infof("[AutoRoute] %s is slow (%s); skipping it for %s where its tier has others", model, reason, slowWindow)
+}
+
 // RecordHardFailure sidelines a pair the upstream rejected in a way that will
 // repeat: an unknown model, a malformed pairing, a revoked credential. Unlike
 // a 429 (which the pool already routes around and which resolves on its own),
@@ -727,6 +805,8 @@ type candidateView struct {
 	// keeps the exclusion auditable instead of looking like a silent snub.
 	QuarantinedUntil int64  `json:"quarantinedUntil,omitempty"`
 	QuarantineReason string `json:"quarantineReason,omitempty"`
+	SlowUntil        int64  `json:"slowUntil,omitempty"`
+	SlowReason       string `json:"slowReason,omitempty"`
 }
 
 // Snapshot returns recent decisions (newest first) and per-candidate stats.
@@ -761,6 +841,9 @@ func (r *autoRouter) Snapshot() ([]routeDecision, []candidateView) {
 			view.QuarantinedUntil = st.QuarantinedUntil.Unix()
 			view.QuarantineReason = truncateReason(st.QuarantineReason)
 		}
+		if st.slow(now) {
+			view.SlowUntil, view.SlowReason = st.SlowUntil.Unix(), st.SlowReason
+		}
 		cands = append(cands, view)
 	}
 	sort.Slice(cands, func(i, j int) bool { return cands[i].Reliability > cands[j].Reliability })
@@ -794,11 +877,12 @@ func (h *Handler) resolveAutoModel(w http.ResponseWriter, endpoint, model string
 			// dropped when the context outgrew the model's window, when the
 			// request now classifies above the pinned model's tier (a session
 			// that opened with "hi" and turned into a refactor), or when the
-			// pair has been quarantined. Otherwise the pin — which decides the
+			// pair has been quarantined or marked slow. Otherwise the pin — which decides the
 			// overwhelming majority of requests — would outlive its own premise.
 			keep := h.pool.GetForModelByID(accID, pinnedModel, requestFilter(w, cap)) != nil &&
 				modelFitsContext(pinnedModel, sig.InputTokens) &&
 				!h.autoRouter.isQuarantined(accID, pinnedModel) &&
+				!h.autoRouter.isSlow(accID, pinnedModel) &&
 				!pinOutranked(cfg, pinnedModel, sig, advertisedModels(h.pool))
 			if keep {
 				h.autoRouter.RecordPinned(routeDecision{Time: time.Now().Unix(), Endpoint: endpoint, Tier: "pinned", Model: pinnedModel, AccountID: accID, Pinned: true, Thinking: think, Signals: sig, Reason: "conversation pinned (warm cache)" + reasonSuffix})

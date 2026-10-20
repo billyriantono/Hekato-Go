@@ -25,6 +25,8 @@ type Config = {
   keywordRules?: KeywordRule[]
   autoThinking: boolean
   aliases?: string[]
+  slowTtftMs?: number
+  slowMinTps?: number
 }
 type KeywordRule = { keywords: string[]; tier: Tier }
 type Decision = {
@@ -118,6 +120,14 @@ export function AutoRouteSection() {
           <Field label={t('settings.autoRoute.aliases')} hint={t('settings.autoRoute.aliasesHint')}>
             <Input className="font-mono text-xs" defaultValue={(draft.aliases ?? []).join(', ')} placeholder="hekato-auto" onChange={(e) => patch({ aliases: splitPatterns(e.target.value) })} />
           </Field>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label={t('settings.autoRoute.slowTtft')} hint={t('settings.autoRoute.slowTtftHint')}>
+              <Input type="number" min={0} step={1000} className="text-xs" value={draft.slowTtftMs ?? 0} onChange={(e) => patch({ slowTtftMs: Math.max(0, Number(e.target.value) || 0) })} />
+            </Field>
+            <Field label={t('settings.autoRoute.slowTps')} hint={t('settings.autoRoute.slowTpsHint')}>
+              <Input type="number" min={0} step={0.5} className="text-xs" value={draft.slowMinTps ?? 0} onChange={(e) => patch({ slowMinTps: Math.max(0, Number(e.target.value) || 0) })} />
+            </Field>
+          </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <Slider id="ar-quality" label={t('settings.autoRoute.quality')} hint={t('settings.autoRoute.qualityHint')} value={draft.qualityWeight} max={1} onChange={(v) => patch({ qualityWeight: v })} />
             <Slider id="ar-cost" label={t('settings.autoRoute.cost')} hint={t('settings.autoRoute.costHint')} value={draft.costWeight} max={1} onChange={(v) => patch({ costWeight: v })} />
