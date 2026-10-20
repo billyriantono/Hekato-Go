@@ -1,6 +1,6 @@
 // Package codebuddy implements the CodeBuddy (Tencent) upstream: the
 // OpenAI-compatible /v2/chat/completions transport for the Global and CN
-// variants, static model tables, and usage/credits lookups. Request-format
+// variants, live model discovery with offline fallbacks, and usage/credits lookups. Request-format
 // converters live in the proxy core next to the shared normalization layer.
 package codebuddy
 
@@ -47,9 +47,10 @@ type codeBuddyModel struct {
 	Image   bool
 }
 
-// Static catalogs: CodeBuddy exposes no model-list endpoint (every /models
-// path answers 404), so this mirrors the IDs its web client offers. Operators
-// can add newer IDs without a rebuild via Settings → Custom model IDs.
+// Offline catalogs used when /v3/config is unavailable or credentials are
+// missing. Successful live discovery replaces these lists, rather than merging
+// potentially retired IDs into the upstream catalog. Operators can still add
+// IDs via Settings → Custom model IDs.
 var codeBuddyGlobalModels = []codeBuddyModel{
 	// Anthropic / OpenAI / Google lineup (etteum-pool catalog, 2026-09) plus the
 	// shared CN lineup 9router's intl registry lists. gemini-3.1-flash-lite was
@@ -189,15 +190,13 @@ func isJWT(token string) bool {
 func codeBuddyTraceID() string {
 	return strings.ReplaceAll(uuid.NewString(), "-", "")
 }
-func ModelsForAccount(account *config.Account) []providers.ModelInfo {
+func staticModelsForAccount(account *config.Account) []providers.ModelInfo {
 	src := codeBuddyGlobalModels
 	if variantForAccount(account).Name == codeBuddyCN.Name {
 		src = codeBuddyCNModels
 	}
 	out := make([]providers.ModelInfo, 0, len(src))
-	seen := map[string]bool{}
 	for _, m := range src {
-		seen[strings.ToLower(m.ID)] = true
 		inputTypes := []string{"text"}
 		if m.Image {
 			inputTypes = append(inputTypes, "image")
@@ -208,14 +207,7 @@ func ModelsForAccount(account *config.Account) []providers.ModelInfo {
 			InputTypes: inputTypes,
 		})
 	}
-	for _, id := range config.GetCustomModelIDs("codebuddy") {
-		if seen[strings.ToLower(id)] {
-			continue
-		}
-		seen[strings.ToLower(id)] = true
-		out = append(out, providers.ModelInfo{ModelId: id, ModelName: id, InputTypes: []string{"text"}})
-	}
-	return out
+	return appendCustomModels(out)
 }
 
 type ChatRequest struct {
