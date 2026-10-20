@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,16 +14,6 @@ import (
 // suite. It drives the real HTTP surface through Handler.ServeHTTP (not the
 // internal handleAdminAPI) so that routing, CORS and the auth gate are all
 // exercised the way a browser would hit them.
-
-// adminPreAuthPaths are the only admin endpoints that are reachable without a
-// session. Every one of them must be either read-only/one-shot or a
-// credential-exchange endpoint.
-var adminPreAuthPaths = map[string]bool{
-	"/setup/status": true,
-	"/setup":        true,
-	"/login":        true,
-	"/logout":       true,
-}
 
 func TestAdminSurfaceRequiresSession(t *testing.T) {
 	mustInitConfig(t)
@@ -60,8 +49,8 @@ func TestAdminSurfaceRequiresSession(t *testing.T) {
 				t.Fatalf("%s %s: %v", m, p, err)
 			}
 			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				t.Errorf("%s %s returned 200 without a session token", m, p)
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Errorf("%s %s = %d without a session token, want 401", m, p, resp.StatusCode)
 			}
 		}
 	}
@@ -162,7 +151,7 @@ func TestAdminSessionRoundTripOverHTTP(t *testing.T) {
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
-	// Login and capture the token plus the cookie.
+	// Login and capture the token.
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/admin/api/login",
 		strings.NewReader(`{"password":"admin-secret","remember":true}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -187,20 +176,6 @@ func TestAdminSessionRoundTripOverHTTP(t *testing.T) {
 		t.Fatal("token contains the password")
 	}
 
-	// The session cookie must be HttpOnly so page scripts cannot read it.
-	var sessionCookie *http.Cookie
-	for _, c := range resp.Cookies() {
-		if c.Name == "hekato_admin_session" {
-			sessionCookie = c
-		}
-	}
-	if sessionCookie == nil {
-		t.Fatal("login did not set a session cookie")
-	}
-	if !sessionCookie.HttpOnly {
-		t.Error("session cookie is not HttpOnly")
-	}
-
 	// The token authenticates via the header.
 	hdrReq, _ := http.NewRequest(http.MethodGet, srv.URL+"/admin/api/version", nil)
 	hdrReq.Header.Set("X-Admin-Session", payload.Token)
@@ -211,18 +186,6 @@ func TestAdminSessionRoundTripOverHTTP(t *testing.T) {
 	hdrResp.Body.Close()
 	if hdrResp.StatusCode != http.StatusOK {
 		t.Errorf("header auth = %d, want 200", hdrResp.StatusCode)
-	}
-
-	// The cookie authenticates too.
-	ckReq, _ := http.NewRequest(http.MethodGet, srv.URL+"/admin/api/version", nil)
-	ckReq.AddCookie(sessionCookie)
-	ckResp, err := srv.Client().Do(ckReq)
-	if err != nil {
-		t.Fatalf("cookie auth: %v", err)
-	}
-	ckResp.Body.Close()
-	if ckResp.StatusCode != http.StatusOK {
-		t.Errorf("cookie auth = %d, want 200", ckResp.StatusCode)
 	}
 
 	// Logout revokes the session server-side.
@@ -270,49 +233,5 @@ func TestAdminCORSAllowsSessionHeader(t *testing.T) {
 	allowed := resp.Header.Get("Access-Control-Allow-Headers")
 	if !strings.Contains(strings.ToLower(allowed), "x-admin-session") {
 		t.Errorf("CORS allow-headers = %q, missing X-Admin-Session", allowed)
-	}
-}
-
-// The remembered vs non-remembered session must differ in cookie lifetime:
-// a non-remembered session must be a true session cookie (no Expires/Max-Age)
-// so closing the browser discards it.
-func TestAdminCookieLifetimeFollowsRememberFlag(t *testing.T) {
-	mustInitConfig(t)
-	config.SetPassword("admin-secret")
-
-	h := &Handler{}
-
-	for _, tc := range []struct {
-		name        string
-		remember    bool
-		wantPersist bool
-	}{
-		{"remembered", true, true},
-		{"not remembered", false, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			rec := httptest.NewRecorder()
-			body := fmt.Sprintf(`{"password":"admin-secret","remember":%t}`, tc.remember)
-			req := httptest.NewRequest(http.MethodPost, "/admin/api/login", strings.NewReader(body))
-			h.handleAdminAPI(rec, req)
-			if rec.Code != http.StatusOK {
-				t.Fatalf("login = %d, body = %s", rec.Code, rec.Body.String())
-			}
-			cookies := rec.Result().Cookies()
-			var found *http.Cookie
-			for _, c := range cookies {
-				if c.Name == "hekato_admin_session" {
-					found = c
-				}
-			}
-			if found == nil {
-				t.Fatal("no session cookie set")
-			}
-			persistent := !found.Expires.IsZero() || found.MaxAge > 0
-			if persistent != tc.wantPersist {
-				t.Errorf("persistent = %t, want %t (expires=%v maxAge=%d)",
-					persistent, tc.wantPersist, found.Expires, found.MaxAge)
-			}
-		})
 	}
 }

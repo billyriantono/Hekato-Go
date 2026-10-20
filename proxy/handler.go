@@ -3117,13 +3117,10 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 
 	// 验证会话令牌 — the console sends X-Admin-Session; the token is checked
 	// against the server-side session table. The raw password is only
-	// accepted on the /login endpoint above.
+	// accepted on the /login endpoint above. No cookie is consulted: a
+	// browser attaches cookies to forged same-site requests, a header it
+	// does not.
 	token := r.Header.Get(sessionHeaderName)
-	if token == "" {
-		if cookie, err := r.Cookie(sessionCookieName); err == nil {
-			token = cookie.Value
-		}
-	}
 
 	if !config.IsConfigured() {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -3829,37 +3826,24 @@ func (h *Handler) apiAdminLogin(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
 		return
 	}
+	if !h.adminSessions().allowLoginAttempt() {
+		w.WriteHeader(http.StatusTooManyRequests)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Too many login attempts, try again in a minute"})
+		return
+	}
 	// Constant-time compare so a wrong password cannot be found by timing.
 	if subtle.ConstantTimeCompare([]byte(req.Password), []byte(config.GetPassword())) != 1 {
 		w.WriteHeader(401)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
 		return
 	}
+	h.adminSessions().resetLoginAttempts()
 	token, expires := h.adminSessions().issue(config.GetPassword(), req.Remember)
 	if token == "" {
 		w.WriteHeader(500)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to create session"})
 		return
 	}
-	// The cookie is a convenience mirror for browser reloads; the console
-	// sends the token in the X-Admin-Session header. HttpOnly keeps it away
-	// from page scripts, SameSite=Lax keeps it off cross-site requests.
-	//
-	// Without "remember me" the cookie must be a session cookie: no Expires
-	// and no Max-Age, so the browser drops it when the tab closes. Setting
-	// Expires in that case would persist the token to disk and outlive the
-	// user's explicit choice.
-	c := &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    token,
-		Path:     "/admin",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	}
-	if req.Remember {
-		c.Expires = expires
-	}
-	http.SetCookie(w, c)
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"token":     token,
 		"expiresAt": expires.Unix(),
@@ -3870,23 +3854,7 @@ func (h *Handler) apiAdminLogin(w http.ResponseWriter, r *http.Request) {
 // server-side table, so a stolen copy of it is worthless afterwards.
 func (h *Handler) apiAdminLogout(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	token := r.Header.Get(sessionHeaderName)
-	if token == "" {
-		if cookie, err := r.Cookie(sessionCookieName); err == nil {
-			token = cookie.Value
-		}
-	}
-	h.adminSessions().revoke(token)
-	// Clear the cookie mirror too.
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    "",
-		Path:     "/admin",
-		Expires:  time.Unix(0, 0),
-		MaxAge:   -1,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
+	h.adminSessions().revoke(r.Header.Get(sessionHeaderName))
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
 }
 
@@ -3922,20 +3890,12 @@ func (h *Handler) apiCompleteSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	// Hand back a session token straight away so the console can go straight
 	// to the dashboard without ever storing the password.
-	token, expires := h.adminSessions().issue(config.GetPassword(), true)
+	token, _ := h.adminSessions().issue(config.GetPassword(), true)
 	if token == "" {
 		w.WriteHeader(500)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to create session"})
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    token,
-		Path:     "/admin",
-		Expires:  expires,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "token": token})
 }
 
@@ -4415,31 +4375,6 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := config.UpdateSettingsPatch(req.ApiKey, req.RequireApiKey, req.Password); err != nil {
-		w.WriteHeader(500)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-		return
-	}
-
-	// A password change invalidates every existing session (they are bound to
-	// the old password). The caller that made the change gets a fresh token
-	// so it is not logged out of the console it is currently using.
-	newToken := ""
-	if req.Password != "" {
-		h.adminSessions().revokeAll()
-		if tok, _ := h.adminSessions().issue(config.GetPassword(), false); tok != "" {
-			newToken = tok
-			http.SetCookie(w, &http.Cookie{
-				Name:     sessionCookieName,
-				Value:    tok,
-				Path:     "/admin",
-				Expires:  time.Now().Add(sessionTTL),
-				HttpOnly: true,
-				SameSite: http.SameSiteLaxMode,
-			})
-		}
-	}
-
 	// 更新超额使用设置
 	if req.PoolPrefixes != nil {
 		if err := config.UpdatePoolPrefixes(*req.PoolPrefixes); err != nil {
@@ -4458,11 +4393,29 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		h.pool.Reload()
 	}
 
-	if newToken != "" {
-		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "token": newToken})
+	// The password is saved last: once it changes every session is revoked,
+	// so every response after that point must carry the replacement token or
+	// the console is locked out.
+	remember := h.adminSessions().remembered(r.Header.Get(sessionHeaderName))
+	if err := config.UpdateSettingsPatch(req.ApiKey, req.RequireApiKey, req.Password); err != nil {
+		w.WriteHeader(500)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+	if req.Password == "" {
+		json.NewEncoder(w).Encode(map[string]bool{"success": true})
+		return
+	}
+	// A password change invalidates every existing session. The caller gets a
+	// fresh token, with its original lifetime, so the console stays usable.
+	h.adminSessions().revokeAll()
+	tok, _ := h.adminSessions().issue(config.GetPassword(), remember)
+	if tok == "" {
+		w.WriteHeader(500)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Password changed, but no new session could be created; log in again"})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "token": tok})
 }
 
 func (h *Handler) apiGetStats(w http.ResponseWriter, r *http.Request) {

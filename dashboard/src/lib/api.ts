@@ -47,6 +47,11 @@ export function setToken(token: string, remember: boolean) {
   }
 }
 
+// isRemembered reports whether the current token was stored with "remember me".
+export function isRemembered(): boolean {
+  return localStorage.getItem(REMEMBER_KEY) === '1'
+}
+
 export function clearToken() {
   sessionStorage.removeItem(TOKEN_KEY)
   localStorage.removeItem(TOKEN_KEY)

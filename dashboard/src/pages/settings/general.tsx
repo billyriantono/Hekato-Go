@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { LoadingBlock, errorMessage } from '@/components/common'
-import { get, post, setToken } from '@/lib/api'
+import { get, isRemembered, post, setToken } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
 import { Field, SaveButton, Section, SwitchRow, useDraft } from './shared'
 
@@ -54,7 +54,7 @@ export function GeneralSection() {
     onSuccess: (res) => {
       // The password change revoked every session; the server hands back a
       // fresh token for this browser so the console stays usable.
-      if (res?.token) setToken(res.token, true)
+      if (res?.token) setToken(res.token, isRemembered())
       setPw('')
       setConfirm('')
       toast.success(t('settings.passwordChanged'))

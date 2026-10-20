@@ -116,7 +116,10 @@ func TestAdminLogoutRevokesSession(t *testing.T) {
 	}
 }
 
-func TestAdminSessionAcceptedFromCookie(t *testing.T) {
+// A valid token in a cookie must not authenticate: the browser would attach
+// it to forged same-site requests (CSRF). Only the header counts, and no
+// endpoint sets a cookie in the first place.
+func TestAdminSessionCookieIsNotACredential(t *testing.T) {
 	mustInitConfig(t)
 	config.SetPassword("admin-secret")
 
@@ -125,10 +128,95 @@ func TestAdminSessionAcceptedFromCookie(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/admin/api/version", nil)
-	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	req.AddCookie(&http.Cookie{Name: "hekato_admin_session", Value: token})
 	h.handleAdminAPI(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("cookie-auth status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("cookie-auth status = %d, want 401", rec.Code)
+	}
+
+	login := httptest.NewRecorder()
+	h.handleAdminAPI(login, httptest.NewRequest(http.MethodPost, "/admin/api/login",
+		strings.NewReader(`{"password":"admin-secret","remember":true}`)))
+	if login.Code != http.StatusOK {
+		t.Fatalf("login status = %d", login.Code)
+	}
+	if c := login.Result().Cookies(); len(c) != 0 {
+		t.Fatalf("login set cookies %v, want none", c)
+	}
+}
+
+// A settings save that fails after the password field was sent must not
+// change the password, or the console would be left holding a revoked token.
+func TestAdminFailedSettingsSaveKeepsPasswordAndSession(t *testing.T) {
+	mustInitConfig(t)
+	config.SetPassword("admin-secret")
+
+	h := &Handler{}
+	mine, _ := h.adminSessions().issue(config.GetPassword(), false)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/settings",
+		strings.NewReader(`{"password":"new-secret-123","poolPrefixes":{"no-such-pool":"x"}}`))
+	req.Header.Set("X-Admin-Session", mine)
+	rec := httptest.NewRecorder()
+	h.handleAdminAPI(rec, req)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("settings with invalid poolPrefixes succeeded: %s", rec.Body.String())
+	}
+	if got := config.GetPassword(); got != "admin-secret" {
+		t.Fatalf("password changed to %q despite the failed save", got)
+	}
+	if !h.adminSessions().validate(mine, config.GetPassword()) {
+		t.Fatal("caller's session was revoked by a failed save")
+	}
+}
+
+// The replacement token after a password change keeps the caller's
+// "remember me" lifetime.
+func TestAdminPasswordChangeKeepsRememberChoice(t *testing.T) {
+	mustInitConfig(t)
+	config.SetPassword("admin-secret")
+
+	h := &Handler{}
+	mine, _ := h.adminSessions().issue(config.GetPassword(), true)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/settings",
+		strings.NewReader(`{"password":"new-secret-123"}`))
+	req.Header.Set("X-Admin-Session", mine)
+	rec := httptest.NewRecorder()
+	h.handleAdminAPI(rec, req)
+	var payload struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil || payload.Token == "" {
+		t.Fatalf("no replacement token: %d %s", rec.Code, rec.Body.String())
+	}
+	if !h.adminSessions().remembered(payload.Token) {
+		t.Fatal("replacement token lost the remember-me lifetime")
+	}
+}
+
+func TestAdminLoginIsThrottled(t *testing.T) {
+	mustInitConfig(t)
+	config.SetPassword("admin-secret")
+
+	h := &Handler{}
+	try := func(pw string) int {
+		rec := httptest.NewRecorder()
+		h.handleAdminAPI(rec, httptest.NewRequest(http.MethodPost, "/admin/api/login",
+			strings.NewReader(`{"password":"`+pw+`"}`)))
+		return rec.Code
+	}
+	for i := 0; i < loginAttemptLimit; i++ {
+		if code := try("wrong"); code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d = %d, want 401", i, code)
+		}
+	}
+	if code := try("wrong"); code != http.StatusTooManyRequests {
+		t.Fatalf("attempt past the limit = %d, want 429", code)
+	}
+	// The right password is refused too while the window is used up.
+	if code := try("admin-secret"); code != http.StatusTooManyRequests {
+		t.Fatalf("correct password past the limit = %d, want 429", code)
 	}
 }
 
@@ -175,103 +263,6 @@ func TestAdminPasswordChangeRevokesOtherSessions(t *testing.T) {
 	h.handleAdminAPI(newRec, newReq)
 	if newRec.Code != http.StatusOK {
 		t.Fatalf("replacement token status = %d, want 200 (body %s)", newRec.Code, newRec.Body.String())
-	}
-}
-
-func TestAdminLoginCookieIsSessionCookieWithoutRemember(t *testing.T) {
-	mustInitConfig(t)
-	config.SetPassword("admin-secret")
-
-	h := &Handler{}
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/login",
-		strings.NewReader(`{"password":"admin-secret","remember":false}`))
-	h.handleAdminAPI(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("login status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-
-	var cookie *http.Cookie
-	for _, c := range rec.Result().Cookies() {
-		if c.Name == sessionCookieName {
-			cookie = c
-		}
-	}
-	if cookie == nil {
-		t.Fatal("login did not set the session cookie")
-	}
-	// Without "remember me" the cookie must not be persisted to disk.
-	if !cookie.Expires.IsZero() {
-		t.Fatalf("cookie has Expires=%v, want a session cookie with no expiry", cookie.Expires)
-	}
-	if cookie.MaxAge != 0 {
-		t.Fatalf("cookie has MaxAge=%d, want 0 (session cookie)", cookie.MaxAge)
-	}
-	if !cookie.HttpOnly {
-		t.Fatal("cookie is not HttpOnly")
-	}
-	if cookie.SameSite != http.SameSiteLaxMode {
-		t.Fatalf("cookie SameSite = %v, want Lax", cookie.SameSite)
-	}
-}
-
-func TestAdminLoginCookiePersistsWithRemember(t *testing.T) {
-	mustInitConfig(t)
-	config.SetPassword("admin-secret")
-
-	h := &Handler{}
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/login",
-		strings.NewReader(`{"password":"admin-secret","remember":true}`))
-	h.handleAdminAPI(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("login status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-
-	var cookie *http.Cookie
-	for _, c := range rec.Result().Cookies() {
-		if c.Name == sessionCookieName {
-			cookie = c
-		}
-	}
-	if cookie == nil {
-		t.Fatal("login did not set the session cookie")
-	}
-	if cookie.Expires.IsZero() {
-		t.Fatal("remembered cookie has no expiry, want a persistent one")
-	}
-	if !cookie.HttpOnly {
-		t.Fatal("cookie is not HttpOnly")
-	}
-}
-
-func TestAdminLogoutClearsCookie(t *testing.T) {
-	mustInitConfig(t)
-	config.SetPassword("admin-secret")
-
-	h := &Handler{}
-	token, _ := h.adminSessions().issue(config.GetPassword(), false)
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/logout", nil)
-	req.Header.Set("X-Admin-Session", token)
-	h.handleAdminAPI(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("logout status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	var found bool
-	for _, c := range rec.Result().Cookies() {
-		if c.Name == sessionCookieName {
-			found = true
-			if c.Value != "" {
-				t.Fatalf("logout cookie still carries a token: %q", c.Value)
-			}
-			if c.MaxAge >= 0 {
-				t.Fatalf("logout cookie MaxAge = %d, want a negative (delete) value", c.MaxAge)
-			}
-		}
-	}
-	if !found {
-		t.Fatal("logout did not send a cookie-clearing Set-Cookie")
 	}
 }
 

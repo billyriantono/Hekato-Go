@@ -30,10 +30,14 @@ const (
 	sessionTTL = 12 * time.Hour
 	// rememberTTL is how long a "remember me" token lives.
 	rememberTTL = 30 * 24 * time.Hour
-	// sessionCookieName is the (optional) cookie mirror of the token header.
-	sessionCookieName = "hekato_admin_session"
-	// sessionHeaderName is the header the console sends its token in.
+	// sessionHeaderName is the header the console sends its token in. It is
+	// the only place a token is accepted: there is deliberately no cookie,
+	// because a cookie the browser attaches on its own makes the admin API
+	// forgeable from any same-site page (CSRF).
 	sessionHeaderName = "X-Admin-Session"
+	// loginAttemptLimit password attempts are allowed per loginAttemptWindow.
+	loginAttemptLimit  = 10
+	loginAttemptWindow = time.Minute
 )
 
 // adminSession is one issued session. Only the token's hash is kept, so a
@@ -43,12 +47,19 @@ type adminSession struct {
 	// pwHash fingerprints the admin password at issue time. When the password
 	// changes, existing sessions stop validating.
 	pwHash string
+	// remember records the "remember me" choice so a replacement token (after
+	// a password change) keeps the same lifetime.
+	remember bool
 }
 
 // sessionStore holds the live sessions keyed by SHA-256 of the token.
 type sessionStore struct {
 	mu       sync.Mutex
 	sessions map[string]adminSession
+
+	// Login throttle: a fixed window counting every password attempt.
+	attemptStart time.Time
+	attempts     int
 }
 
 func newSessionStore() *sessionStore {
@@ -75,8 +86,9 @@ func (s *sessionStore) issue(pw string, remember bool) (string, time.Time) {
 	defer s.mu.Unlock()
 	s.pruneLocked()
 	s.sessions[sessionKey(token)] = adminSession{
-		expires: expires,
-		pwHash:  passwordFingerprint(pw),
+		expires:  expires,
+		pwHash:   passwordFingerprint(pw),
+		remember: remember,
 	}
 	return token, expires
 }
@@ -117,7 +129,47 @@ func (s *sessionStore) revoke(token string) {
 	delete(s.sessions, sessionKey(token))
 }
 
-// revokeAll drops every session. Used when the admin password changes.
+// remembered reports whether the session for token was issued with
+// "remember me". Unknown tokens report false.
+func (s *sessionStore) remembered(token string) bool {
+	if token == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sessions[sessionKey(token)].remember
+}
+
+// allowLoginAttempt reserves one password attempt, or reports false when the
+// current window is used up. The attempt is counted before the password is
+// checked, so concurrent guesses cannot all slip past the limit.
+//
+// ponytail: one global window, not per client. The client IP is spoofable via
+// X-Forwarded-For, and a global cap needs no state per address. The cost is
+// that a guesser can keep the real admin out for up to loginAttemptWindow.
+func (s *sessionStore) allowLoginAttempt() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if time.Since(s.attemptStart) > loginAttemptWindow {
+		s.attemptStart, s.attempts = time.Now(), 0
+	}
+	if s.attempts >= loginAttemptLimit {
+		return false
+	}
+	s.attempts++
+	return true
+}
+
+// resetLoginAttempts clears the throttle after a successful login.
+func (s *sessionStore) resetLoginAttempts() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.attempts = 0
+}
+
+// revokeAll drops every session. Used when the admin password changes. The
+// fingerprint check in validate is not enough on its own: changing the
+// password back to an earlier value would revive that password's sessions.
 func (s *sessionStore) revokeAll() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
