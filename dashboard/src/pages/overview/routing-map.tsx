@@ -12,6 +12,8 @@ export type RequestLog = {
   model: string
   status: 'success' | 'error'
   requestedModel?: string
+  apiKeyId?: string
+  pool?: string
 }
 
 type RouteNode = {
@@ -20,11 +22,18 @@ type RouteNode = {
   successes: number
   failures: number
   hiddenModels?: number
+  endpoints?: string[]
 }
 
 const WINDOW_SECONDS = 10 * 60
 const REFETCH_MS = 3000
 const MAX_MODEL_NODES = 8
+// ponytail: five theme colours, cycled; a sixth concurrent key repeats the first.
+const KEY_COLORS = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)']
+const OTHER_MODELS = '__other_models__'
+
+const sourceKey = (log: RequestLog) => log.apiKeyId || ''
+const modelKey = (log: RequestLog) => (log.pool ? `${log.pool}/${log.model}` : log.model)
 
 function aggregate(logs: RequestLog[]) {
   const cutoff = Date.now() / 1000 - WINDOW_SECONDS
@@ -43,7 +52,17 @@ function aggregate(logs: RequestLog[]) {
     }
     return [...rows.values()].sort((a, b) => b.requests - a.requests || a.key.localeCompare(b.key))
   }
-  return { recent, sources: group((log) => log.endpoint), models: group((log) => log.model) }
+  const sources = group(sourceKey)
+  for (const source of sources) {
+    source.endpoints = [...new Set(recent.filter((log) => (sourceKey(log) || 'unknown') === source.key).map((log) => log.endpoint))]
+  }
+  // Request count per API key → model strand.
+  const edges = new Map<string, number>()
+  for (const log of recent) {
+    const id = `${sourceKey(log) || 'unknown'}\n${modelKey(log) || 'unknown'}`
+    edges.set(id, (edges.get(id) ?? 0) + 1)
+  }
+  return { recent, sources, models: group(modelKey), edges }
 }
 
 function compactModels(models: RouteNode[]) {
@@ -51,7 +70,7 @@ function compactModels(models: RouteNode[]) {
   const visible = models.slice(0, MAX_MODEL_NODES - 1)
   const hidden = models.slice(MAX_MODEL_NODES - 1)
   visible.push({
-    key: '__other_models__',
+    key: OTHER_MODELS,
     requests: hidden.reduce((sum, model) => sum + model.requests, 0),
     successes: hidden.reduce((sum, model) => sum + model.successes, 0),
     failures: hidden.reduce((sum, model) => sum + model.failures, 0),
@@ -72,6 +91,14 @@ function endpointLabel(endpoint: string) {
   return endpoint
 }
 
+function endpoints(node: RouteNode) {
+  return (node.endpoints ?? []).map(endpointLabel).join(' + ')
+}
+
+function truncate(text: string, max: number) {
+  return text.length > max ? text.slice(0, max - 1) + '…' : text
+}
+
 function tone(node: RouteNode) {
   if (!node.failures) return 'var(--success)'
   if (!node.successes) return 'var(--destructive)'
@@ -86,12 +113,19 @@ export function LiveRoutingMap({ logs: externalLogs }: { logs?: RequestLog[] } =
     refetchInterval: REFETCH_MS,
     enabled: !externalLogs,
   })
+  // Key names are admin-only; the key holder's usage page passes its own logs and falls back to endpoint labels.
+  const keysQ = useQuery({ queryKey: ['api-keys'], queryFn: () => get<{ apiKeys: { id: string; name?: string }[] }>('/api-keys'), enabled: !externalLogs })
+  const keyNames = useMemo(() => new Map((keysQ.data?.apiKeys ?? []).map((k) => [k.id, k.name || k.id.slice(0, 8)])), [keysQ.data])
   const rawLogs = externalLogs ?? query.data?.logs ?? []
   const routes = useMemo(() => aggregate(rawLogs), [rawLogs])
   const displayedModels = useMemo(() => compactModels(routes.models), [routes.models])
+  const sourceColor = (index: number) => KEY_COLORS[index % KEY_COLORS.length]
+  const sourceName = (source: RouteNode) =>
+    externalLogs ? endpoints(source) : (keyNames.get(source.key) ?? (source.key === 'unknown' ? t('overview.routing.noKey') : source.key.slice(0, 8)))
   const height = Math.max(360, Math.max(routes.sources.length, displayedModels.length) * 78 + 90)
   const totalFailures = routes.recent.reduce((sum, log) => sum + (log.status === 'error' ? 1 : 0), 0)
   const routerY = height / 2
+  const modelY = new Map(displayedModels.map((m, i) => [m.key, laneY(i, displayedModels.length, height)]))
 
   return (
     <Card className="overflow-hidden">
@@ -145,34 +179,52 @@ export function LiveRoutingMap({ logs: externalLogs }: { logs?: RequestLog[] } =
 
               {routes.sources.map((source, index) => {
                 const y = laneY(index, routes.sources.length, height)
-                const color = tone(source)
+                const color = sourceColor(index)
                 const path = `M 250 ${y} C 318 ${y}, 334 ${routerY}, 402 ${routerY}`
+                const name = sourceName(source)
                 return (
                   <g key={source.key}>
                     <path d={path} fill="none" stroke={color} strokeWidth="6" opacity="0.08" />
                     <path className="routing-flow" d={path} fill="none" stroke={color} strokeWidth="1.5" strokeDasharray="5 9" opacity="0.85" />
                     <rect x="42" y={y - 31} width="208" height="62" rx="9" fill="var(--card)" stroke={color} strokeOpacity="0.55" />
                     <circle cx="60" cy={y - 10} r="4" fill={color} />
-                    <text x="72" y={y - 6} fill="currentColor" fontSize="13" fontWeight="650">{endpointLabel(source.key)}</text>
-                    <text x="60" y={y + 16} fill="var(--muted-foreground)" fontSize="10" >
-                      {t('overview.routing.requestCount', formatNumber(source.requests))}
+                    <title>{name}</title>
+                    <text x="72" y={y - 6} fill="currentColor" fontSize="13" fontWeight="650">{truncate(name, 20)}</text>
+                    <text x="60" y={y + 16} fill={source.failures ? 'var(--destructive)' : 'var(--muted-foreground)'} fontSize="10">
+                      {truncate(externalLogs ? t('overview.routing.requestCount', formatNumber(source.requests)) : `${t('overview.routing.requestCount', formatNumber(source.requests))} · ${endpoints(source)}`, 32)}
                     </text>
                   </g>
                 )
               })}
 
+              {/* One strand per API key → model, in the key's colour, fanned so shared models show every key. */}
+              {routes.sources.flatMap((source, si) => {
+                const fan = (si - (routes.sources.length - 1) / 2) * 5
+                return [...routes.edges].flatMap(([id]) => {
+                  const [src, model] = id.split('\n')
+                  if (src !== source.key) return []
+                  const y = (modelY.get(model) ?? modelY.get(OTHER_MODELS) ?? routerY) + fan
+                  const path = `M 598 ${routerY + fan} C 662 ${routerY + fan}, 652 ${y}, 718 ${y}`
+                  const color = sourceColor(si)
+                  return [
+                    <g key={id}>
+                      <path d={path} fill="none" stroke={color} strokeWidth="6" opacity="0.08" />
+                      <path className="routing-flow" d={path} fill="none" stroke={color} strokeWidth="1.5" strokeDasharray="5 9" opacity="0.85" />
+                    </g>,
+                  ]
+                })
+              })}
+
               {displayedModels.map((model, index) => {
                 const y = laneY(index, displayedModels.length, height)
                 const color = tone(model)
-                const path = `M 598 ${routerY} C 662 ${routerY}, 652 ${y}, 718 ${y}`
                 return (
                   <g key={model.key}>
-                    <path d={path} fill="none" stroke={color} strokeWidth="6" opacity="0.08" />
-                    <path className="routing-flow" d={path} fill="none" stroke={color} strokeWidth="1.5" strokeDasharray="5 9" opacity="0.85" />
+                    <title>{model.key}</title>
                     <rect x="718" y={y - 31} width="240" height="62" rx="9" fill="var(--card)" stroke={color} strokeOpacity="0.62" />
                     <circle cx="736" cy={y - 11} r="4" fill={color} />
                     <text x="748" y={y - 7} fill="currentColor" fontSize="11" fontWeight="650" >
-                      {model.hiddenModels ? t('overview.routing.otherModels', model.hiddenModels) : model.key}
+                      {model.hiddenModels ? t('overview.routing.otherModels', model.hiddenModels) : truncate(model.key, 30)}
                     </text>
                     <text x="736" y={y + 16} fill="var(--muted-foreground)" fontSize="10" >
                       {t('overview.routing.modelStats', formatNumber(model.requests), formatNumber(model.successes), formatNumber(model.failures))}

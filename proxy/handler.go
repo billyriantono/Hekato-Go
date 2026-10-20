@@ -62,6 +62,9 @@ type RequestLog struct {
 	// key, e.g. the admin-panel probes). The public /v1/usage/logs endpoint
 	// filters on this so a key holder only sees their own routing.
 	ApiKeyID string `json:"apiKeyId,omitempty"`
+	// Pool is the serving account's pool prefix (custom prefix, else pool
+	// key), filled in on read so restored entries carry it too.
+	Pool string `json:"pool,omitempty"`
 }
 
 // logUserAgentMaxLen is the truncation ceiling for the User-Agent persisted on
@@ -2211,8 +2214,18 @@ func (h *Handler) getRequestLogs() []RequestLog {
 	if len(h.requestLogs) == 0 {
 		return []RequestLog{}
 	}
+	prefixes := config.GetPoolPrefixes()
+	pools := map[string]string{} // account ID → pool prefix
+	for _, acc := range config.GetAccounts() {
+		key := config.PoolKey(&acc)
+		if p := prefixes[key]; p != "" {
+			key = p
+		}
+		pools[acc.ID] = key
+	}
 	result := make([]RequestLog, len(h.requestLogs))
 	for i, e := range h.requestLogs {
+		e.Pool = pools[e.AccountID]
 		result[len(h.requestLogs)-1-i] = e
 	}
 	return result
