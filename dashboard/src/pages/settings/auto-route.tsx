@@ -78,6 +78,7 @@ export function AutoRouteSection() {
     onSuccess: () => {
       toast.success(t('settings.autoRoute.saved'))
       qc.invalidateQueries({ queryKey: ['auto-route'] })
+      qc.invalidateQueries({ queryKey: ['model-options'] }) // aliases are listed there
     },
     onError: (e) => toast.error(errorMessage(e, t('common.saveFailed'))),
   })
@@ -91,9 +92,10 @@ export function AutoRouteSection() {
   const candidates = dq.data?.candidates ?? []
   const optionsQ = useQuery({ queryKey: ['model-options'], queryFn: () => get<{ models: string[] }>('/model-options') })
   const all = optionsQ.data?.models ?? []
-  // "auto" and "<pool>/*" wildcards are request-side only; tiers and the blacklist need concrete models.
+  // "auto", its aliases and "<pool>/*" wildcards are request-side only; tiers and the blacklist need concrete models.
+  const virtual = new Set(['auto', ...(q.data?.aliases ?? []).map((a) => a.trim().toLowerCase())])
   const pools = all.filter((m) => m.endsWith('/*')).map((m) => m.slice(0, -1))
-  const models = all.filter((m) => m !== 'auto' && !m.endsWith('/*'))
+  const models = all.filter((m) => !virtual.has(m.toLowerCase()) && !m.endsWith('/*'))
   // The blacklist spells a pool-qualified model "<pool>:<model>"; a bare model applies to every provider.
   const blacklistOptions = models.map((m) => {
     const p = pools.find((p) => m.startsWith(p))

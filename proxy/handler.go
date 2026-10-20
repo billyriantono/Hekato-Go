@@ -889,7 +889,7 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 	return
 }
 
-// apiModelOptions lists what an admin picker can name: "auto", a
+// apiModelOptions lists what an admin picker can name: "auto" and its aliases, a
 // "<prefix>/*" wildcard per pool, then "<prefix>/<model>" for every model an
 // enabled account can route. Bare IDs are left out: they hid which pool owns a
 // model, and the cached catalogs still hold models the operator disabled.
@@ -900,6 +900,11 @@ func (h *Handler) apiModelOptions(w http.ResponseWriter, r *http.Request) {
 		if k := strings.ToLower(id); !seen[k] {
 			seen[k] = true
 			out = append(out, id)
+		}
+	}
+	for _, a := range config.GetAutoRouteConfig().Aliases {
+		if a = strings.TrimSpace(a); a != "" {
+			add(a)
 		}
 	}
 	pooled := h.poolModels()
