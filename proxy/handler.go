@@ -879,13 +879,11 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 	return
 }
 
-// apiModelOptions lists what an API-key allowlist can name, for the admin
-// picker: "auto", a "<prefix>/*" wildcard per pool, prefixed IDs of models
-// several pools offer, then every advertised model.
+// apiModelOptions lists what an admin picker can name: "auto", a
+// "<prefix>/*" wildcard per pool, then "<prefix>/<model>" for every model an
+// enabled account can route. Bare IDs are left out: they hid which pool owns a
+// model, and the cached catalogs still hold models the operator disabled.
 func (h *Handler) apiModelOptions(w http.ResponseWriter, r *http.Request) {
-	h.modelsCacheMu.RLock()
-	cached := h.cachedModels
-	h.modelsCacheMu.RUnlock()
 	out := []string{autoModelName}
 	seen := map[string]bool{autoModelName: true}
 	add := func(id string) {
@@ -894,24 +892,12 @@ func (h *Handler) apiModelOptions(w http.ResponseWriter, r *http.Request) {
 			out = append(out, id)
 		}
 	}
-	var bare []string
-	for _, m := range cached {
-		if !isAutoModel(m.ModelId) {
-			bare = append(bare, m.ModelId)
-		}
-	}
 	pooled := h.poolModels()
 	for _, pm := range pooled {
 		add(pm.prefix + "/*")
 	}
-	// Every pool-served model gets its qualified name, so a picker always shows
-	// which pool owns it; the bare name below still means "any pool".
 	for _, pm := range pooled {
 		add(pm.prefix + "/" + pm.model)
-	}
-	sort.Strings(bare)
-	for _, m := range bare {
-		add(m)
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{"models": out})
 }
