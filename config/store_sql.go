@@ -99,7 +99,7 @@ var accountColumns = []string{
 	"trial_usage_current", "trial_usage_limit", "trial_usage_percent", "trial_status", "trial_expires_at",
 	"request_count", "error_count", "last_used", "total_tokens", "total_credits",
 	"warmup_status", "warmup_error", "last_warmup", "probe_model", "extra_models", "enabled_models", "allow_paid_models",
-	"base_url", "compat_api_key", "compat_protocol",
+	"base_url", "compat_api_key", "compat_protocol", "max_concurrency",
 }
 
 // enabledModelsValue maps the tri-state allowlist onto one nullable column:
@@ -138,7 +138,7 @@ func accountValues(a *Account) []any {
 		a.TrialUsageCurrent, a.TrialUsageLimit, a.TrialUsagePercent, a.TrialStatus, a.TrialExpiresAt,
 		a.RequestCount, a.ErrorCount, a.LastUsed, a.TotalTokens, a.TotalCredits,
 		a.WarmupStatus, a.WarmupError, a.LastWarmup, a.ProbeModel, strings.Join(a.ExtraModels, "\n"), enabledModelsValue(a.EnabledModels), boolToInt(a.AllowPaidModels),
-		a.BaseURL, a.CompatAPIKey, a.CompatProtocol,
+		a.BaseURL, a.CompatAPIKey, a.CompatProtocol, a.MaxConcurrency,
 	}
 }
 
@@ -149,6 +149,7 @@ func scanAccount(rows *sql.Rows) (Account, error) {
 	var allowPaid sql.NullInt64
 	var enabledModels sql.NullString
 	var baseURL, compatKey, compatProto sql.NullString
+	var maxConc sql.NullInt64
 	dest := []any{
 		&a.ID, &a.Email, &a.UserId, &a.Nickname,
 		&a.AccessToken, &a.RefreshToken, &a.ClientID, &a.ClientSecret,
@@ -162,7 +163,7 @@ func scanAccount(rows *sql.Rows) (Account, error) {
 		&a.TrialUsageCurrent, &a.TrialUsageLimit, &a.TrialUsagePercent, &a.TrialStatus, &a.TrialExpiresAt,
 		&a.RequestCount, &a.ErrorCount, &a.LastUsed, &a.TotalTokens, &a.TotalCredits,
 		&a.WarmupStatus, &a.WarmupError, &a.LastWarmup, &a.ProbeModel, &extraModels, &enabledModels, &allowPaid,
-		&baseURL, &compatKey, &compatProto,
+		&baseURL, &compatKey, &compatProto, &maxConc,
 	}
 	if err := rows.Scan(dest...); err != nil {
 		return Account{}, err
@@ -170,6 +171,7 @@ func scanAccount(rows *sql.Rows) (Account, error) {
 	a.Enabled = enabled != 0
 	a.AllowPaidModels = allowPaid.Int64 != 0
 	a.BaseURL, a.CompatAPIKey, a.CompatProtocol = baseURL.String, compatKey.String, compatProto.String
+	a.MaxConcurrency = int(maxConc.Int64)
 	if extraModels != "" {
 		a.ExtraModels = strings.Split(extraModels, "\n")
 	}
@@ -237,6 +239,7 @@ func (s *sqlStore) migrate() error {
 			warmup_status TEXT DEFAULT '', warmup_error TEXT DEFAULT '', last_warmup BIGINT DEFAULT 0,
 			probe_model TEXT DEFAULT '', extra_models TEXT DEFAULT '', enabled_models TEXT, allow_paid_models INTEGER DEFAULT 0,
 			base_url TEXT DEFAULT '', compat_api_key TEXT DEFAULT '', compat_protocol TEXT DEFAULT '',
+			max_concurrency BIGINT DEFAULT 0,
 			position BIGINT
 		)`,
 		`CREATE TABLE IF NOT EXISTS api_keys (
@@ -293,7 +296,7 @@ func (s *sqlStore) migrate() error {
 	if err := addColumn("api_keys", "allowed_models", "TEXT DEFAULT ''"); err != nil {
 		return err
 	}
-	for col, typ := range map[string]string{"warmup_status": "TEXT DEFAULT ''", "warmup_error": "TEXT DEFAULT ''", "last_warmup": "BIGINT DEFAULT 0", "probe_model": "TEXT DEFAULT ''", "extra_models": "TEXT DEFAULT ''", "enabled_models": "TEXT", "allow_paid_models": "INTEGER DEFAULT 0", "base_url": "TEXT DEFAULT ''", "compat_api_key": "TEXT DEFAULT ''", "compat_protocol": "TEXT DEFAULT ''"} {
+	for col, typ := range map[string]string{"warmup_status": "TEXT DEFAULT ''", "warmup_error": "TEXT DEFAULT ''", "last_warmup": "BIGINT DEFAULT 0", "probe_model": "TEXT DEFAULT ''", "extra_models": "TEXT DEFAULT ''", "enabled_models": "TEXT", "allow_paid_models": "INTEGER DEFAULT 0", "base_url": "TEXT DEFAULT ''", "compat_api_key": "TEXT DEFAULT ''", "compat_protocol": "TEXT DEFAULT ''", "max_concurrency": "BIGINT DEFAULT 0"} {
 		if err := addColumn("accounts", col, typ); err != nil {
 			return err
 		}

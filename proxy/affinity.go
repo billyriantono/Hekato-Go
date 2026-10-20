@@ -74,8 +74,18 @@ func (a *accountAffinity) SetWithModel(key, accountID, model string) {
 }
 
 // pickAccount returns the pinned account for the conversation when it is still
-// eligible, otherwise the next round-robin account (and pins it).
+// eligible, otherwise the next round-robin account (and pins it). Accounts with
+// a free concurrency slot win; only when all are saturated does it pick one to
+// queue on.
 func (h *Handler) pickAccount(affinityKey, model string, excluded map[string]bool, filter pool.AccountFilter) *config.Account {
+	free := func(a *config.Account) bool { return accountHasFreeSlot(a) && (filter == nil || filter(a)) }
+	if acc := h.pickAccountFiltered(affinityKey, model, excluded, free); acc != nil {
+		return acc
+	}
+	return h.pickAccountFiltered(affinityKey, model, excluded, filter)
+}
+
+func (h *Handler) pickAccountFiltered(affinityKey, model string, excluded map[string]bool, filter pool.AccountFilter) *config.Account {
 	if id := h.affinity.Get(affinityKey); id != "" && !excluded[id] {
 		if acc := h.pool.GetForModelByID(id, model, filter); acc != nil {
 			return acc

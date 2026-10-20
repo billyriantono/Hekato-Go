@@ -22,6 +22,7 @@ export type Account = {
   hasToken: boolean
   machineId: string
   weight: number
+  maxConcurrency?: number
   overageStatus: string
   overageCapability: string
   overageCap: number

@@ -463,9 +463,15 @@ search:
 	// Slow pairs yield to the rest of their tier; a tier of only slow pairs
 	// still serves rather than pushing the request to another tier.
 	slowSkipped := 0
+	prioritized := 0
 	if fast := r.withoutSlow(cands); len(fast) > 0 {
 		slowSkipped = len(cands) - len(fast)
 		cands = fast
+		// Priority accounts (weight 2+) take the request while they are not
+		// slow and have a free concurrency slot; otherwise the tier serves as usual.
+		if top := onlyPriority(cands); len(top) > 0 {
+			prioritized, cands = len(top), top
+		}
 	}
 
 	now := time.Now()
@@ -518,6 +524,9 @@ search:
 	if slowSkipped > 0 {
 		reason += fmt.Sprintf(" slow-skipped=%d", slowSkipped)
 	}
+	if prioritized > 0 {
+		reason += fmt.Sprintf(" priority=%d", prioritized)
+	}
 	d := routeDecision{
 		Time: now.Unix(), Endpoint: endpoint, Tier: tierNames[usedTier], Model: pick.model,
 		AccountID: pick.account.ID, Score: math.Round(pickScore*1000) / 1000, Explored: explored,
@@ -528,6 +537,33 @@ search:
 	}
 	r.pushLocked(d)
 	return &d
+}
+
+// onlyPriority keeps the candidates on the highest-weight accounts (weight 2+)
+// that have a free concurrency slot; nil when there are none.
+func onlyPriority(cands []routeCandidate) []routeCandidate {
+	best := 1
+	var out []routeCandidate
+	for _, c := range cands {
+		w := c.account.Weight
+		if w < best || w < 2 || !accountHasFreeSlot(c.account) {
+			continue
+		}
+		if w > best {
+			best, out = w, out[:0]
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// priorityWaiting reports whether an idle, non-slow priority account outranks
+// pinned in the request's tier, so a pin on a lower-weight account yields to it.
+func (r *autoRouter) priorityWaiting(p *pool.AccountPool, cfg config.AutoRouteConfig, sig routeSignals, filter pool.AccountFilter, pinned *config.Account) bool {
+	tiers := [3][]string{cfg.Fast, cfg.Balanced, cfg.Strong}
+	cands := onlyFitsContext(r.withoutSlow(r.candidates(p, tiers[effectiveTier(cfg, sig)], filter, cfg)), sig.InputTokens)
+	top := onlyPriority(cands)
+	return len(top) > 0 && top[0].account.Weight > pinned.Weight
 }
 
 // exploreMaturity is the number of observations across a candidate set beyond
@@ -879,7 +915,10 @@ func (h *Handler) resolveAutoModel(w http.ResponseWriter, endpoint, model string
 			// that opened with "hi" and turned into a refactor), or when the
 			// pair has been quarantined or marked slow. Otherwise the pin — which decides the
 			// overwhelming majority of requests — would outlive its own premise.
-			keep := h.pool.GetForModelByID(accID, pinnedModel, requestFilter(w, cap)) != nil &&
+			// It also yields when its account is saturated or a priority account is idle.
+			pinnedAcc := h.pool.GetForModelByID(accID, pinnedModel, requestFilter(w, cap))
+			keep := pinnedAcc != nil && accountHasFreeSlot(pinnedAcc) &&
+				!h.autoRouter.priorityWaiting(h.pool, cfg, sig, requestFilter(w, cap), pinnedAcc) &&
 				modelFitsContext(pinnedModel, sig.InputTokens) &&
 				!h.autoRouter.isQuarantined(accID, pinnedModel) &&
 				!h.autoRouter.isSlow(accID, pinnedModel) &&

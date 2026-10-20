@@ -81,6 +81,9 @@ type Account struct {
 
 	// Priority weight for load balancing (higher = more requests)
 	Weight int `json:"weight,omitempty"` // 0 or 1 = normal, 2+ = higher priority
+	// MaxConcurrency caps in-flight upstream requests on this account (0 = unlimited),
+	// for upstreams that only take a few parallel calls (e.g. a friend's local model).
+	MaxConcurrency int `json:"maxConcurrency,omitempty"`
 	// ProbeModel is the model used for this account's Test button and warmup
 	// probe ("" = global default test model, else a cheap advertised model).
 	ProbeModel string `json:"probeModel,omitempty"`
