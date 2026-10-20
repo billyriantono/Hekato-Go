@@ -6,6 +6,8 @@ export type Account = {
   nickname: string
   authMethod: string
   providerKind?: string
+  /** Account pool key ("codebuddy-cn"); "" for OpenAI/Anthropic-compatible accounts. */
+  pool?: string
   probeModel?: string
   extraModels?: string[]
   enabledModels?: string[] | null

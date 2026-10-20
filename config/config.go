@@ -18,6 +18,7 @@ import (
 	"hekato-go/logger"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -229,6 +230,10 @@ type Config struct {
 	// solely because usageCurrent >= usageLimit.
 	AllowOverUsage bool `json:"allowOverUsage,omitempty"`
 
+	// PoolPrefixes maps a pool key ("codebuddy-cn") to a custom model prefix
+	// ("cn") clients may send instead of the key. See config/pool.go.
+	PoolPrefixes map[string]string `json:"poolPrefixes,omitempty"`
+
 	// Proxy configuration: optional outbound proxy for Kiro API requests
 	// Format: "socks5://host:port", "socks5://user:pass@host:port",
 	//         "http://host:port",  "http://user:pass@host:port"
@@ -324,8 +329,33 @@ type AccountInfo struct {
 	TrialExpiresAt    int64
 }
 
-// Version current version
-const Version = "1.1.2"
+// Version is stamped at build time from the latest git tag
+// (-ldflags "-X hekato-go/config.Version=$(git describe --tags)"; see the
+// Makefile, Dockerfile and CI). Unstamped builds report "dev-<commit>".
+var Version = "dev"
+
+func init() {
+	Version = strings.TrimPrefix(Version, "v")
+	if Version != "dev" {
+		return
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return
+	}
+	var rev, dirty string
+	for _, s := range info.Settings {
+		switch {
+		case s.Key == "vcs.revision" && len(s.Value) >= 7:
+			rev = s.Value[:7]
+		case s.Key == "vcs.modified" && s.Value == "true":
+			dirty = "-dirty"
+		}
+	}
+	if rev != "" {
+		Version = "dev-" + rev + dirty
+	}
+}
 
 var (
 	cfg     *Config

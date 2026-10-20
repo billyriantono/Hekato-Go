@@ -1,5 +1,5 @@
 {
-  "version": "1.1.2",
-  "changelog": "✨ Added and fixed several improvements across the project.\n✨ 新增并修复了一些内容，包含若干功能改进与问题修复。",
+  "version": "1.1.6",
+  "changelog": "🐛 Fix: API-key allowed models written with a custom pool prefix (e.g. cbcn/*) now allow those models and list them in /v1/models.\n🐛 修复：API Key 允许的模型使用自定义账号池前缀（如 cbcn/*）时，现在可以正常请求并在 /v1/models 中列出。",
   "download": "https://github.com/billyriantono/Hekato-Go"
 }

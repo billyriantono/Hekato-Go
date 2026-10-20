@@ -1,0 +1,19 @@
+name: Release
+
+# Every vX.Y.Z tag becomes a GitHub Release; running instances poll
+# releases/latest to tell their operator an update is out.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes

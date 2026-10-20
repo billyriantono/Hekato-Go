@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -83,6 +84,10 @@ type Handler struct {
 	startTime       int64
 	stopRefresh     chan struct{}
 	stopStatsSaver  chan struct{}
+	// Full metadata is account-scoped so refreshes can remove capabilities as
+	// well as IDs. Protected by modelsCacheMu along with the aggregate below.
+	accountModels map[string][]ModelInfo
+
 	// 模型缓存
 	cachedModels    []ModelInfo
 	modelsCacheMu   sync.RWMutex
@@ -117,6 +122,37 @@ type logMetaWriter struct {
 	// reroute picks another (account, model) for an "auto" request after a
 	// failed attempt; nil for explicit models. See armAutoReroute.
 	reroute func(accountID, model string) string
+	pool    string // pool key pinned by a "<pool>/model" request; "" = any pool
+}
+
+// pinModelPool strips an optional pool prefix ("codebuddy-cn/x", or a custom
+// prefix) off model and pins the request to that pool. The API-key allowlist
+// is checked against the pool-qualified name; a bare allowlist entry still
+// covers the model in every pool. Returns the bare model and whether the key
+// may request it.
+func pinModelPool(w http.ResponseWriter, apiKeyID, model string) (string, bool) {
+	key, bare := config.SplitPoolModel(model)
+	if key == "" {
+		return model, keyAllowsModel(apiKeyID, model)
+	}
+	if apiKeyID != "" && !config.GetApiKeyEntry(apiKeyID).AllowsPoolModel(key, bare) {
+		return bare, false
+	}
+	if m := findLogMeta(w); m != nil {
+		m.pool = key
+	}
+	return bare, true
+}
+
+// requestFilter is capabilityFilter narrowed to the request's pinned pool.
+func requestFilter(w http.ResponseWriter, cap providerCapability) pool.AccountFilter {
+	f := capabilityFilter(cap)
+	m := findLogMeta(w)
+	if m == nil || m.pool == "" {
+		return f
+	}
+	key := m.pool
+	return func(acc *config.Account) bool { return config.PoolKey(acc) == key && f(acc) }
 }
 
 // findLogMeta unwraps to the logMetaWriter bound by withClientLogMeta (nil if none).
@@ -406,6 +442,7 @@ func NewHandler() *Handler {
 	h.autoRouter.vision = h.modelHasVision
 	h.autoRouter.Load(config.Blobs())
 	go h.runTelemetryFlusher()
+	go runUpdateChecker()
 	// 从持久化存储加载最近请求日志，使重启后 /logs 与 dashboard telemetry 不再清空。
 	// 容量不足 (e.g. 历史未持久化、或后端未实现 RequestLogStore) 时静默回退到内存环。
 	if rs := config.RequestLogs(); rs != nil {
@@ -800,7 +837,11 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 	)
 	// A key with a model allowlist only sees what it may call (thinking
 	// variants follow their base ID).
-	if entry, err := h.authenticate(r); err == nil && entry != nil && len(entry.AllowedModels) > 0 {
+	entry, err := h.authenticate(r)
+	if err != nil {
+		entry = nil // AllowsModel on nil allows everything
+	}
+	if entry != nil && len(entry.AllowedModels) > 0 {
 		kept := models[:0]
 		for _, m := range models {
 			id, _ := m["id"].(string)
@@ -811,6 +852,24 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 		models = kept
 	}
+	// Pool-prefixed IDs, only where they add something: the model is offered
+	// by several pools (the bare ID can't say which), or the key reaches it
+	// only through a pool-qualified allowlist entry ("codebuddy-cn/*").
+	image := make(map[string]bool, len(cached))
+	for _, m := range cached {
+		image[strings.ToLower(m.ModelId)] = modelSupportsImage(m.InputTypes)
+	}
+	for _, pm := range h.poolModels() {
+		bareOK := entry.AllowsModel(pm.model)
+		if bareOK && !pm.multi || !bareOK && !entry.AllowsPoolModel(pm.key, pm.model) {
+			continue
+		}
+		id := pm.prefix + "/" + pm.model
+		models = append(models,
+			buildModelInfo(id, pm.key, image[pm.model]),
+			buildModelInfo(id+thinkingSuffix, pm.key, image[pm.model]),
+		)
+	}
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -818,6 +877,95 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 		"data":   models,
 	})
 	return
+}
+
+// apiModelOptions lists what an API-key allowlist can name, for the admin
+// picker: "auto", a "<prefix>/*" wildcard per pool, prefixed IDs of models
+// several pools offer, then every advertised model.
+func (h *Handler) apiModelOptions(w http.ResponseWriter, r *http.Request) {
+	h.modelsCacheMu.RLock()
+	cached := h.cachedModels
+	h.modelsCacheMu.RUnlock()
+	out := []string{autoModelName}
+	seen := map[string]bool{autoModelName: true}
+	add := func(id string) {
+		if k := strings.ToLower(id); !seen[k] {
+			seen[k] = true
+			out = append(out, id)
+		}
+	}
+	var bare []string
+	for _, m := range cached {
+		if !isAutoModel(m.ModelId) {
+			bare = append(bare, m.ModelId)
+		}
+	}
+	pooled := h.poolModels()
+	for _, pm := range pooled {
+		add(pm.prefix + "/*")
+	}
+	for _, pm := range pooled {
+		if pm.multi {
+			add(pm.prefix + "/" + pm.model)
+		}
+	}
+	sort.Strings(bare)
+	for _, m := range bare {
+		add(m)
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"models": out})
+}
+
+type pooledModel struct {
+	key, prefix, model string
+	multi              bool // offered by more than one pool
+}
+
+// poolModels lists every (pool, model) pair the routable accounts can serve,
+// honouring each account's enabled-models allowlist, sorted by prefix then
+// model. prefix is the pool's custom prefix, or its key when none is set.
+func (h *Handler) poolModels() []pooledModel {
+	pools := map[string]map[string]bool{} // model → pool keys
+	for _, acc := range h.pool.GetAllAccounts() {
+		key := config.PoolKey(&acc)
+		if key == "" {
+			continue
+		}
+		var enabled map[string]bool
+		if list := h.pool.EnabledModels(acc.ID); list != nil {
+			enabled = make(map[string]bool, len(list))
+			for _, m := range list {
+				enabled[m] = true
+			}
+		}
+		for _, m := range h.pool.GetModelList(acc.ID) {
+			if isAutoModel(m) || enabled != nil && !enabled[m] {
+				continue
+			}
+			if pools[m] == nil {
+				pools[m] = map[string]bool{}
+			}
+			pools[m][key] = true
+		}
+	}
+	prefixes := config.GetPoolPrefixes()
+	var out []pooledModel
+	for m, keys := range pools {
+		for k := range keys {
+			p := prefixes[k]
+			if p == "" {
+				p = k
+			}
+			out = append(out, pooledModel{key: k, prefix: p, model: m, multi: len(keys) > 1})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].prefix != out[j].prefix {
+			return out[i].prefix < out[j].prefix
+		}
+		return out[i].model < out[j].model
+	})
+	return out
 }
 
 func buildAnthropicModelsResponse(cached []ModelInfo, thinkingSuffix string) []map[string]interface{} {
@@ -924,7 +1072,7 @@ func (h *Handler) refreshModelsCache() {
 		return
 	}
 
-	aggregated := make([]ModelInfo, 0)
+	refreshed := make(map[string][]ModelInfo)
 	for i := range accounts {
 		account := &accounts[i]
 		if err := h.ensureValidToken(account); err != nil {
@@ -939,27 +1087,18 @@ func (h *Handler) refreshModelsCache() {
 			h.handleAccountFailure(account, err)
 			continue
 		}
-		// The per-account catalog stays complete — the admin panel offers it as
-		// the menu to pick an allowlist from — but only models this account may
-		// actually serve are advertised to clients.
-		modelIDs := make([]string, 0, len(models))
-		routable := make([]ModelInfo, 0, len(models))
-		for _, m := range models {
-			modelIDs = append(modelIDs, m.ModelId)
-			if account.ServesModel(m.ModelId) {
-				routable = append(routable, m)
-			}
-		}
-		h.pool.SetModelList(account.ID, modelIDs)
-		aggregated = mergeUniqueModels(aggregated, routable)
+		refreshed[account.ID] = models
 	}
 
-	if len(aggregated) > 0 {
+	if len(refreshed) > 0 {
 		h.modelsCacheMu.Lock()
-		h.cachedModels = aggregated
-		h.modelsCacheTime = time.Now().Unix()
+		for id, models := range refreshed {
+			h.setAccountModelsLocked(id, models)
+		}
+		h.rebuildModelsCacheLocked()
+		count := len(h.cachedModels)
 		h.modelsCacheMu.Unlock()
-		logger.Infof("[ModelsCache] Cached %d models", len(aggregated))
+		logger.Infof("[ModelsCache] Cached %d models", count)
 	}
 }
 
@@ -973,21 +1112,11 @@ func (h *Handler) fetchAndCacheAccountModels(account *config.Account) error {
 	if err != nil {
 		return err
 	}
-	modelIDs := make([]string, 0, len(models))
-	routable := make([]ModelInfo, 0, len(models))
-	for _, m := range models {
-		modelIDs = append(modelIDs, m.ModelId)
-		if account.ServesModel(m.ModelId) {
-			routable = append(routable, m)
-		}
-	}
-	h.pool.SetModelList(account.ID, modelIDs)
-
-	// 合并到聚合缓存（仅该账号允许路由的模型）
 	h.modelsCacheMu.Lock()
-	h.cachedModels = mergeUniqueModels(h.cachedModels, routable)
-	h.modelsCacheTime = time.Now().Unix()
+	h.setAccountModelsLocked(account.ID, models)
+	h.rebuildModelsCacheLocked()
 	h.modelsCacheMu.Unlock()
+	h.pool.PersistModelLists(config.Blobs())
 
 	logger.Infof("[ModelsCache] Refreshed %d models for account %s", len(models), account.Email)
 	return nil
@@ -1040,6 +1169,56 @@ func (h *Handler) apiRefreshAllAccountsModels(w http.ResponseWriter, r *http.Req
 		"refreshed": cachedLen,
 		"failed":    0,
 	})
+}
+
+// setAccountModelsLocked replaces an account's complete catalog, including
+// metadata. The caller holds modelsCacheMu so pool IDs and snapshots agree
+// when rebuilding the aggregate. Operator allowlists are applied only there.
+func (h *Handler) setAccountModelsLocked(id string, models []ModelInfo) {
+	if h.accountModels == nil {
+		h.accountModels = make(map[string][]ModelInfo)
+	}
+	h.accountModels[id] = models
+	ids := make([]string, 0, len(models))
+	for _, model := range models {
+		ids = append(ids, model.ModelId)
+	}
+	h.pool.SetModelList(id, ids)
+}
+
+// rebuildModelsCacheLocked unions current account metadata, not the old union,
+// so the last account dropping image support also removes that capability.
+// Restored pool catalogs have IDs but no metadata snapshot yet. Preserve their
+// existing metadata where available, or advertise basic text-only entries.
+func (h *Handler) rebuildModelsCacheLocked() {
+	previous := make(map[string]ModelInfo, len(h.cachedModels))
+	for _, model := range h.cachedModels {
+		previous[strings.ToLower(strings.TrimSpace(model.ModelId))] = model
+	}
+	aggregated := make([]ModelInfo, 0)
+	for _, account := range config.GetEnabledAccounts() {
+		metadata := previous
+		if models, ok := h.accountModels[account.ID]; ok {
+			metadata = make(map[string]ModelInfo, len(models))
+			for _, model := range models {
+				metadata[strings.ToLower(strings.TrimSpace(model.ModelId))] = model
+			}
+		}
+		routable := make([]ModelInfo, 0)
+		for _, id := range h.pool.GetModelList(account.ID) {
+			if !account.ServesModel(id) {
+				continue
+			}
+			model, ok := metadata[strings.ToLower(strings.TrimSpace(id))]
+			if !ok {
+				model = ModelInfo{ModelId: id, ModelName: id, InputTypes: []string{"text"}}
+			}
+			routable = append(routable, model)
+		}
+		aggregated = mergeUniqueModels(aggregated, routable)
+	}
+	h.cachedModels = aggregated
+	h.modelsCacheTime = time.Now().Unix()
 }
 
 func mergeUniqueModels(existing []ModelInfo, incoming []ModelInfo) []ModelInfo {
@@ -1189,7 +1368,8 @@ func (h *Handler) handleClaudeMessagesInternal(w http.ResponseWriter, r *http.Re
 	// Stream or non-stream. Provider-specific conversion happens after account
 	// selection inside the upstream routing layer.
 	apiKeyID := apiKeyIDFromContext(r.Context())
-	if !keyAllowsModel(apiKeyID, req.Model) {
+	var allowed bool
+	if req.Model, allowed = pinModelPool(w, apiKeyID, req.Model); !allowed {
 		h.sendClaudeError(w, 403, "permission_error", "model "+req.Model+" is not enabled for this API key")
 		return
 	}
@@ -1265,7 +1445,7 @@ func (h *Handler) handleClaudeStream(w http.ResponseWriter, req *ClaudeRequest, 
 				model, req.Model, excluded = next, next, map[string]bool{}
 			}
 		}
-		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capClaudeChat))
+		account := h.pickAccount(affinityKey, model, excluded, requestFilter(w, capClaudeChat))
 		if account == nil {
 			break
 		}
@@ -2068,7 +2248,7 @@ func (h *Handler) handleClaudeNonStream(w http.ResponseWriter, req *ClaudeReques
 				model, req.Model, excluded = next, next, map[string]bool{}
 			}
 		}
-		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capClaudeChat))
+		account := h.pickAccount(affinityKey, model, excluded, requestFilter(w, capClaudeChat))
 		if account == nil {
 			break
 		}
@@ -2229,7 +2409,8 @@ func (h *Handler) handleOpenAIChat(w http.ResponseWriter, r *http.Request) {
 	estimatedInputTokens := estimateOpenAIRequestInputTokens(&req)
 
 	apiKeyID := apiKeyIDFromContext(r.Context())
-	if !keyAllowsModel(apiKeyID, req.Model) {
+	var allowed bool
+	if req.Model, allowed = pinModelPool(w, apiKeyID, req.Model); !allowed {
 		h.sendOpenAIError(w, 403, "permission_error", "model "+req.Model+" is not enabled for this API key")
 		return
 	}
@@ -2276,7 +2457,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 				model, req.Model, excluded = next, next, map[string]bool{}
 			}
 		}
-		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capOpenAIChat))
+		account := h.pickAccount(affinityKey, model, excluded, requestFilter(w, capOpenAIChat))
 		if account == nil {
 			break
 		}
@@ -2713,7 +2894,7 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, req *OpenAIReques
 				model, req.Model, excluded = next, next, map[string]bool{}
 			}
 		}
-		account := h.pickAccount(affinityKey, model, excluded, capabilityFilter(capOpenAIChat))
+		account := h.pickAccount(affinityKey, model, excluded, requestFilter(w, capOpenAIChat))
 		if account == nil {
 			break
 		}
@@ -2954,6 +3135,8 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiUpdateAccount(w, r, strings.TrimPrefix(path, "/accounts/"))
 	case path == "/auth/credentials" && r.Method == "POST":
 		h.apiImportCredentials(w, r)
+	case path == "/model-options" && r.Method == "GET":
+		h.apiModelOptions(w, r)
 	case path == "/models-dev" && r.Method == "GET":
 		h.apiGetModelsDev(w, r)
 	case path == "/status" && r.Method == "GET":
@@ -3061,6 +3244,7 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 			"authMethod":        a.AuthMethod,
 			"provider":          displayProvider,
 			"providerKind":      string(kind),
+			"pool":              config.PoolKey(&a),
 			"region":            a.Region,
 			"enabled":           a.Enabled,
 			"banStatus":         a.BanStatus,
@@ -3386,10 +3570,69 @@ func (h *Handler) apiSetAccountOverage(w http.ResponseWriter, r *http.Request, i
 }
 
 // apiBatchAccounts 批量操作账号（启用/禁用/刷新）
+// applyModelToggles applies a pool-wide enable/disable to one account's
+// allowlist (nil = everything in catalog routes). Like the detail sheet, an
+// account without an allowlist starts from its catalog, and a list covering
+// the whole catalog collapses back to nil. ok is false when nothing changes,
+// including a disable on an account whose catalog is not cached yet (starting
+// from an empty catalog would silently disable everything).
+func applyModelToggles(current, catalog, enable, disable []string) ([]string, bool) {
+	if current == nil && (len(disable) == 0 || len(catalog) == 0) {
+		return nil, false
+	}
+	base := current
+	if base == nil {
+		base = catalog
+	}
+	set := make(map[string]bool, len(base))
+	for _, m := range base {
+		set[strings.ToLower(strings.TrimSpace(m))] = true
+	}
+	for _, m := range disable {
+		delete(set, strings.ToLower(strings.TrimSpace(m)))
+	}
+	for _, m := range enable {
+		if m = strings.ToLower(strings.TrimSpace(m)); m != "" {
+			set[m] = true
+		}
+	}
+	all := len(catalog) > 0
+	for _, m := range catalog {
+		all = all && set[strings.ToLower(m)]
+	}
+	var next []string
+	if !all {
+		next = make([]string, 0, len(set))
+		for m := range set {
+			next = append(next, m)
+		}
+		sort.Strings(next)
+	}
+	if (next == nil) == (current == nil) && slices.Equal(next, sortedLower(current)) {
+		return nil, false
+	}
+	return next, true
+}
+
+func sortedLower(list []string) []string {
+	if list == nil {
+		return nil
+	}
+	out := make([]string, len(list))
+	for i, m := range list {
+		out[i] = strings.ToLower(strings.TrimSpace(m))
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IDs    []string `json:"ids"`
-		Action string   `json:"action"` // "enable", "disable", "refresh"
+		Action string   `json:"action"` // "enable", "disable", "refresh", "models"
+		// action "models": switch these models on / off on every listed account.
+		Enable  []string `json:"enable,omitempty"`
+		Disable []string `json:"disable,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -3434,6 +3677,21 @@ func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 			}(acc)
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "count": len(req.IDs)})
+
+	case "models":
+		changed := 0
+		for _, a := range config.GetAccounts() {
+			if !slices.Contains(req.IDs, a.ID) {
+				continue
+			}
+			if list, ok := applyModelToggles(a.EnabledModels, h.pool.GetModelList(a.ID), req.Enable, req.Disable); ok {
+				a.EnabledModels = list
+				config.UpdateAccount(a.ID, a)
+				changed++
+			}
+		}
+		h.pool.Reload()
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "count": changed})
 
 	case "refresh":
 		successCount := 0
@@ -3864,6 +4122,7 @@ func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
 		"warmupRecover":         warmupRecover,
 		"testModel":             config.GetTestModel(),
 		"customModelIds":        map[string][]string{"codebuddy": config.GetCustomModelIDs("codebuddy")},
+		"poolPrefixes":          config.GetPoolPrefixes(),
 	})
 }
 
@@ -3923,6 +4182,7 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		WarmupRecover         *bool                `json:"warmupRecover,omitempty"`
 		TestModel             *string              `json:"testModel,omitempty"`
 		CustomModelIDs        *map[string][]string `json:"customModelIds,omitempty"`
+		PoolPrefixes          *map[string]string   `json:"poolPrefixes,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -4008,6 +4268,13 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 更新超额使用设置
+	if req.PoolPrefixes != nil {
+		if err := config.UpdatePoolPrefixes(*req.PoolPrefixes); err != nil {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
 	if req.AllowOverUsage != nil {
 		if err := config.UpdateAllowOverUsage(*req.AllowOverUsage); err != nil {
 			w.WriteHeader(500)
@@ -4363,16 +4630,11 @@ func (h *Handler) apiGetAccountModels(w http.ResponseWriter, r *http.Request, id
 		return
 	}
 
-	// 同步更新路由缓存
-	modelIDs := make([]string, 0, len(models))
-	for _, m := range models {
-		modelIDs = append(modelIDs, m.ModelId)
-	}
-	h.pool.SetModelList(id, modelIDs)
 	h.modelsCacheMu.Lock()
-	h.cachedModels = mergeUniqueModels(h.cachedModels, models)
-	h.modelsCacheTime = time.Now().Unix()
+	h.setAccountModelsLocked(id, models)
+	h.rebuildModelsCacheLocked()
 	h.modelsCacheMu.Unlock()
+	h.pool.PersistModelLists(config.Blobs())
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
@@ -4777,10 +5039,11 @@ func generateRelaySecret() string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-// apiGetVersion 获取版本信息
+// apiGetVersion 获取版本信息, plus the latest release when a check has run.
 func (h *Handler) apiGetVersion(w http.ResponseWriter, r *http.Request) {
-	json.NewEncoder(w).Encode(map[string]string{
+	json.NewEncoder(w).Encode(map[string]interface{}{
 		"version": config.Version,
+		"update":  latestUpdate.Load(),
 	})
 }
 

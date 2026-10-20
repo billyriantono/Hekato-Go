@@ -3,6 +3,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef, RowSelectionState } from '@tanstack/react-table'
 import {
   LuBan,
+  LuChevronDown,
+  LuChevronRight,
   LuCircleCheck,
   LuCircleOff,
   LuDownload,
@@ -13,6 +15,7 @@ import {
   LuLoader,
   LuPlus,
   LuRefreshCw,
+  LuSlidersHorizontal,
   LuTrash2,
   LuUpload,
   LuUsers,
@@ -31,12 +34,13 @@ import {
 import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
 import { ConfirmDialog, EmptyState, LoadingBlock, PageHeader, StatCard, StatusDot, errorMessage, formatNumber, formatTime } from '@/components/common'
-import { DataTable } from '@/components/data-table'
+import { DataTable, type GroupRow } from '@/components/data-table'
 import { del, get, post, put } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
 import { AddAccountDialog, type Method } from './add-account-dialog'
 import { AccountDetailSheet } from './detail-sheet'
 import { ExportDialog } from './export-dialog'
+import { PoolDialog } from './pool-dialog'
 import { accountStatus, ago, countdown, pct, statusKey, statusTone, subscriptionLabel, warmupCounts, type Account, type WarmupResult } from './shared'
 import { SimpleSelect } from './simple-select'
 
@@ -64,6 +68,7 @@ export function AccountsPage() {
   const [exportOpen, setExportOpen] = useState(false)
   const [confirm, setConfirm] = useState<Confirm | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  const [poolOpen, setPoolOpen] = useState<string | null>(null)
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['accounts'] })
   /** Runs an action with a busy marker, error toast and list refresh. */
@@ -102,6 +107,15 @@ export function AccountsPage() {
       return !q || (a.email ?? '').toLowerCase().includes(q) || (a.nickname ?? '').toLowerCase().includes(q)
     })
   }, [accounts, search, provider, status])
+
+  // Accounts sharing a pool (same upstream + catalog) collapse under one header
+  // row; a pool with a single visible account stays a plain row.
+  const poolSizes = useMemo(() => {
+    const n = new Map<string, number>()
+    for (const a of rows) if (a.pool) n.set(a.pool, (n.get(a.pool) ?? 0) + 1)
+    return n
+  }, [rows])
+  const groupBy = (a: Account) => (a.pool && (poolSizes.get(a.pool) ?? 0) > 1 ? a.pool : undefined)
 
   const selectedIds = useMemo(() => accounts.filter((a) => selection[a.id]).map((a) => a.id), [accounts, selection])
 
@@ -343,6 +357,11 @@ export function AccountsPage() {
                 <DropdownMenuItem onClick={() => warmup([a.id], `warmup:${a.id}`)}>
                   <LuFlame /> {t('accounts.warmup.run')}
                 </DropdownMenuItem>
+                {a.pool && (
+                  <DropdownMenuItem onClick={() => setPoolOpen(a.pool!)}>
+                    <LuSlidersHorizontal /> {t('pool.manage')}
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuItem onClick={() => copyJson(a)}>{t('accounts.copyJSON')}</DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={() => toggleEnabled(a)}>
@@ -358,6 +377,48 @@ export function AccountsPage() {
       },
     },
   ]
+
+  const renderPool = (g: GroupRow<Account>) => {
+    const ids = g.rows.map((a) => a.id)
+    const active = g.rows.filter((a) => accountStatus(a) === 'active').length
+    const sum = (f: (a: Account) => number) => g.rows.reduce((n, a) => n + (f(a) || 0), 0)
+    return (
+      <div className="flex flex-wrap items-center gap-3">
+        <Button variant="ghost" size="icon-sm" onClick={g.toggleExpanded} aria-label={t(g.expanded ? 'pool.collapse' : 'pool.expand')}>
+          {g.expanded ? <LuChevronDown /> : <LuChevronRight />}
+        </Button>
+        <Checkbox
+          checked={g.selected === true}
+          indeterminate={g.selected === 'some'}
+          onCheckedChange={(v) => g.toggleSelected(!!v)}
+          aria-label={t('pool.select', g.key)}
+        />
+        <button type="button" className="flex min-w-0 items-center gap-2 text-left" onClick={g.toggleExpanded}>
+          <span className="truncate font-medium">{g.rows[0].provider || g.key}</span>
+          <Badge variant="secondary">{g.key}</Badge>
+          <span className="text-xs text-muted-foreground">{t('pool.summary', g.rows.length, active)}</span>
+        </button>
+        <span className="text-xs tabular-nums text-muted-foreground">
+          {formatNumber(sum((a) => a.usageCurrent))}/{formatNumber(sum((a) => a.usageLimit))} · {formatNumber(sum((a) => a.requestCount))}{' '}
+          {t('accounts.requests')}
+        </span>
+        <div className="ml-auto flex flex-wrap gap-1.5">
+          <Button size="sm" variant="outline" disabled={!!busy} onClick={() => setPoolOpen(g.key)}>
+            <LuSlidersHorizontal /> {t('pool.manage')}
+          </Button>
+          <Button size="sm" variant="outline" disabled={!!busy} onClick={() => batch('enable', ids)}>
+            <LuCircleCheck /> {t('accounts.enable')}
+          </Button>
+          <Button size="sm" variant="outline" disabled={!!busy} onClick={() => batch('disable', ids)}>
+            <LuCircleOff /> {t('accounts.disable')}
+          </Button>
+          <Button size="sm" variant="outline" disabled={!!busy} onClick={() => warmup(ids, `warmup:pool:${g.key}`)}>
+            {busy === `warmup:pool:${g.key}` ? <LuLoader className="animate-spin" /> : <LuFlame />} {t('accounts.warmup.run')}
+          </Button>
+        </div>
+      </div>
+    )
+  }
 
   const statusOptions = [
     { value: 'active', label: t('filter.active') },
@@ -452,6 +513,8 @@ export function AccountsPage() {
           rowSelection={selection}
           onRowSelectionChange={setSelection}
           onRowClick={(a) => setDetailId(a.id)}
+          groupBy={groupBy}
+          renderGroup={renderPool}
           toolbar={
             <>
               <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t('filter.search')} className="max-w-xs" />
@@ -482,6 +545,7 @@ export function AccountsPage() {
 
       <AccountDetailSheet account={accounts.find((a) => a.id === detailId) ?? null} onClose={() => setDetailId(null)} />
       <AddAccountDialog open={addMethod !== null} initialMethod={addMethod === 'pick' ? null : addMethod} onClose={() => setAddMethod(null)} />
+      <PoolDialog pool={poolOpen} members={accounts.filter((a) => a.pool === poolOpen)} onClose={() => setPoolOpen(null)} />
       <ExportDialog open={exportOpen} onOpenChange={setExportOpen} accounts={accounts} preselected={selectedIds} />
       <ConfirmDialog
         open={!!confirm}
