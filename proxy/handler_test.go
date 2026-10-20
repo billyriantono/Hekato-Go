@@ -493,3 +493,21 @@ func TestProbeModelForUsesConfiguredModelWhenAdvertised(t *testing.T) {
 		t.Fatalf("probe model = %q, want configured model", got)
 	}
 }
+
+func TestProbeModelForPrefersPoolTestModel(t *testing.T) {
+	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
+		t.Fatalf("config.Init: %v", err)
+	}
+	if err := config.UpdateTestModel("gpt-5.6-terra"); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.UpdatePoolTestModels(map[string]string{"codebuddy": "glm-5.3"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := probeModelFor(&config.Account{ProviderKind: "codebuddy"}); got != "glm-5.3" {
+		t.Fatalf("global pool probe model = %q, want pool test model", got)
+	}
+	if got := probeModelFor(&config.Account{ProviderKind: "codebuddy", Region: "cn"}); got == "glm-5.3" {
+		t.Fatal("pool test model leaked into codebuddy-cn")
+	}
+}

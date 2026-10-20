@@ -13,17 +13,20 @@ import { get, post } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
 import type { Account } from './shared'
 
-/** Pool-wide model switches and the pool's custom model prefix. */
+/** Pool-wide model switches, the pool's custom model prefix and test model. */
 export function PoolDialog({ pool, members, onClose }: { pool: string | null; members: Account[]; onClose: () => void }) {
   const { t } = useI18n()
   const qc = useQueryClient()
   const [busy, setBusy] = useState<string | null>(null)
   const [prefix, setPrefix] = useState<string | null>(null)
+  const [testModel, setTestModel] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
 
-  const settings = useQuery({ queryKey: ['settings'], queryFn: () => get<{ poolPrefixes?: Record<string, string> }>('/settings') })
+  const settings = useQuery({ queryKey: ['settings'], queryFn: () => get<{ poolPrefixes?: Record<string, string>; poolTestModels?: Record<string, string> }>('/settings') })
   const prefixes = settings.data?.poolPrefixes ?? {}
   const savedPrefix = pool ? (prefixes[pool] ?? '') : ''
+  const testModels = settings.data?.poolTestModels ?? {}
+  const savedTestModel = pool ? (testModels[pool] ?? '') : ''
   const catalogs = useQueries({
     queries: members.map((a) => ({
       queryKey: ['account-models', a.id],
@@ -59,18 +62,21 @@ export function PoolDialog({ pool, members, onClose }: { pool: string | null; me
         qc.invalidateQueries({ queryKey: ['accounts'] })
       })
   }
-  const savePrefix = () => {
-    if (!pool) return
-    setBusy('prefix')
-    post('/settings', { poolPrefixes: { ...prefixes, [pool]: (prefix ?? savedPrefix).trim() } })
+  const saveSetting = (key: 'prefix' | 'testModel', body: object, reset: () => void) => {
+    setBusy(key)
+    post('/settings', body)
       .then(() => {
         toast.success(t('detail.saved'))
-        setPrefix(null)
+        reset()
         qc.invalidateQueries({ queryKey: ['settings'] })
       })
       .catch((e) => toast.error(errorMessage(e)))
       .finally(() => setBusy(null))
   }
+  const savePrefix = () =>
+    pool && saveSetting('prefix', { poolPrefixes: { ...prefixes, [pool]: (prefix ?? savedPrefix).trim() } }, () => setPrefix(null))
+  const saveTestModel = () =>
+    pool && saveSetting('testModel', { poolTestModels: { ...testModels, [pool]: (testModel ?? savedTestModel).trim() } }, () => setTestModel(null))
 
   return (
     <Dialog open={!!pool} onOpenChange={(o) => !o && onClose()}>
@@ -91,6 +97,28 @@ export function PoolDialog({ pool, members, onClose }: { pool: string | null; me
             </Button>
           </div>
           <div className="text-xs text-muted-foreground">{t('pool.prefixHint', `${(prefix ?? savedPrefix).trim() || pool}/<model>`)}</div>
+        </div>
+
+        <div className="space-y-1.5">
+          <div className="text-sm font-medium">{t('pool.testModel')}</div>
+          <div className="flex gap-2">
+            <Input
+              value={testModel ?? savedTestModel}
+              onChange={(e) => setTestModel(e.target.value)}
+              list="pool-test-models"
+              placeholder="glm-5.3"
+              className="max-w-64 font-mono text-xs"
+            />
+            <datalist id="pool-test-models">
+              {[...stats.keys()].sort().map((m) => (
+                <option key={m} value={m} />
+              ))}
+            </datalist>
+            <Button size="sm" variant="outline" onClick={saveTestModel} disabled={!!busy || testModel === null || testModel.trim() === savedTestModel}>
+              {busy === 'testModel' && <LuLoader className="animate-spin" />} {t('detail.save')}
+            </Button>
+          </div>
+          <div className="text-xs text-muted-foreground">{t('pool.testModelHint')}</div>
         </div>
 
         <div className="space-y-1.5">

@@ -4241,6 +4241,7 @@ func (h *Handler) apiGetSettings(w http.ResponseWriter, r *http.Request) {
 		"testModel":             config.GetTestModel(),
 		"customModelIds":        map[string][]string{"codebuddy": config.GetCustomModelIDs("codebuddy")},
 		"poolPrefixes":          config.GetPoolPrefixes(),
+		"poolTestModels":        config.GetPoolTestModels(),
 	})
 }
 
@@ -4301,6 +4302,7 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		TestModel             *string              `json:"testModel,omitempty"`
 		CustomModelIDs        *map[string][]string `json:"customModelIds,omitempty"`
 		PoolPrefixes          *map[string]string   `json:"poolPrefixes,omitempty"`
+		PoolTestModels        *map[string]string   `json:"poolTestModels,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -4382,6 +4384,13 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// 更新超额使用设置
 	if req.PoolPrefixes != nil {
 		if err := config.UpdatePoolPrefixes(*req.PoolPrefixes); err != nil {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	if req.PoolTestModels != nil {
+		if err := config.UpdatePoolTestModels(*req.PoolTestModels); err != nil {
 			w.WriteHeader(400)
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
