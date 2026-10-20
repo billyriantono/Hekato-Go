@@ -103,6 +103,11 @@ type Handler struct {
 	metrics         *metricsCollector
 	warmup          warmupState
 	tokenRefreshMu  sync.Mutex
+	// Admin console sessions. The browser holds an opaque token, not the
+	// admin password; the server keeps the session state so it can be
+	// revoked on logout and on a password change.
+	sessions     *sessionStore
+	sessionsOnce sync.Once
 	// 请求日志 (环形缓冲区，包含成功和失败)
 	requestLogs   []RequestLog
 	requestLogsMu sync.RWMutex
@@ -111,6 +116,18 @@ type Handler struct {
 	pendingLogs  chan config.PersistedRequestLog
 	stopLogSaver chan struct{}
 	logSaverDone chan struct{}
+}
+
+// adminSessions returns the handler's session store, creating it on first
+// use. Tests that build a Handler literal without NewHandler still get a
+// working store.
+func (h *Handler) adminSessions() *sessionStore {
+	h.sessionsOnce.Do(func() {
+		if h.sessions == nil {
+			h.sessions = newSessionStore()
+		}
+	})
+	return h.sessions
 }
 
 // logMetaWriter wraps the ResponseWriter for one request with the client
@@ -443,6 +460,7 @@ func NewHandler() *Handler {
 		autoRouter:      newAutoRouter(),
 		modelHealth:     newModelHealth(),
 		metrics:         newMetricsCollector(),
+		sessions:        newSessionStore(),
 	}
 	// Restore persisted ops metrics and keep flushing them in the background.
 	h.metrics.Load(config.Metrics())
@@ -640,7 +658,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// CORS - 完整的头部支持
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Api-Key, anthropic-version, anthropic-beta, x-api-key, x-stainless-os, x-stainless-lang, x-stainless-package-version, x-stainless-runtime, x-stainless-runtime-version, x-stainless-arch")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Api-Key, X-Admin-Session, anthropic-version, anthropic-beta, x-api-key, x-stainless-os, x-stainless-lang, x-stainless-package-version, x-stainless-runtime, x-stainless-runtime-version, x-stainless-arch")
 	w.Header().Set("Access-Control-Expose-Headers", "x-request-id, x-hekato-routed-model, x-hekato-route-reason, x-ratelimit-limit-requests, x-ratelimit-limit-tokens, x-ratelimit-remaining-requests, x-ratelimit-remaining-tokens, x-ratelimit-reset-requests, x-ratelimit-reset-tokens")
 
 	if r.Method == "OPTIONS" {
@@ -3083,15 +3101,26 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		h.apiCompleteSetup(w, r)
 		return
 	}
-
-	// 验证密码 — constant-time to avoid leaking length/prefix via comparison timing.
-	password := r.Header.Get("X-Admin-Password")
-	if password == "" {
-		cookie, _ := r.Cookie("admin_password")
-		if cookie != nil {
-			password = cookie.Value
-		}
+	// Login exchanges the admin password for an opaque session token. The
+	// browser keeps the token; the password is never stored client-side.
+	if path == "/login" && r.Method == "POST" {
+		h.apiAdminLogin(w, r)
+		return
 	}
+	// Logout revokes the caller's session server-side. It must work for a
+	// caller that still holds a (possibly already invalid) token, so it is
+	// dispatched before the auth gate.
+	if path == "/logout" && r.Method == "POST" {
+		h.apiAdminLogout(w, r)
+		return
+	}
+
+	// 验证会话令牌 — the console sends X-Admin-Session; the token is checked
+	// against the server-side session table. The raw password is only
+	// accepted on the /login endpoint above. No cookie is consulted: a
+	// browser attaches cookies to forged same-site requests, a header it
+	// does not.
+	token := r.Header.Get(sessionHeaderName)
 
 	if !config.IsConfigured() {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -3099,7 +3128,7 @@ func (h *Handler) handleAdminAPI(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"error": "Setup required", "setupRequired": "true"})
 		return
 	}
-	if subtle.ConstantTimeCompare([]byte(password), []byte(config.GetPassword())) != 1 {
+	if !h.adminSessions().validate(token, config.GetPassword()) {
 		w.WriteHeader(401)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
 		return
@@ -3775,6 +3804,60 @@ func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// apiAdminLogin exchanges the admin password for an opaque session token.
+//
+// This is the only endpoint that accepts the raw password. The token it
+// returns is what the console stores, so the password itself never reaches
+// browser storage, a cookie, or a request header.
+func (h *Handler) apiAdminLogin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if !config.IsConfigured() {
+		w.WriteHeader(401)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Setup required", "setupRequired": "true"})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
+	var req struct {
+		Password string `json:"password"`
+		Remember bool   `json:"remember"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
+		return
+	}
+	if !h.adminSessions().allowLoginAttempt() {
+		w.WriteHeader(http.StatusTooManyRequests)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Too many login attempts, try again in a minute"})
+		return
+	}
+	// Constant-time compare so a wrong password cannot be found by timing.
+	if subtle.ConstantTimeCompare([]byte(req.Password), []byte(config.GetPassword())) != 1 {
+		w.WriteHeader(401)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+		return
+	}
+	h.adminSessions().resetLoginAttempts()
+	token, expires := h.adminSessions().issue(config.GetPassword(), req.Remember)
+	if token == "" {
+		w.WriteHeader(500)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to create session"})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"token":     token,
+		"expiresAt": expires.Unix(),
+	})
+}
+
+// apiAdminLogout revokes the caller's session. The token is removed from the
+// server-side table, so a stolen copy of it is worthless afterwards.
+func (h *Handler) apiAdminLogout(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	h.adminSessions().revoke(r.Header.Get(sessionHeaderName))
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+}
+
 // apiCompleteSetup handles the first-run initial-setup submission: it sets the
 // admin password on an unconfigured instance. config.CompleteSetup refuses once a
 // password already exists, so this unauthenticated endpoint cannot overwrite the
@@ -3805,7 +3888,15 @@ func (h *Handler) apiCompleteSetup(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+	// Hand back a session token straight away so the console can go straight
+	// to the dashboard without ever storing the password.
+	token, _ := h.adminSessions().issue(config.GetPassword(), true)
+	if token == "" {
+		w.WriteHeader(500)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Failed to create session"})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "token": token})
 }
 
 func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
@@ -4284,12 +4375,6 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := config.UpdateSettingsPatch(req.ApiKey, req.RequireApiKey, req.Password); err != nil {
-		w.WriteHeader(500)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-		return
-	}
-
 	// 更新超额使用设置
 	if req.PoolPrefixes != nil {
 		if err := config.UpdatePoolPrefixes(*req.PoolPrefixes); err != nil {
@@ -4308,7 +4393,29 @@ func (h *Handler) apiUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		h.pool.Reload()
 	}
 
-	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+	// The password is saved last: once it changes every session is revoked,
+	// so every response after that point must carry the replacement token or
+	// the console is locked out.
+	remember := h.adminSessions().remembered(r.Header.Get(sessionHeaderName))
+	if err := config.UpdateSettingsPatch(req.ApiKey, req.RequireApiKey, req.Password); err != nil {
+		w.WriteHeader(500)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	if req.Password == "" {
+		json.NewEncoder(w).Encode(map[string]bool{"success": true})
+		return
+	}
+	// A password change invalidates every existing session. The caller gets a
+	// fresh token, with its original lifetime, so the console stays usable.
+	h.adminSessions().revokeAll()
+	tok, _ := h.adminSessions().issue(config.GetPassword(), remember)
+	if tok == "" {
+		w.WriteHeader(500)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Password changed, but no new session could be created; log in again"})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "token": tok})
 }
 
 func (h *Handler) apiGetStats(w http.ResponseWriter, r *http.Request) {

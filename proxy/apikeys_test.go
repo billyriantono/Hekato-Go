@@ -389,7 +389,8 @@ func TestAdminApiKeyDetailRevealsOnlyRequestedKey(t *testing.T) {
 	h := &Handler{}
 	authorizedRequest := func(path string) *http.Request {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
-		req.Header.Set("X-Admin-Password", "admin-secret")
+		token, _ := h.adminSessions().issue(config.GetPassword(), false)
+		req.Header.Set("X-Admin-Session", token)
 		return req
 	}
 
