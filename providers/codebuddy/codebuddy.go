@@ -26,7 +26,6 @@ const (
 	codeBuddyIDEName       = "VSCode"
 	codeBuddyIDEType       = "VSCode"
 	codeBuddyIDEVersion    = "1.119.0"
-	codeBuddyEnvID         = "production"
 	codeBuddyUserAgent     = codeBuddyIDEName + "/" + codeBuddyIDEVersion + " CodeBuddy/" + codeBuddyAppVersion
 )
 
@@ -158,12 +157,16 @@ func applyCodeBuddyHeaders(h http.Header, v codeBuddyVariant, token string) {
 	h.Set("X-Conversation-Message-ID", reqID)
 	h.Set("X-Request-ID", reqID)
 	h.Set("X-Agent-Intent", "craft")
+	// CLI 2.170.0 (buildConversationHeaders + resolveModelCallAgentType /
+	// resolveAgentRuntime): the proxy always acts as the main-loop local agent.
+	// Missing X-Agent-Type/X-Agent-Runtime degraded gateway routing metadata.
+	h.Set("X-Agent-Type", "main")
+	h.Set("X-Agent-Runtime", "local-agent")
 	h.Set("X-IDE-Type", codeBuddyIDEType)
 	h.Set("X-IDE-Name", codeBuddyIDEName)
 	h.Set("X-IDE-Version", codeBuddyIDEVersion)
 	h.Set("X-Product-Version", codeBuddyAppVersion)
-	h.Set("X-Request-Trace-Id", traceID)
-	h.Set("X-Env-ID", codeBuddyEnvID)
+	h.Set("X-Trace-ID", traceID)
 	h.Set("X-Domain", v.Domain)
 	h.Set("X-Product", "SaaS")
 	h.Set("User-Agent", codeBuddyUserAgent)
@@ -267,6 +270,11 @@ func doCodeBuddyChatRequest(account *config.Account, v codeBuddyVariant, token s
 	applyCodeBuddyHeaders(req.Header, v, token)
 	if strings.TrimSpace(chatReq.Model) != "" {
 		req.Header.Set("X-Model-ID", strings.TrimSpace(chatReq.Model))
+	}
+	// CLI 2.170.0's auth interceptor attaches X-User-Id to every gateway call,
+	// not just /v3/config.
+	if userID := strings.TrimSpace(account.UserId); userID != "" {
+		req.Header.Set("X-User-Id", userID)
 	}
 
 	resp, err := providers.GetClientForAccount(account).Do(req)
