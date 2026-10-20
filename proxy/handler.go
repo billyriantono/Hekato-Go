@@ -3309,6 +3309,7 @@ func (h *Handler) apiGetAccounts(w http.ResponseWriter, r *http.Request) {
 			"hasCompatKey":      a.CompatAPIKey != "",
 			"machineId":         a.MachineId,
 			"weight":            a.Weight,
+			"maxConcurrency":    a.MaxConcurrency,
 			"probeModel":        a.ProbeModel,
 			"extraModels":       a.ExtraModels,
 			"enabledModels":     a.EnabledModels,
@@ -3432,6 +3433,9 @@ func (h *Handler) apiUpdateAccount(w http.ResponseWriter, r *http.Request, id st
 	}
 	if v, ok := updates["weight"].(float64); ok {
 		existing.Weight = int(v)
+	}
+	if v, ok := updates["maxConcurrency"].(float64); ok {
+		existing.MaxConcurrency = max(int(v), 0)
 	}
 	if v, ok := updates["probeModel"].(string); ok {
 		existing.ProbeModel = strings.TrimSpace(v)

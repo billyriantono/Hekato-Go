@@ -87,6 +87,7 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
   // editable fields
   const [nickname, setNickname] = useState(a.nickname ?? '')
   const [weight, setWeight] = useState(String(a.weight ?? 0))
+  const [maxConcurrency, setMaxConcurrency] = useState(String(a.maxConcurrency ?? 0))
   const [probeModel, setProbeModel] = useState(a.probeModel ?? '')
   const [newModel, setNewModel] = useState('')
   const extraModels = a.extraModels ?? []
@@ -176,6 +177,7 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
       await put(`/accounts/${a.id}`, {
         nickname,
         weight: Number(weight) || 0,
+        maxConcurrency: Number(maxConcurrency) || 0,
         machineId,
         probeModel,
         ...(isCompat ? { baseUrl, ...(compatKey.trim() ? { compatApiKey: compatKey.trim() } : {}) } : {}),
@@ -330,6 +332,17 @@ function Body({ a, onClose }: { a: Account; onClose: () => void }) {
             <Label htmlFor="weight">{t('detail.weight')}</Label>
             <Input id="weight" type="number" min={0} value={weight} onChange={(e) => setWeight(e.target.value)} />
             <p className="text-[11px] text-muted-foreground">{t('detail.weightHint')}</p>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="max-concurrency">{t('detail.maxConcurrency')}</Label>
+            <Input
+              id="max-concurrency"
+              type="number"
+              min={0}
+              value={maxConcurrency}
+              onChange={(e) => setMaxConcurrency(e.target.value)}
+            />
+            <p className="text-[11px] text-muted-foreground">{t('detail.maxConcurrencyHint')}</p>
           </div>
         </div>
         <div className="space-y-1">
