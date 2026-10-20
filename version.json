@@ -1,5 +1,5 @@
 {
-  "version": "1.1.8",
-  "changelog": "✨ Auto route: configurable model aliases (default \"hekato-auto\") route exactly like \"auto\", for agents that treat \"auto\" as their own model switch.\n✨ Admin: tier and blacklist models are picked from a list of routable, pool-prefixed models; the routing map shows one source per API key.\n✨ 自动路由：可配置模型别名（默认 \"hekato-auto\"），与 \"auto\" 路由方式相同，适用于把 \"auto\" 当作自身模型切换的客户端。\n✨ 管理面板：层级和黑名单模型可从可路由的、带账号池前缀的模型列表中选择；路由图中每个 API Key 只显示一个来源。",
+  "version": "1.1.9",
+  "changelog": "✨ Model Status page: every model behind auto routing with its 24h success rate, requests, median time to first token, output speed and a 60-day health strip.\n✨ Auto route: a model that answers too slowly (first token over 20s or under 3 tokens/s, configurable) is skipped for 5 minutes in favour of the rest of its tier, then tried again.\n✨ Admin: auto aliases (e.g. hekato-auto) appear in the model pickers; router decisions and learned candidates moved to Model Status so the auto-route Save button is easy to reach.\n✨ 模型状态页面：列出自动路由的所有模型，显示 24 小时成功率、请求数、首 token 中位时间、输出速度及 60 天健康记录。\n✨ 自动路由：响应过慢的模型（首 token 超过 20 秒或低于 3 tokens/秒，可配置）会被跳过 5 分钟，改用同层级的其他模型，之后再重新尝试。\n✨ 管理面板：模型选择器中显示自动别名（如 hekato-auto）；路由决策和已学习候选移至模型状态页面，自动路由的保存按钮更易点击。",
   "download": "https://github.com/billyriantono/Hekato-Go"
 }
