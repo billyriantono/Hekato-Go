@@ -1,5 +1,5 @@
 {
-  "version": "1.1.6",
-  "changelog": "🐛 Fix: API-key allowed models written with a custom pool prefix (e.g. cbcn/*) now allow those models and list them in /v1/models.\n🐛 修复：API Key 允许的模型使用自定义账号池前缀（如 cbcn/*）时，现在可以正常请求并在 /v1/models 中列出。",
+  "version": "1.1.7",
+  "changelog": "✨ CodeBuddy: models are fetched from each region's live catalog, with a built-in list as fallback.\n✨ Auto route: a model that fails before answering is rerouted to another account/model, and a tier entry naming a real model (e.g. glm-5.3) no longer also claims its variants (glm-5.3-flash).\n🐛 Fix: CodeBuddy model details no longer go stale across account refreshes, and withdrawn models that answered with an empty reply now fail over.\n✨ CodeBuddy：模型列表改为从各区域实时目录获取，失败时使用内置列表。\n✨ 自动路由：模型在输出前失败时会改用其他账号/模型；层级中填写的具体模型名（如 glm-5.3）不再同时匹配其变体（glm-5.3-flash）。\n🐛 修复：账号刷新后 CodeBuddy 模型信息不再过期；已下线模型返回空回复时现在会自动切换。",
   "download": "https://github.com/billyriantono/Hekato-Go"
 }
