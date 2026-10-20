@@ -163,3 +163,24 @@ func TestFetchModelsRejectsUnreadableOrOversizedConfiguration(t *testing.T) {
 		})
 	}
 }
+
+func TestFetchModelsUsesCLIAgentPicker(t *testing.T) {
+	restore := providers.SwapClientsForTest(nil, &http.Client{Transport: catalogRoundTrip(func(*http.Request) (*http.Response, error) {
+		return catalogResponse(200, `{"code":0,"data":{
+			"models":[{"id":"nes-1.1"},{"id":"glm-5.3"},{"id":"seedance-2.5"},{"id":"GPT-5.5","name":"GPT-5.5"}],
+			"agents":[{"name":"Explore","models":["lite"]},{"name":"cli","models":["gpt-5.5","missing","glm-5.3","glm-5.3"]}]
+		}}`), nil
+	})})
+	defer restore()
+	got, err := FetchModels(&config.Account{AccessToken: "sk-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, m := range got {
+		ids = append(ids, m.ModelId)
+	}
+	if !reflect.DeepEqual(ids, []string{"GPT-5.5", "glm-5.3"}) {
+		t.Fatalf("got %v, want CLI picker order without internal models", ids)
+	}
+}

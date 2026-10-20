@@ -77,6 +77,10 @@ func FetchModels(account *config.Account) ([]providers.ModelInfo, error) {
 				MaxInputTokens     int    `json:"maxInputTokens"`
 				MaxOutputTokens    int    `json:"maxOutputTokens"`
 			} `json:"models"`
+			Agents []struct {
+				Name   string   `json:"name"`
+				Models []string `json:"models"`
+			} `json:"agents"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -114,11 +118,40 @@ func FetchModels(account *config.Account) ([]providers.ModelInfo, error) {
 		}
 		models = append(models, model)
 	}
+	for _, agent := range payload.Data.Agents {
+		if agent.Name == "cli" {
+			models = cliModels(models, agent.Models)
+			break
+		}
+	}
 	if len(models) == 0 {
 		return nil, fmt.Errorf("codebuddy models: empty catalog")
 	}
 	logger.Infof("[CodeBuddy] Fetched %d live models from %s", len(models), v.Name)
 	return models, nil
+}
+
+// cliModels narrows the full product catalog to the official CLI's picker:
+// data.models also lists internal models (next-edit, completion, image/video
+// generation) that the CLI never offers. The CLI order is kept; if no allowed
+// id is in the catalog, the whole catalog is kept.
+func cliModels(models []providers.ModelInfo, allow []string) []providers.ModelInfo {
+	byID := make(map[string]providers.ModelInfo, len(models))
+	for _, model := range models {
+		byID[strings.ToLower(model.ModelId)] = model
+	}
+	out := make([]providers.ModelInfo, 0, len(allow))
+	for _, id := range allow {
+		key := strings.ToLower(strings.TrimSpace(id))
+		if model, ok := byID[key]; ok {
+			out = append(out, model)
+			delete(byID, key)
+		}
+	}
+	if len(out) == 0 {
+		return models
+	}
+	return out
 }
 
 func appendCustomModels(models []providers.ModelInfo) []providers.ModelInfo {
