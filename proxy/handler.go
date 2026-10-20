@@ -904,10 +904,10 @@ func (h *Handler) apiModelOptions(w http.ResponseWriter, r *http.Request) {
 	for _, pm := range pooled {
 		add(pm.prefix + "/*")
 	}
+	// Every pool-served model gets its qualified name, so a picker always shows
+	// which pool owns it; the bare name below still means "any pool".
 	for _, pm := range pooled {
-		if pm.multi {
-			add(pm.prefix + "/" + pm.model)
-		}
+		add(pm.prefix + "/" + pm.model)
 	}
 	sort.Strings(bare)
 	for _, m := range bare {
