@@ -24,6 +24,7 @@ type Config = {
   blacklist: string[]
   keywordRules?: KeywordRule[]
   autoThinking: boolean
+  aliases?: string[]
 }
 type KeywordRule = { keywords: string[]; tier: Tier }
 type Decision = {
@@ -112,6 +113,9 @@ export function AutoRouteSection() {
         <>
           <SwitchRow label={t('settings.autoRoute.enabled')} hint={t('settings.autoRoute.enabledHint')} checked={draft.enabled} onChange={(v) => patch({ enabled: v })} />
           <SwitchRow label={t('settings.autoRoute.autoThinking')} hint={t('settings.autoRoute.autoThinkingHint')} checked={!!draft.autoThinking} onChange={(v) => patch({ autoThinking: v })} />
+          <Field label={t('settings.autoRoute.aliases')} hint={t('settings.autoRoute.aliasesHint')}>
+            <Input className="font-mono text-xs" defaultValue={(draft.aliases ?? []).join(', ')} placeholder="hekato-auto" onChange={(e) => patch({ aliases: splitPatterns(e.target.value) })} />
+          </Field>
           <div className="grid gap-4 sm:grid-cols-2">
             <Slider id="ar-quality" label={t('settings.autoRoute.quality')} hint={t('settings.autoRoute.qualityHint')} value={draft.qualityWeight} max={1} onChange={(v) => patch({ qualityWeight: v })} />
             <Slider id="ar-cost" label={t('settings.autoRoute.cost')} hint={t('settings.autoRoute.costHint')} value={draft.costWeight} max={1} onChange={(v) => patch({ costWeight: v })} />

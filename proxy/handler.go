@@ -134,7 +134,9 @@ type logMetaWriter struct {
 // covers the model in every pool. Returns the bare model and whether the key
 // may request it.
 func pinModelPool(w http.ResponseWriter, apiKeyID, model string) (string, bool) {
+	model = normalizeAutoAlias(model)
 	key, bare := config.SplitPoolModel(model)
+	bare = normalizeAutoAlias(bare)
 	if key == "" {
 		return model, keyAllowsModel(apiKeyID, model)
 	}
@@ -838,6 +840,11 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 		buildModelInfo("gpt-4o", "kiro-proxy", true),
 		buildModelInfo("gpt-4", "kiro-proxy", true),
 	)
+	for _, a := range config.GetAutoRouteConfig().Aliases {
+		if a = strings.TrimSpace(a); a != "" {
+			models = append(models, buildModelInfo(a, "kiro-proxy", true), buildModelInfo(a+thinkingSuffix, "kiro-proxy", true))
+		}
+	}
 	// A key with a model allowlist only sees what it may call (thinking
 	// variants follow their base ID).
 	entry, err := h.authenticate(r)

@@ -22,6 +22,15 @@ import (
 // classified into a tier and an (account, model) pair is picked by a bandit.
 const autoModelName = "auto"
 
+// normalizeAutoAlias rewrites a configured alias (AutoRouteConfig.Aliases) to
+// "auto", for clients that treat a literal "auto" as their own model switch.
+func normalizeAutoAlias(model string) string {
+	if config.GetAutoRouteConfig().IsAlias(model) {
+		return autoModelName
+	}
+	return model
+}
+
 // routeSignals are the locally observable complexity signals of a request.
 // Content-derived flags are booleans by design: signals are persisted in the
 // decision ring and shown in the admin panel, so the prompt text that produced

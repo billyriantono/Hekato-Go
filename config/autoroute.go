@@ -36,6 +36,20 @@ type AutoRouteConfig struct {
 	// the request classifies as heavy (strong tier). "auto-thinking" always
 	// forces it on regardless.
 	AutoThinking bool `json:"autoThinking"`
+	// Aliases are extra model names that mean "auto", for clients that treat
+	// a literal "auto" as their own model switch. Matched case-insensitively.
+	Aliases []string `json:"aliases"`
+}
+
+// IsAlias reports whether model is one of the configured "auto" aliases.
+func (c AutoRouteConfig) IsAlias(model string) bool {
+	m := strings.TrimSpace(model)
+	for _, a := range c.Aliases {
+		if a = strings.TrimSpace(a); a != "" && strings.EqualFold(a, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // KeywordRule maps literal keywords to a tier ("fast", "balanced", "strong").
@@ -75,6 +89,7 @@ func DefaultAutoRouteConfig() AutoRouteConfig {
 		Balanced:      []string{"sonnet"},
 		Strong:        []string{"opus"},
 		AutoThinking:  true,
+		Aliases:       []string{"hekato-auto"},
 	}
 }
 
@@ -106,8 +121,8 @@ func autoRouteFromString(s string) *AutoRouteConfig {
 	if s == "" {
 		return nil
 	}
-	// Configs saved before AutoThinking existed keep the default (on).
-	c := AutoRouteConfig{AutoThinking: true}
+	// Configs saved before AutoThinking / Aliases existed keep their defaults.
+	c := AutoRouteConfig{AutoThinking: true, Aliases: []string{"hekato-auto"}}
 	if json.Unmarshal([]byte(s), &c) != nil {
 		return nil
 	}
