@@ -301,7 +301,7 @@ Each provider is a package under `providers/` with an adapter in `proxy/provider
 | Provider | Kind | How you add an account | Anthropic | OpenAI | Responses | Quota fetch | Models |
 |---|---|---|:-:|:-:|:-:|:-:|---|
 | **Kiro** (AWS) | `kiro` | AWS Builder ID · IAM Identity Center · Microsoft 365 / Entra ID SSO · SSO token · credentials JSON | ✅ | ✅ | ↩︎ | ✅ | listed live |
-| **CodeBuddy** (Tencent) | `codebuddy` | API key, JWT or token JSON, many at once. **Global** (`codebuddy.ai`) or **China** (`copilot.tencent.com`), detected from the token issuer. | ✅ | ✅ | ↩︎ | ✅ | static catalogue (+ custom IDs) |
+| **CodeBuddy** (Tencent) | `codebuddy` | API key, JWT or token JSON, many at once. **Global** (`codebuddy.ai`) or **China** (`copilot.tencent.com`), detected from the token issuer. | ✅ | ✅ | ↩︎ | ✅ | live regional catalogue, static fallback (+ custom IDs) |
 | **Grok** (xAI) | `grok` | Device-code login or token import | ✅ | ✅ | ✅ | ✅ | listed live |
 | **Codex** (OpenAI / ChatGPT) | `codex` | Import an `auth.openai.com` OAuth token JSON; refreshed automatically | — | ✅ | ✅ | ✅ | listed live |
 | **Cline Pass** | `clinepass` | WorkOS OAuth token JSON or a raw `clp_` key | ✅ | ✅ | ↩︎ | ✅ | pass catalogue |
@@ -312,6 +312,8 @@ Each provider is a package under `providers/` with an adapter in `proxy/provider
 | **Anthropic-compatible** | `anthropic_compat` | Base URL + key (sent as `x-api-key`) | ✅ | ✅ | ↩︎ | — | per account |
 
 <sub>✅ native · ↩︎ served through the Chat Completions fallback · — not supported. **Codex accounts never serve `/v1/messages`**; point Anthropic-format clients at other providers.</sub>
+
+**CodeBuddy model refresh.** Account import, scheduled refreshes, and the existing model-refresh buttons fetch `GET /v3/config` from `www.codebuddy.ai` (Global) or `copilot.tencent.com` (China), using that account's credentials and outbound proxy/relay. Successful responses supply the model IDs, names, image support, and token limits. If discovery fails or returns an invalid/empty catalog, Hekato uses the existing regional hardcoded list. Custom model IDs remain available in either case.
 
 **Per-account model control.** Every account can add model IDs (`extraModels`) and restrict what it serves with an allowlist (`enabledModels`): unset means all models, `[]` means none, `[ids]` means only those. Newly added models join an active allowlist automatically.
 

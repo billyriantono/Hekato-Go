@@ -1,6 +1,6 @@
 // Package codebuddy implements the CodeBuddy (Tencent) upstream: the
 // OpenAI-compatible /v2/chat/completions transport for the Global and CN
-// variants, static model tables, and usage/credits lookups. Request-format
+// variants, live model discovery with offline fallbacks, and usage/credits lookups. Request-format
 // converters live in the proxy core next to the shared normalization layer.
 package codebuddy
 
@@ -26,7 +26,6 @@ const (
 	codeBuddyIDEName       = "VSCode"
 	codeBuddyIDEType       = "VSCode"
 	codeBuddyIDEVersion    = "1.119.0"
-	codeBuddyEnvID         = "production"
 	codeBuddyUserAgent     = codeBuddyIDEName + "/" + codeBuddyIDEVersion + " CodeBuddy/" + codeBuddyAppVersion
 )
 
@@ -47,9 +46,10 @@ type codeBuddyModel struct {
 	Image   bool
 }
 
-// Static catalogs: CodeBuddy exposes no model-list endpoint (every /models
-// path answers 404), so this mirrors the IDs its web client offers. Operators
-// can add newer IDs without a rebuild via Settings → Custom model IDs.
+// Offline catalogs used when /v3/config is unavailable or credentials are
+// missing. Successful live discovery replaces these lists, rather than merging
+// potentially retired IDs into the upstream catalog. Operators can still add
+// IDs via Settings → Custom model IDs.
 var codeBuddyGlobalModels = []codeBuddyModel{
 	// Anthropic / OpenAI / Google lineup (etteum-pool catalog, 2026-09) plus the
 	// shared CN lineup 9router's intl registry lists. gemini-3.1-flash-lite was
@@ -157,12 +157,16 @@ func applyCodeBuddyHeaders(h http.Header, v codeBuddyVariant, token string) {
 	h.Set("X-Conversation-Message-ID", reqID)
 	h.Set("X-Request-ID", reqID)
 	h.Set("X-Agent-Intent", "craft")
+	// CLI 2.170.0 (buildConversationHeaders + resolveModelCallAgentType /
+	// resolveAgentRuntime): the proxy always acts as the main-loop local agent.
+	// Missing X-Agent-Type/X-Agent-Runtime degraded gateway routing metadata.
+	h.Set("X-Agent-Type", "main")
+	h.Set("X-Agent-Runtime", "local-agent")
 	h.Set("X-IDE-Type", codeBuddyIDEType)
 	h.Set("X-IDE-Name", codeBuddyIDEName)
 	h.Set("X-IDE-Version", codeBuddyIDEVersion)
 	h.Set("X-Product-Version", codeBuddyAppVersion)
-	h.Set("X-Request-Trace-Id", traceID)
-	h.Set("X-Env-ID", codeBuddyEnvID)
+	h.Set("X-Trace-ID", traceID)
 	h.Set("X-Domain", v.Domain)
 	h.Set("X-Product", "SaaS")
 	h.Set("User-Agent", codeBuddyUserAgent)
@@ -189,15 +193,13 @@ func isJWT(token string) bool {
 func codeBuddyTraceID() string {
 	return strings.ReplaceAll(uuid.NewString(), "-", "")
 }
-func ModelsForAccount(account *config.Account) []providers.ModelInfo {
+func staticModelsForAccount(account *config.Account) []providers.ModelInfo {
 	src := codeBuddyGlobalModels
 	if variantForAccount(account).Name == codeBuddyCN.Name {
 		src = codeBuddyCNModels
 	}
 	out := make([]providers.ModelInfo, 0, len(src))
-	seen := map[string]bool{}
 	for _, m := range src {
-		seen[strings.ToLower(m.ID)] = true
 		inputTypes := []string{"text"}
 		if m.Image {
 			inputTypes = append(inputTypes, "image")
@@ -208,14 +210,7 @@ func ModelsForAccount(account *config.Account) []providers.ModelInfo {
 			InputTypes: inputTypes,
 		})
 	}
-	for _, id := range config.GetCustomModelIDs("codebuddy") {
-		if seen[strings.ToLower(id)] {
-			continue
-		}
-		seen[strings.ToLower(id)] = true
-		out = append(out, providers.ModelInfo{ModelId: id, ModelName: id, InputTypes: []string{"text"}})
-	}
-	return out
+	return appendCustomModels(out)
 }
 
 type ChatRequest struct {
@@ -275,6 +270,11 @@ func doCodeBuddyChatRequest(account *config.Account, v codeBuddyVariant, token s
 	applyCodeBuddyHeaders(req.Header, v, token)
 	if strings.TrimSpace(chatReq.Model) != "" {
 		req.Header.Set("X-Model-ID", strings.TrimSpace(chatReq.Model))
+	}
+	// CLI 2.170.0's auth interceptor attaches X-User-Id to every gateway call,
+	// not just /v3/config.
+	if userID := strings.TrimSpace(account.UserId); userID != "" {
+		req.Header.Set("X-User-Id", userID)
 	}
 
 	resp, err := providers.GetClientForAccount(account).Do(req)

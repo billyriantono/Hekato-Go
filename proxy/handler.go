@@ -84,6 +84,10 @@ type Handler struct {
 	startTime       int64
 	stopRefresh     chan struct{}
 	stopStatsSaver  chan struct{}
+	// Full metadata is account-scoped so refreshes can remove capabilities as
+	// well as IDs. Protected by modelsCacheMu along with the aggregate below.
+	accountModels map[string][]ModelInfo
+
 	// 模型缓存
 	cachedModels    []ModelInfo
 	modelsCacheMu   sync.RWMutex
@@ -1068,7 +1072,7 @@ func (h *Handler) refreshModelsCache() {
 		return
 	}
 
-	aggregated := make([]ModelInfo, 0)
+	refreshed := make(map[string][]ModelInfo)
 	for i := range accounts {
 		account := &accounts[i]
 		if err := h.ensureValidToken(account); err != nil {
@@ -1083,27 +1087,18 @@ func (h *Handler) refreshModelsCache() {
 			h.handleAccountFailure(account, err)
 			continue
 		}
-		// The per-account catalog stays complete — the admin panel offers it as
-		// the menu to pick an allowlist from — but only models this account may
-		// actually serve are advertised to clients.
-		modelIDs := make([]string, 0, len(models))
-		routable := make([]ModelInfo, 0, len(models))
-		for _, m := range models {
-			modelIDs = append(modelIDs, m.ModelId)
-			if account.ServesModel(m.ModelId) {
-				routable = append(routable, m)
-			}
-		}
-		h.pool.SetModelList(account.ID, modelIDs)
-		aggregated = mergeUniqueModels(aggregated, routable)
+		refreshed[account.ID] = models
 	}
 
-	if len(aggregated) > 0 {
+	if len(refreshed) > 0 {
 		h.modelsCacheMu.Lock()
-		h.cachedModels = aggregated
-		h.modelsCacheTime = time.Now().Unix()
+		for id, models := range refreshed {
+			h.setAccountModelsLocked(id, models)
+		}
+		h.rebuildModelsCacheLocked()
+		count := len(h.cachedModels)
 		h.modelsCacheMu.Unlock()
-		logger.Infof("[ModelsCache] Cached %d models", len(aggregated))
+		logger.Infof("[ModelsCache] Cached %d models", count)
 	}
 }
 
@@ -1117,21 +1112,11 @@ func (h *Handler) fetchAndCacheAccountModels(account *config.Account) error {
 	if err != nil {
 		return err
 	}
-	modelIDs := make([]string, 0, len(models))
-	routable := make([]ModelInfo, 0, len(models))
-	for _, m := range models {
-		modelIDs = append(modelIDs, m.ModelId)
-		if account.ServesModel(m.ModelId) {
-			routable = append(routable, m)
-		}
-	}
-	h.pool.SetModelList(account.ID, modelIDs)
-
-	// 合并到聚合缓存（仅该账号允许路由的模型）
 	h.modelsCacheMu.Lock()
-	h.cachedModels = mergeUniqueModels(h.cachedModels, routable)
-	h.modelsCacheTime = time.Now().Unix()
+	h.setAccountModelsLocked(account.ID, models)
+	h.rebuildModelsCacheLocked()
 	h.modelsCacheMu.Unlock()
+	h.pool.PersistModelLists(config.Blobs())
 
 	logger.Infof("[ModelsCache] Refreshed %d models for account %s", len(models), account.Email)
 	return nil
@@ -1184,6 +1169,56 @@ func (h *Handler) apiRefreshAllAccountsModels(w http.ResponseWriter, r *http.Req
 		"refreshed": cachedLen,
 		"failed":    0,
 	})
+}
+
+// setAccountModelsLocked replaces an account's complete catalog, including
+// metadata. The caller holds modelsCacheMu so pool IDs and snapshots agree
+// when rebuilding the aggregate. Operator allowlists are applied only there.
+func (h *Handler) setAccountModelsLocked(id string, models []ModelInfo) {
+	if h.accountModels == nil {
+		h.accountModels = make(map[string][]ModelInfo)
+	}
+	h.accountModels[id] = models
+	ids := make([]string, 0, len(models))
+	for _, model := range models {
+		ids = append(ids, model.ModelId)
+	}
+	h.pool.SetModelList(id, ids)
+}
+
+// rebuildModelsCacheLocked unions current account metadata, not the old union,
+// so the last account dropping image support also removes that capability.
+// Restored pool catalogs have IDs but no metadata snapshot yet. Preserve their
+// existing metadata where available, or advertise basic text-only entries.
+func (h *Handler) rebuildModelsCacheLocked() {
+	previous := make(map[string]ModelInfo, len(h.cachedModels))
+	for _, model := range h.cachedModels {
+		previous[strings.ToLower(strings.TrimSpace(model.ModelId))] = model
+	}
+	aggregated := make([]ModelInfo, 0)
+	for _, account := range config.GetEnabledAccounts() {
+		metadata := previous
+		if models, ok := h.accountModels[account.ID]; ok {
+			metadata = make(map[string]ModelInfo, len(models))
+			for _, model := range models {
+				metadata[strings.ToLower(strings.TrimSpace(model.ModelId))] = model
+			}
+		}
+		routable := make([]ModelInfo, 0)
+		for _, id := range h.pool.GetModelList(account.ID) {
+			if !account.ServesModel(id) {
+				continue
+			}
+			model, ok := metadata[strings.ToLower(strings.TrimSpace(id))]
+			if !ok {
+				model = ModelInfo{ModelId: id, ModelName: id, InputTypes: []string{"text"}}
+			}
+			routable = append(routable, model)
+		}
+		aggregated = mergeUniqueModels(aggregated, routable)
+	}
+	h.cachedModels = aggregated
+	h.modelsCacheTime = time.Now().Unix()
 }
 
 func mergeUniqueModels(existing []ModelInfo, incoming []ModelInfo) []ModelInfo {
@@ -4595,16 +4630,11 @@ func (h *Handler) apiGetAccountModels(w http.ResponseWriter, r *http.Request, id
 		return
 	}
 
-	// 同步更新路由缓存
-	modelIDs := make([]string, 0, len(models))
-	for _, m := range models {
-		modelIDs = append(modelIDs, m.ModelId)
-	}
-	h.pool.SetModelList(id, modelIDs)
 	h.modelsCacheMu.Lock()
-	h.cachedModels = mergeUniqueModels(h.cachedModels, models)
-	h.modelsCacheTime = time.Now().Unix()
+	h.setAccountModelsLocked(id, models)
+	h.rebuildModelsCacheLocked()
 	h.modelsCacheMu.Unlock()
+	h.pool.PersistModelLists(config.Blobs())
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,

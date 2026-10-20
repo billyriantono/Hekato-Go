@@ -301,7 +301,7 @@ CORS 完全开放（`Access-Control-Allow-Origin: *`），方便浏览器端工�
 | Provider | 类型标识 | 如何添加账号 | Anthropic | OpenAI | Responses | 配额查询 | 模型列表 |
 |---|---|---|:-:|:-:|:-:|:-:|---|
 | **Kiro**（AWS） | `kiro` | AWS Builder ID · IAM Identity Center · Microsoft 365 / Entra ID SSO · SSO Token · 凭证 JSON | ✅ | ✅ | ↩︎ | ✅ | 实时获取 |
-| **CodeBuddy**（腾讯） | `codebuddy` | API Key、JWT 或 Token JSON，可批量导入。根据 Token 签发方自动识别**国际版**（`codebuddy.ai`）或**中国版**（`copilot.tencent.com`）。 | ✅ | ✅ | ↩︎ | ✅ | 静态目录（可追加自定义 ID） |
+| **CodeBuddy**（腾讯） | `codebuddy` | API Key、JWT 或 Token JSON，可批量导入。根据 Token 签发方自动识别**国际版**（`codebuddy.ai`）或**中国版**（`copilot.tencent.com`）。 | ✅ | ✅ | ↩︎ | ✅ | 分区实时目录，失败时回退静态目录（可追加自定义 ID） |
 | **Grok**（xAI） | `grok` | 设备码登录或导入 Token | ✅ | ✅ | ✅ | ✅ | 实时获取 |
 | **Codex**（OpenAI / ChatGPT） | `codex` | 导入 `auth.openai.com` 的 OAuth Token JSON，自动续期 | — | ✅ | ✅ | ✅ | 实时获取 |
 | **Cline Pass** | `clinepass` | WorkOS OAuth Token JSON 或原始 `clp_` Key | ✅ | ✅ | ↩︎ | ✅ | Pass 目录 |
@@ -312,6 +312,8 @@ CORS 完全开放（`Access-Control-Allow-Origin: *`），方便浏览器端工�
 | **Anthropic 兼容** | `anthropic_compat` | Base URL + Key（以 `x-api-key` 发送） | ✅ | ✅ | ↩︎ | — | 按账号配置 |
 
 <sub>✅ 原生支持 · ↩︎ 通过 Chat Completions 回退实现 · — 不支持。**Codex 账号永远不会处理 `/v1/messages`**，Anthropic 格式的客户端请改用其他 Provider。</sub>
+
+**CodeBuddy 模型刷新。** 导入账号、定时刷新及现有的模型刷新按钮会使用账号凭证和出站代理/中继，从国际版 `www.codebuddy.ai` 或中国版 `copilot.tencent.com` 请求 `GET /v3/config`，获取模型 ID、名称、图片支持和 Token 限额。如果请求失败或目录无效/为空，则回退到现有的分区硬编码列表。两种情况下均保留自定义模型 ID。
 
 **按账号控制模型。** 每个账号都可以追加模型 ID（`extraModels`），也可以用白名单（`enabledModels`）限制它能提供的模型：未设置表示全部模型，`[]` 表示不提供任何模型，`[ids]` 表示只提供列出的模型。新增的模型会自动加入已启用的白名单。
 
