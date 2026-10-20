@@ -1,5 +1,5 @@
 {
-  "version": "1.1.7",
-  "changelog": "✨ CodeBuddy: models are fetched from each region's live catalog, with a built-in list as fallback.\n✨ Auto route: a model that fails before answering is rerouted to another account/model, and a tier entry naming a real model (e.g. glm-5.3) no longer also claims its variants (glm-5.3-flash).\n🐛 Fix: CodeBuddy model details no longer go stale across account refreshes, and withdrawn models that answered with an empty reply now fail over.\n✨ CodeBuddy：模型列表改为从各区域实时目录获取，失败时使用内置列表。\n✨ 自动路由：模型在输出前失败时会改用其他账号/模型；层级中填写的具体模型名（如 glm-5.3）不再同时匹配其变体（glm-5.3-flash）。\n🐛 修复：账号刷新后 CodeBuddy 模型信息不再过期；已下线模型返回空回复时现在会自动切换。",
+  "version": "1.1.8",
+  "changelog": "✨ Auto route: configurable model aliases (default \"hekato-auto\") route exactly like \"auto\", for agents that treat \"auto\" as their own model switch.\n✨ Admin: tier and blacklist models are picked from a list of routable, pool-prefixed models; the routing map shows one source per API key.\n✨ 自动路由：可配置模型别名（默认 \"hekato-auto\"），与 \"auto\" 路由方式相同，适用于把 \"auto\" 当作自身模型切换的客户端。\n✨ 管理面板：层级和黑名单模型可从可路由的、带账号池前缀的模型列表中选择；路由图中每个 API Key 只显示一个来源。",
   "download": "https://github.com/billyriantono/Hekato-Go"
 }
