@@ -8,6 +8,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { get } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
+import { RouterActivity } from './decisions'
 
 type Status = 'operational' | 'degraded' | 'outage' | 'none'
 type Route = {
@@ -143,6 +144,7 @@ export function ModelStatusPage() {
             </div>
           )}
           <p className="text-xs text-muted-foreground">{t('modelStatus.legendHint')}</p>
+          <RouterActivity />
         </div>
       )}
     </div>

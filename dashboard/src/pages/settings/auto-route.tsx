@@ -1,12 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { LuBan, LuRefreshCw, LuX } from 'react-icons/lu'
+import { LuX } from 'react-icons/lu'
 import { toast } from 'sonner'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ModelListPicker } from '@/components/model-combobox'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { LoadingBlock, errorMessage, formatTime } from '@/components/common'
+import { LoadingBlock, errorMessage } from '@/components/common'
 import { get, post } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
 import { Field, SaveButton, Section, SwitchRow, useDraft } from './shared'
@@ -29,37 +27,7 @@ type Config = {
   slowMinTps?: number
 }
 type KeywordRule = { keywords: string[]; tier: Tier }
-type Decision = {
-  time: number
-  endpoint: string
-  tier: Tier
-  model: string
-  accountId: string
-  score: number
-  explored: boolean
-  pinned: boolean
-  thinking?: boolean
-  email?: string
-  provider?: string
-  signals: { inputTokens: number; tools: number; turns: number; images: number; thinking: boolean }
-  reason: string
-}
-type Candidate = {
-  accountId: string
-  provider: string
-  email: string
-  model: string
-  successes: number
-  failures: number
-  ewmaLatencyMs: number
-  reliability: number
-  lastUpdated: number
-}
-type Decisions = { decisions: Decision[]; candidates: Candidate[] }
-
 const TIERS: Tier[] = ['fast', 'balanced', 'strong']
-const TIER_VARIANT: Record<Tier, 'secondary' | 'outline' | 'default'> = { fast: 'secondary', balanced: 'outline', strong: 'default' }
-const short = (id: string) => (id.length > 10 ? id.slice(0, 8) + '…' : id)
 const splitPatterns = (s: string) => s.split(',').map((p) => p.trim()).filter(Boolean)
 
 function Slider({ id, label, hint, value, max, onChange }: { id: string; label: string; hint: string; value: number; max: number; onChange: (v: number) => void }) {
@@ -84,14 +52,6 @@ export function AutoRouteSection() {
     },
     onError: (e) => toast.error(errorMessage(e, t('common.saveFailed'))),
   })
-  const enabled = !!q.data?.enabled
-  const dq = useQuery({
-    queryKey: ['auto-route-decisions'],
-    queryFn: () => get<Decisions>('/auto-route/decisions'),
-    refetchInterval: enabled ? 10_000 : false,
-  })
-  const decisions = dq.data?.decisions?.slice(0, 20) ?? []
-  const candidates = dq.data?.candidates ?? []
   const optionsQ = useQuery({ queryKey: ['model-options'], queryFn: () => get<{ models: string[] }>('/model-options') })
   const all = optionsQ.data?.models ?? []
   // "auto", its aliases and "<pool>/*" wildcards are request-side only; tiers and the blacklist need concrete models.
@@ -199,106 +159,6 @@ export function AutoRouteSection() {
             </div>
           </Field>
 
-          <div className="space-y-3 rounded-lg border p-3">
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-sm font-medium">{t('settings.autoRoute.decisions')}</div>
-              <Button size="sm" variant="outline" onClick={() => dq.refetch()} disabled={dq.isFetching}>
-                <LuRefreshCw className={dq.isFetching ? 'size-3.5 animate-spin' : 'size-3.5'} />
-                {t('common.refresh')}
-              </Button>
-            </div>
-            {decisions.length === 0 ? (
-              <p className="py-4 text-center text-xs text-muted-foreground">{t('settings.autoRoute.noDecisions')}</p>
-            ) : (
-              <Table className="text-xs">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>{t('settings.autoRoute.col.time')}</TableHead>
-                    <TableHead>{t('settings.autoRoute.col.endpoint')}</TableHead>
-                    <TableHead>{t('settings.autoRoute.col.tier')}</TableHead>
-                    <TableHead>{t('settings.autoRoute.col.model')}</TableHead>
-                    <TableHead>{t('settings.autoRoute.col.account')}</TableHead>
-                    <TableHead className="text-right">{t('settings.autoRoute.col.score')}</TableHead>
-                    <TableHead>{t('settings.autoRoute.col.flags')}</TableHead>
-                    <TableHead>{t('settings.autoRoute.col.reason')}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {decisions.map((d, i) => (
-                    <TableRow key={i}>
-                      <TableCell className="whitespace-nowrap">{formatTime(d.time)}</TableCell>
-                      <TableCell className="font-mono">{d.endpoint}</TableCell>
-                      <TableCell>
-                        <Badge variant={TIER_VARIANT[d.tier] ?? 'outline'}>{d.tier}</Badge>
-                      </TableCell>
-                      <TableCell className="font-mono">{d.model}</TableCell>
-                      <TableCell className="max-w-56 truncate" title={`${d.email || ''} (${d.accountId})`}>
-                        {d.provider && <Badge variant="outline" className="mr-1">{d.provider}</Badge>}
-                        {d.email || short(d.accountId)}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">{d.score.toFixed(3)}</TableCell>
-                      <TableCell className="space-x-1">
-                        {d.explored && <Badge variant="secondary">{t('settings.autoRoute.explored')}</Badge>}
-                        {d.pinned && <Badge variant="outline">{t('settings.autoRoute.pinned')}</Badge>}
-                        {d.thinking && <Badge variant="default">{t('settings.autoRoute.thinking')}</Badge>}
-                      </TableCell>
-                      <TableCell className="max-w-48 truncate text-muted-foreground" title={d.reason}>
-                        {d.reason}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-
-            <div className="text-sm font-medium">{t('settings.autoRoute.candidates')}</div>
-            {candidates.length === 0 ? (
-              <p className="py-4 text-center text-xs text-muted-foreground">{t('settings.autoRoute.noCandidates')}</p>
-            ) : (
-              <Table className="text-xs">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>{t('settings.autoRoute.col.provider')}</TableHead>
-                    <TableHead>{t('settings.autoRoute.col.model')}</TableHead>
-                    <TableHead>{t('settings.autoRoute.col.account')}</TableHead>
-                    <TableHead className="text-right">{t('settings.autoRoute.col.reliability')}</TableHead>
-                    <TableHead className="text-right">{t('settings.autoRoute.col.latency')}</TableHead>
-                    <TableHead className="text-right">{t('settings.autoRoute.col.outcomes')}</TableHead>
-                    <TableHead />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {candidates.map((c) => (
-                    <TableRow key={c.accountId + c.model}>
-                      <TableCell>
-                        <Badge variant="outline">{c.provider || '?'}</Badge>
-                      </TableCell>
-                      <TableCell className="font-mono">{c.model}</TableCell>
-                      <TableCell className="max-w-56 truncate" title={`${c.email} (${c.accountId})`}>
-                        {c.email || short(c.accountId)}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">{Math.round(c.reliability * 100)}%</TableCell>
-                      <TableCell className="text-right tabular-nums">{Math.round(c.ewmaLatencyMs)} ms</TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {Math.round(c.successes)} / {Math.round(c.failures)}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {(() => {
-                          const entry = `${c.provider || '*'}:${c.model}`
-                          const listed = (draft.blacklist ?? []).some((x) => x.toLowerCase() === entry.toLowerCase())
-                          return (
-                            <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]" disabled={listed} title={t('settings.autoRoute.blacklistThis')} onClick={() => patch({ blacklist: [...(draft.blacklist ?? []), entry] })}>
-                              <LuBan className="size-3" /> {listed ? t('settings.autoRoute.blacklisted') : t('settings.autoRoute.blacklistThis')}
-                            </Button>
-                          )
-                        })()}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-          </div>
         </>
       )}
     </Section>

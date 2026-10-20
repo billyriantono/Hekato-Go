@@ -25,6 +25,7 @@ export const en: Record<string, string> = {
   'modelStatus.status.degraded': 'Degraded',
   'modelStatus.status.outage': 'Outage',
   'modelStatus.status.none': 'No traffic',
+  'modelStatus.blacklisted': 'Added {0} to the auto-route blacklist',
 }
 
 export const zh: Record<string, string> = {
@@ -53,4 +54,5 @@ export const zh: Record<string, string> = {
   'modelStatus.status.degraded': '降级',
   'modelStatus.status.outage': '故障',
   'modelStatus.status.none': '无流量',
+  'modelStatus.blacklisted': '已将 {0} 加入自动路由黑名单',
 }
