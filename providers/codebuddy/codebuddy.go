@@ -537,14 +537,14 @@ func fetchCodeBuddyCredits(account *config.Account) (limit, used, remain float64
 		return 0, 0, 0, fmt.Errorf("codebuddy: api key is required")
 	}
 	v := variantForAccount(account)
-	now := time.Now()
+	// Only active packages (Status 0) are counted. Asking for exhausted ones
+	// (Status 3) too let hundreds of spent bonus packs fill the page and push
+	// the active plan past it, which read as 0/0.
 	body, _ := json.Marshal(map[string]interface{}{
-		"PageNumber":               1,
-		"PageSize":                 100,
-		"ProductCode":              "p_tcaca",
-		"Status":                   []int{0, 3},
-		"PackageEndTimeRangeBegin": now.Add(-24 * time.Hour).Format("2006-01-02T15:04:05Z"),
-		"PackageEndTimeRangeEnd":   now.Add(365 * 24 * time.Hour).Format("2006-01-02T15:04:05Z"),
+		"PageNumber":  1,
+		"PageSize":    100,
+		"ProductCode": "p_tcaca",
+		"Status":      []int{0},
 	})
 	req, err := http.NewRequest(http.MethodPost, v.Base+"/v2/billing/meter/get-user-resource", bytes.NewReader(body))
 	if err != nil {
