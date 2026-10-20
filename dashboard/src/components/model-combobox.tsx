@@ -1,7 +1,8 @@
 // Searchable model picker: type to filter, arrow keys + Enter to pick.
 // Also accepts a free-form ID that is not in the list (Enter on the query).
 import { useState } from 'react'
-import { LuChevronsUpDown } from 'react-icons/lu'
+import { LuChevronsUpDown, LuX } from 'react-icons/lu'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -88,5 +89,40 @@ export function ModelCombobox({
         </Command>
       </PopoverContent>
     </Popover>
+  )
+}
+
+// A list of model IDs as removable chips plus a picker to add one more.
+export function ModelListPicker({
+  value,
+  onChange,
+  options,
+  placeholder,
+  variant = 'secondary',
+}: {
+  value: string[]
+  onChange: (v: string[]) => void
+  options: string[]
+  placeholder?: string
+  variant?: 'secondary' | 'outline' | 'destructive'
+}) {
+  const { t } = useI18n()
+  const has = (m: string) => value.some((x) => x.toLowerCase() === m.toLowerCase())
+  return (
+    <div className="space-y-1.5">
+      {value.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {value.map((m) => (
+            <Badge key={m} variant={variant} className="max-w-full gap-1 font-mono text-xs">
+              <span className="truncate">{m}</span>
+              <button type="button" aria-label={t('common.remove')} className="opacity-60 hover:opacity-100" onClick={() => onChange(value.filter((x) => x !== m))}>
+                <LuX className="size-3" />
+              </button>
+            </Badge>
+          ))}
+        </div>
+      )}
+      <ModelCombobox value="" onChange={(m) => m && !has(m) && onChange([...value, m])} options={options.filter((m) => !has(m))} placeholder={placeholder} className="w-full" />
+    </div>
   )
 }

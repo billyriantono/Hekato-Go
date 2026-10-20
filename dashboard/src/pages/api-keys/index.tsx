@@ -1,11 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import { useState } from 'react'
-import { LuCopy, LuKeyRound, LuLoader, LuPencil, LuPlus, LuRotateCcw, LuTrash2, LuX } from 'react-icons/lu'
+import { LuCopy, LuKeyRound, LuLoader, LuPencil, LuPlus, LuRotateCcw, LuTrash2 } from 'react-icons/lu'
 import { toast } from 'sonner'
 import { ConfirmDialog, CopyButton, EmptyState, LoadingBlock, PageHeader, errorMessage, formatNumber, formatTime } from '@/components/common'
 import { DataTable } from '@/components/data-table'
-import { ModelCombobox } from '@/components/model-combobox'
+import { ModelListPicker } from '@/components/model-combobox'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -414,30 +414,7 @@ function KeyDialog({ initial, onClose, onCreated }: { initial: ApiKey | null; on
           </div>
           <div className="space-y-1">
             <Label>{t('apiKeys.allowedModels')}</Label>
-            {allowed.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 pb-1">
-                {allowed.map((m) => (
-                  <Badge key={m} variant="secondary" className="max-w-full gap-1 font-mono text-xs">
-                    <span className="truncate">{m}</span>
-                    <button
-                      type="button"
-                      aria-label={t('common.remove')}
-                      className="opacity-60 hover:opacity-100"
-                      onClick={() => setAllowed(allowed.filter((x) => x !== m))}
-                    >
-                      <LuX className="size-3" />
-                    </button>
-                  </Badge>
-                ))}
-              </div>
-            )}
-            <ModelCombobox
-              value=""
-              onChange={(m) => m && !allowed.includes(m) && setAllowed([...allowed, m])}
-              options={(optionsQ.data?.models ?? []).filter((m) => !allowed.includes(m))}
-              placeholder={t('apiKeys.addModel')}
-              className="w-full"
-            />
+            <ModelListPicker value={allowed} onChange={setAllowed} options={optionsQ.data?.models ?? []} placeholder={t('apiKeys.addModel')} />
             <p className="text-xs text-muted-foreground">{t('apiKeys.allowedModelsHint')}</p>
           </div>
           <DialogFooter>

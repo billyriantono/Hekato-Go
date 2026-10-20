@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { ModelListPicker } from '@/components/model-combobox'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { LoadingBlock, errorMessage, formatTime } from '@/components/common'
 import { get, post } from '@/lib/api'
@@ -87,6 +88,16 @@ export function AutoRouteSection() {
   })
   const decisions = dq.data?.decisions?.slice(0, 20) ?? []
   const candidates = dq.data?.candidates ?? []
+  const optionsQ = useQuery({ queryKey: ['model-options'], queryFn: () => get<{ models: string[] }>('/model-options') })
+  const all = optionsQ.data?.models ?? []
+  // "auto" and "<pool>/*" wildcards are request-side only; tiers and the blacklist need concrete models.
+  const pools = all.filter((m) => m.endsWith('/*')).map((m) => m.slice(0, -1))
+  const models = all.filter((m) => m !== 'auto' && !m.endsWith('/*'))
+  // The blacklist spells a pool-qualified model "<pool>:<model>"; a bare model applies to every provider.
+  const blacklistOptions = models.map((m) => {
+    const p = pools.find((p) => m.startsWith(p))
+    return p ? p.slice(0, -1) + ':' + m.slice(p.length) : m
+  })
 
   return (
     <Section
@@ -108,40 +119,16 @@ export function AutoRouteSection() {
             <Slider id="ar-explore" label={t('settings.autoRoute.explore')} hint={t('settings.autoRoute.exploreHint')} value={draft.explore} max={0.5} onChange={(v) => patch({ explore: v })} />
           </div>
           <p className="text-xs text-muted-foreground">{t('settings.autoRoute.tiersHint')}</p>
-          {/* Inputs are uncontrolled so a trailing comma survives typing; remount when the server copy changes. */}
-          <div key={q.dataUpdatedAt} className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-3">
             {TIERS.map((tier) => (
-              <Field key={tier} label={t(`settings.autoRoute.tier.${tier}`)} htmlFor={`ar-${tier}`}>
-                <Input id={`ar-${tier}`} defaultValue={draft[tier].join(', ')} onChange={(e) => patch({ [tier]: splitPatterns(e.target.value) } as Partial<Config>)} placeholder={t('settings.autoRoute.tierPlaceholder')} />
-                <div className="flex flex-wrap gap-1">
-                  {draft[tier].map((p) => (
-                    <Badge key={p} variant="outline" className="font-mono">
-                      {p}
-                    </Badge>
-                  ))}
-                </div>
+              <Field key={tier} label={t(`settings.autoRoute.tier.${tier}`)}>
+                <ModelListPicker value={draft[tier]} onChange={(v) => patch({ [tier]: v } as Partial<Config>)} options={models} placeholder={t('settings.autoRoute.addModel')} variant="outline" />
               </Field>
             ))}
           </div>
 
-          <Field label={t('settings.autoRoute.blacklist')} hint={t('settings.autoRoute.blacklistHint')} htmlFor="ar-blacklist">
-            <Input
-              key={'bl' + q.dataUpdatedAt}
-              id="ar-blacklist"
-              defaultValue={(draft.blacklist ?? []).join(', ')}
-              onChange={(e) => patch({ blacklist: splitPatterns(e.target.value) })}
-              placeholder={t('settings.autoRoute.blacklistPlaceholder')}
-            />
-            <div className="flex flex-wrap gap-1">
-              {(draft.blacklist ?? []).map((p) => (
-                <Badge key={p} variant="destructive" className="font-mono">
-                  {p}
-                  <button type="button" className="ml-1 opacity-70 hover:opacity-100" onClick={() => patch({ blacklist: (draft.blacklist ?? []).filter((x) => x !== p) })}>
-                    <LuX className="size-3" />
-                  </button>
-                </Badge>
-              ))}
-            </div>
+          <Field label={t('settings.autoRoute.blacklist')} hint={t('settings.autoRoute.blacklistHint')}>
+            <ModelListPicker value={draft.blacklist ?? []} onChange={(v) => patch({ blacklist: v })} options={blacklistOptions} placeholder={t('settings.autoRoute.addModel')} variant="destructive" />
           </Field>
 
           <Field label={t('settings.autoRoute.keywordRules')} hint={t('settings.autoRoute.keywordRulesHint')}>
