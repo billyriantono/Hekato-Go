@@ -578,7 +578,7 @@ gateway.example.com {
 - [ ] **已设置管理密码。** 全新安装在完成设置之前会拒绝所有管理请求，密码比较采用恒定时间算法。
 - [ ] **在添加账号之前设置 `ENCRYPTION_KEY`。** 它会加密管理密码、中继密钥、每个账号的 access / refresh Token、client secret 与兼容 Provider 的 Key，以及所有网关 API Key。**务必备份该密钥：丢失后配置将无法读取。**
 - [ ] **开启要求 API 密钥**，为每个工具或团队单独签发 Key，并为每个 Key 设置 RPM 与并发上限。
-- [ ] **前置 TLS。** 管理请求通过 `X-Admin-Password`（或控制台会话）携带密码，切勿在明文 HTTP 上暴露。
+- [ ] **前置 TLS。** 管理请求通过 `X-Admin-Session`（或控制台 Cookie）携带会话令牌，切勿在明文 HTTP 上暴露。
 - [ ] **端口 3128 只对本机开放。** 仅在 `127.0.0.1` 上发布，并且只在进行 Microsoft SSO 登录期间开放。
 - [ ] **记住 CORS 是完全开放的**（`*`）：真正的保护边界是 API Key。
 
@@ -586,7 +586,9 @@ gateway.example.com {
 
 ## 管理 API
 
-控制台的所有操作都通过 `/admin/api/*` 完成，使用 `X-Admin-Password: <密码>` 鉴权。完成设置之前，只有 `GET /setup/status` 与 `POST /setup` 可用。
+控制台的所有操作都通过 `/admin/api/*` 完成。控制台在登录时将管理密码换成一个不透明的会话令牌，后续请求通过 `X-Admin-Session` 发送该令牌（同时写入一个 `HttpOnly` Cookie 供浏览器刷新使用）。原始密码**仅**由 `POST /login` 与 `POST /setup` 接收，既不会存入浏览器，也不会出现在请求头中。
+
+完成设置之前，只有 `GET /setup/status`、`POST /setup` 与 `POST /login` 可用。`POST /logout` 会在服务端吊销会话。会话保存在内存中，因此重启后需要重新登录；修改管理密码会吊销除当前会话外的所有会话。
 
 <details>
 <summary><b>端点参考</b></summary>

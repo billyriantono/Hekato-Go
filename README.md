@@ -578,7 +578,7 @@ The repository's `Dockerfile` builds on Zeabur unchanged. Create a service with 
 - [ ] **Admin password set.** A fresh install refuses admin calls until setup is complete. Comparison is constant-time.
 - [ ] **`ENCRYPTION_KEY` set** before you add accounts. It encrypts the admin password, relay secrets, every account's access/refresh tokens, client secrets and compatible-provider keys, and every gateway API key. **Back the key up: without it the config cannot be read.**
 - [ ] **Require API key on**, with a separate key per tool or team, each with RPM and concurrency limits.
-- [ ] **TLS in front.** Admin requests carry the password in `X-Admin-Password` (or the console's session); never expose them over plain HTTP.
+- [ ] **TLS in front.** Admin requests carry a session token in `X-Admin-Session` (or the console's cookie); never expose them over plain HTTP.
 - [ ] **Port 3128 stays local.** Publish it only on `127.0.0.1`, and only while a Microsoft SSO login is in progress.
 - [ ] **Remember that CORS is open** (`*`): API keys are the protection boundary.
 
@@ -586,7 +586,9 @@ The repository's `Dockerfile` builds on Zeabur unchanged. Create a service with 
 
 ## Admin API
 
-Everything the console does goes through `/admin/api/*`. Authenticate with `X-Admin-Password: <password>`. Before setup, only `GET /setup/status` and `POST /setup` are available.
+Everything the console does goes through `/admin/api/*`. The console exchanges the admin password for an opaque session token once, at login, and sends that token in `X-Admin-Session` (an `HttpOnly` cookie mirrors it for browser reloads). The raw password is accepted **only** by `POST /login` and `POST /setup`; it is never stored in the browser and never sent in a header.
+
+Before setup, only `GET /setup/status`, `POST /setup`, and `POST /login` are available. `POST /logout` revokes the session server-side. Sessions are in-memory, so a restart requires signing in again; changing the admin password revokes every session except the one making the change.
 
 <details>
 <summary><b>Endpoint reference</b></summary>

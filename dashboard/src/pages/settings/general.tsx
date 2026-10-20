@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { LoadingBlock, errorMessage } from '@/components/common'
-import { get, post, setPassword } from '@/lib/api'
+import { get, post, setToken } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
 import { Field, SaveButton, Section, SwitchRow, useDraft } from './shared'
 
@@ -50,9 +50,11 @@ export function GeneralSection() {
   const [confirm, setConfirm] = useState('')
   const pwError = pw && pw.length < 8 ? t('settings.passwordTooShort') : confirm && pw !== confirm ? t('settings.passwordMismatch') : ''
   const changePw = useMutation({
-    mutationFn: () => post('/settings', { password: pw }),
-    onSuccess: () => {
-      setPassword(pw, true)
+    mutationFn: () => post<{ success?: boolean; token?: string }>('/settings', { password: pw }),
+    onSuccess: (res) => {
+      // The password change revoked every session; the server hands back a
+      // fresh token for this browser so the console stays usable.
+      if (res?.token) setToken(res.token, true)
       setPw('')
       setConfirm('')
       toast.success(t('settings.passwordChanged'))

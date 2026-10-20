@@ -1,5 +1,7 @@
 // Thin fetch wrapper for the Go admin API (/admin/api/*).
-// Auth: X-Admin-Password header, stored in session/localStorage by lib/auth.
+// Auth: X-Admin-Session header, holding an opaque server-issued session
+// token. The admin password is exchanged for that token once, at login, and
+// is never written to browser storage.
 
 export class ApiError extends Error {
   status: number
@@ -11,27 +13,43 @@ export class ApiError extends Error {
   }
 }
 
-const PASSWORD_KEY = 'admin_password'
+const TOKEN_KEY = 'admin_session_token'
 const REMEMBER_KEY = 'kiro_remember'
+// LEGACY_PASSWORD_KEY is where the old console kept the raw admin password.
+// Upgrading servers leave it behind, so it is purged on first load.
+const LEGACY_PASSWORD_KEY = 'admin_password'
 
-export function getPassword(): string {
-  return sessionStorage.getItem(PASSWORD_KEY) || localStorage.getItem(PASSWORD_KEY) || ''
+// purgeLegacyPassword removes the raw admin password that older console
+// builds stored in browser storage. Without this, upgrading the server would
+// leave the password sitting in the user's browser forever.
+function purgeLegacyPassword() {
+  try {
+    sessionStorage.removeItem(LEGACY_PASSWORD_KEY)
+    localStorage.removeItem(LEGACY_PASSWORD_KEY)
+  } catch {
+    /* storage may be unavailable (private mode); nothing to clean up then */
+  }
+}
+purgeLegacyPassword()
+
+export function getToken(): string {
+  return sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY) || ''
 }
 
-export function setPassword(pw: string, remember: boolean) {
-  sessionStorage.setItem(PASSWORD_KEY, pw)
+export function setToken(token: string, remember: boolean) {
+  sessionStorage.setItem(TOKEN_KEY, token)
   if (remember) {
-    localStorage.setItem(PASSWORD_KEY, pw)
+    localStorage.setItem(TOKEN_KEY, token)
     localStorage.setItem(REMEMBER_KEY, '1')
   } else {
-    localStorage.removeItem(PASSWORD_KEY)
+    localStorage.removeItem(TOKEN_KEY)
     localStorage.removeItem(REMEMBER_KEY)
   }
 }
 
-export function clearPassword() {
-  sessionStorage.removeItem(PASSWORD_KEY)
-  localStorage.removeItem(PASSWORD_KEY)
+export function clearToken() {
+  sessionStorage.removeItem(TOKEN_KEY)
+  localStorage.removeItem(TOKEN_KEY)
   localStorage.removeItem(REMEMBER_KEY)
 }
 
@@ -42,7 +60,8 @@ export function setUnauthorizedHandler(fn: typeof onUnauthorized) {
 
 export async function api<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
-  headers.set('X-Admin-Password', getPassword())
+  const token = getToken()
+  if (token) headers.set('X-Admin-Session', token)
   if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
   const res = await fetch('/admin/api' + path, { ...init, headers })
   const text = await res.text()
@@ -59,6 +78,42 @@ export async function api<T = unknown>(path: string, init: RequestInit = {}): Pr
     throw new ApiError(res.status, String(obj.error || res.statusText || 'Request failed'), setupRequired)
   }
   return data as T
+}
+
+// login exchanges the admin password for a session token. The password is
+// sent once and never stored client-side.
+export async function login(password: string, remember: boolean): Promise<string> {
+  const res = await fetch('/admin/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password, remember }),
+  })
+  const text = await res.text()
+  let data: any = null
+  try {
+    data = text ? JSON.parse(text) : null
+  } catch {
+    data = null
+  }
+  if (!res.ok) {
+    const obj = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>
+    const setupRequired = obj.setupRequired === 'true' || obj.setupRequired === true
+    if (res.status === 401) onUnauthorized?.(setupRequired)
+    throw new ApiError(res.status, String(obj.error || res.statusText || 'Request failed'), setupRequired)
+  }
+  const token = String(data?.token || '')
+  if (!token) throw new ApiError(res.status, 'Login did not return a session token')
+  return token
+}
+
+// logout revokes the session server-side. Failures are ignored: the local
+// token is dropped either way.
+export async function logout(): Promise<void> {
+  try {
+    await api('/logout', { method: 'POST' })
+  } catch {
+    /* the session may already be gone; clearing locally is what matters */
+  }
 }
 
 export const get = <T = unknown>(path: string) => api<T>(path)

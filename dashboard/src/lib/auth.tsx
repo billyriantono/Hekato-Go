@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { clearPassword, get, getPassword, post, setPassword, setUnauthorizedHandler } from '@/lib/api'
+import { clearToken, get, getToken, login as apiLogin, logout as apiLogout, post, setToken, setUnauthorizedHandler } from '@/lib/api'
 
 type Status = 'loading' | 'setup' | 'anonymous' | 'authed'
 
@@ -21,8 +21,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         const s = await get<{ configured: boolean }>('/setup/status')
         if (!s.configured) return setStatus('setup')
-        if (!getPassword()) return setStatus('anonymous')
-        await get('/version') // validates the stored password
+        if (!getToken()) return setStatus('anonymous')
+        await get('/version') // validates the stored session token
         setStatus('authed')
       } catch {
         setStatus((cur) => (cur === 'loading' ? 'anonymous' : cur))
@@ -32,25 +32,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const login = useCallback(async (password: string, remember: boolean) => {
-    setPassword(password, remember)
+    // The password goes to the server exactly once, in the login request.
+    // What the browser keeps is the session token it returns.
+    const token = await apiLogin(password, remember)
+    setToken(token, remember)
     try {
       await get('/version')
       setStatus('authed')
     } catch (e) {
-      clearPassword()
+      clearToken()
       throw e
     }
   }, [])
 
   const completeSetup = useCallback(async (password: string) => {
-    await post('/setup', { password })
-    setPassword(password, true)
+    const res = await post<{ success?: boolean; token?: string }>('/setup', { password })
+    const token = res?.token || ''
+    if (!token) throw new Error('Setup did not return a session token')
+    setToken(token, true)
     setStatus('authed')
   }, [])
 
   const logout = useCallback(() => {
-    clearPassword()
-    setStatus('anonymous')
+    // Revoke server-side first, then drop the local copy. The token is
+    // cleared even if the revoke call fails.
+    void apiLogout().finally(() => {
+      clearToken()
+      setStatus('anonymous')
+    })
   }, [])
 
   const value = useMemo(() => ({ status, login, completeSetup, logout }), [status, login, completeSetup, logout])
