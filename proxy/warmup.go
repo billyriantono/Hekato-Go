@@ -108,7 +108,12 @@ func probeModelFor(account *config.Account) string {
 	if err == nil {
 		models = routableModels(account, models)
 	}
-	if preferred := config.GetTestModel(); preferred != "" && account.ServesModel(preferred) {
+	// The pool's test model wins over the global one; either is used only
+	// when the account advertises it (or its catalog is unknown).
+	for _, preferred := range []string{config.GetPoolTestModel(config.PoolKey(account)), config.GetTestModel()} {
+		if preferred == "" || !account.ServesModel(preferred) {
+			continue
+		}
 		if err != nil || len(models) == 0 {
 			return preferred
 		}

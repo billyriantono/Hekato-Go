@@ -39,6 +39,7 @@ func settingsFrom(c *Config) map[string]string {
 		"test_model":              c.TestModel,
 		"custom_model_ids":        customModelIDsToString(c.CustomModelIDs),
 		"pool_prefixes":           poolPrefixesToString(c.PoolPrefixes),
+		"pool_test_models":        poolPrefixesToString(c.PoolTestModels),
 		"allow_over_usage":        boolStr(c.AllowOverUsage),
 		"filter_claude_code":      boolStr(c.FilterClaudeCode),
 		"filter_env_noise":        boolStr(c.FilterEnvNoise),
@@ -86,6 +87,9 @@ func applySettings(c *Config, m map[string]string) {
 	c.CustomModelIDs = customModelIDsFromString(m["custom_model_ids"])
 	if v := m["pool_prefixes"]; v != "" {
 		_ = json.Unmarshal([]byte(v), &c.PoolPrefixes)
+	}
+	if v := m["pool_test_models"]; v != "" {
+		_ = json.Unmarshal([]byte(v), &c.PoolTestModels)
 	}
 	c.AllowOverUsage = m["allow_over_usage"] == "1"
 	c.FilterClaudeCode = m["filter_claude_code"] == "1"

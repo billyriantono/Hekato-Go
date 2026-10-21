@@ -84,6 +84,44 @@ func UpdatePoolPrefixes(m map[string]string) error {
 	return Save()
 }
 
+// GetPoolTestModel returns the pool's test model, or "" when none is set.
+func GetPoolTestModel(pool string) string {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	return cfg.PoolTestModels[pool]
+}
+
+// GetPoolTestModels returns a copy of the pool test model map.
+func GetPoolTestModels() map[string]string {
+	cfgLock.RLock()
+	defer cfgLock.RUnlock()
+	out := make(map[string]string, len(cfg.PoolTestModels))
+	for k, v := range cfg.PoolTestModels {
+		out[k] = v
+	}
+	return out
+}
+
+// UpdatePoolTestModels validates and persists the pool test model map. Empty
+// values are dropped (the pool falls back to the global test model).
+func UpdatePoolTestModels(m map[string]string) error {
+	clean := make(map[string]string, len(m))
+	for k, v := range m {
+		k, v = strings.ToLower(strings.TrimSpace(k)), strings.TrimSpace(v)
+		if k == "" || v == "" {
+			continue
+		}
+		if !isPoolKey(k) {
+			return fmt.Errorf("unknown pool %q", k)
+		}
+		clean[k] = v
+	}
+	cfgLock.Lock()
+	defer cfgLock.Unlock()
+	cfg.PoolTestModels = clean
+	return Save()
+}
+
 func isPoolKey(s string) bool {
 	cfgLock.RLock()
 	defer cfgLock.RUnlock()

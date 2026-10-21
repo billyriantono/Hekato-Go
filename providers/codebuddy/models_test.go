@@ -22,7 +22,6 @@ func catalogResponse(status int, body string) *http.Response {
 
 func TestModelsForAccountFetchesRegionalCatalog(t *testing.T) {
 	for _, tt := range []struct{ name, region, host, domain, token string }{
-		{"global", "global", "www.codebuddy.ai", "www.codebuddy.ai", "sk-global"},
 		{"china", "cn", "copilot.tencent.com", "www.codebuddy.cn", "eyJheader.payload.signature"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -115,7 +114,7 @@ func TestModelsForAccountRefreshReplacesCatalog(t *testing.T) {
 		return catalogResponse(200, `{"data":{"models":[{"id":"`+id+`"}]}}`), nil
 	})})
 	defer restore()
-	account := &config.Account{ID: "refresh", AccessToken: "sk-test"}
+	account := &config.Account{ID: "refresh", Region: "cn", AccessToken: "sk-test"}
 	first := ModelsForAccount(account)
 	id = "second-live-model"
 	second := ModelsForAccount(account)
@@ -161,5 +160,38 @@ func TestFetchModelsRejectsUnreadableOrOversizedConfiguration(t *testing.T) {
 				t.Fatalf("invalid configuration accepted: %d models, error %v", len(models), err)
 			}
 		})
+	}
+}
+
+func TestFetchModelsUsesCLIAgentPicker(t *testing.T) {
+	restore := providers.SwapClientsForTest(nil, &http.Client{Transport: catalogRoundTrip(func(*http.Request) (*http.Response, error) {
+		return catalogResponse(200, `{"code":0,"data":{
+			"models":[{"id":"nes-1.1"},{"id":"glm-5.3"},{"id":"seedance-2.5"},{"id":"GPT-5.5","name":"GPT-5.5"}],
+			"agents":[{"name":"Explore","models":["lite"]},{"name":"cli","models":["gpt-5.5","missing","glm-5.3","glm-5.3"]}]
+		}}`), nil
+	})})
+	defer restore()
+	got, err := FetchModels(&config.Account{AccessToken: "sk-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, m := range got {
+		ids = append(ids, m.ModelId)
+	}
+	if !reflect.DeepEqual(ids, []string{"GPT-5.5", "glm-5.3"}) {
+		t.Fatalf("got %v, want CLI picker order without internal models", ids)
+	}
+}
+
+func TestModelsForAccountGlobalUsesCLIPicker(t *testing.T) {
+	restore := providers.SwapClientsForTest(nil, &http.Client{Transport: catalogRoundTrip(func(r *http.Request) (*http.Response, error) {
+		t.Fatalf("global catalog must not be fetched: %s", r.URL)
+		return nil, nil
+	})})
+	defer restore()
+	got := ModelsForAccount(&config.Account{Region: "global", AccessToken: "sk-global"})
+	if len(got) != len(codeBuddyGlobalModels) || got[0].ModelId != "default-model" {
+		t.Fatalf("got %d models starting %q, want the CLI picker", len(got), got[0].ModelId)
 	}
 }

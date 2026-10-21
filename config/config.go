@@ -236,6 +236,9 @@ type Config struct {
 	// PoolPrefixes maps a pool key ("codebuddy-cn") to a custom model prefix
 	// ("cn") clients may send instead of the key. See config/pool.go.
 	PoolPrefixes map[string]string `json:"poolPrefixes,omitempty"`
+	// PoolTestModels maps a pool key to the model its warmup probe and Test
+	// button use, overriding TestModel for that pool.
+	PoolTestModels map[string]string `json:"poolTestModels,omitempty"`
 
 	// Proxy configuration: optional outbound proxy for Kiro API requests
 	// Format: "socks5://host:port", "socks5://user:pass@host:port",
