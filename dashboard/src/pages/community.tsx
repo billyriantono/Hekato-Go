@@ -148,7 +148,8 @@ export function CommunityPage() {
                 </CardContent>
               </Card>
 
-              <LiveRoutingMap logs={logs} />
+              {/* Everyone shares one key, so group the map's sources by masked IP instead; the map labels external sources by endpoint, which passes the IP through. */}
+              <LiveRoutingMap logs={logs.map((l) => ({ ...l, apiKeyId: l.clientIp, endpoint: l.clientIp || 'unknown' }))} />
 
               <Card className="shadow-lg">
                 <CardHeader>
