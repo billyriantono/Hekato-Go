@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
-import { LuLoader } from 'react-icons/lu'
+import { LuFlaskConical, LuLoader, LuPlus } from 'react-icons/lu'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -21,6 +21,7 @@ export function PoolDialog({ pool, members, onClose }: { pool: string | null; me
   const [prefix, setPrefix] = useState<string | null>(null)
   const [testModel, setTestModel] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
+  const [newModel, setNewModel] = useState('')
 
   const settings = useQuery({ queryKey: ['settings'], queryFn: () => get<{ poolPrefixes?: Record<string, string>; poolTestModels?: Record<string, string> }>('/settings') })
   const prefixes = settings.data?.poolPrefixes ?? {}
@@ -78,6 +79,38 @@ export function PoolDialog({ pool, members, onClose }: { pool: string | null; me
   const saveTestModel = () =>
     pool && saveSetting('testModel', { poolTestModels: { ...testModels, [pool]: (testModel ?? savedTestModel).trim() } }, () => setTestModel(null))
 
+  const addModel = () => {
+    const id = newModel.trim()
+    if (!id) return
+    setBusy('addModel')
+    return post<{ count: number }>('/accounts/batch', { ids: members.map((a) => a.id), action: 'addModel', model: id })
+      .then((r) => {
+        toast.success(t('pool.modelAdded', r.count))
+        setNewModel('')
+        qc.invalidateQueries({ queryKey: ['accounts'] })
+        // Members refresh their catalogs in the background; refetch once they likely have.
+        setTimeout(() => qc.invalidateQueries({ queryKey: ['account-models'] }), 3000)
+      })
+      .catch((e) => toast.error(errorMessage(e)))
+      .finally(() => setBusy(null))
+  }
+  // Probe through one enabled member first, so a typo never lands on every account.
+  const probeAndAdd = () => {
+    const id = newModel.trim()
+    const via = members.find((a) => a.enabled) ?? members[0]
+    if (!id || !via) return
+    setBusy('probeNew')
+    post<{ reply: string; model: string }>(`/accounts/${via.id}/test`, { model: id })
+      .then((r) => {
+        toast.success(t('detail.probeNewOk', r.model, r.reply))
+        return addModel()
+      })
+      .catch((e) => {
+        toast.error(t('detail.probeNewFail', id, errorMessage(e)))
+        setBusy(null)
+      })
+  }
+
   return (
     <Dialog open={!!pool} onOpenChange={(o) => !o && onClose()}>
       {/* minmax(0,1fr): the grid's auto column would otherwise grow to the
@@ -119,6 +152,26 @@ export function PoolDialog({ pool, members, onClose }: { pool: string | null; me
             </Button>
           </div>
           <div className="text-xs text-muted-foreground">{t('pool.testModelHint')}</div>
+        </div>
+
+        <div className="space-y-1.5">
+          <div className="text-sm font-medium">{t('pool.addModel')}</div>
+          <div className="flex gap-2">
+            <Input
+              value={newModel}
+              onChange={(e) => setNewModel(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && !busy && probeAndAdd()}
+              placeholder={t('detail.addModelPlaceholder')}
+              className="flex-1 font-mono text-xs"
+            />
+            <Button size="sm" variant="outline" onClick={probeAndAdd} disabled={!!busy || !newModel.trim()} title={t('detail.probeNewHint')}>
+              {busy === 'probeNew' ? <LuLoader className="animate-spin" /> : <LuFlaskConical />} {t('detail.probeNew')}
+            </Button>
+            <Button size="sm" variant="outline" onClick={addModel} disabled={!!busy || !newModel.trim()}>
+              {busy === 'addModel' ? <LuLoader className="animate-spin" /> : <LuPlus />} {t('detail.addModel')}
+            </Button>
+          </div>
+          <div className="text-xs text-muted-foreground">{t('pool.addModelHint')}</div>
         </div>
 
         <div className="space-y-1.5">
