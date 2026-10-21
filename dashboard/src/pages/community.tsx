@@ -55,7 +55,7 @@ export function CommunityPage() {
       }
     }
     load()
-    const id = setInterval(load, 10_000)
+    const id = setInterval(load, 5_000)
     return () => {
       live = false
       clearInterval(id)
@@ -148,7 +148,7 @@ export function CommunityPage() {
                 </CardContent>
               </Card>
 
-              {logs.length > 0 && <LiveRoutingMap logs={logs} />}
+              <LiveRoutingMap logs={logs} />
 
               <Card className="shadow-lg">
                 <CardHeader>
