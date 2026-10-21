@@ -3691,6 +3691,8 @@ func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 		// action "models": switch these models on / off on every listed account.
 		Enable  []string `json:"enable,omitempty"`
 		Disable []string `json:"disable,omitempty"`
+		// action "addModel": add this model id to every listed account's extraModels.
+		Model string `json:"model,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(400)
@@ -3750,6 +3752,36 @@ func (h *Handler) apiBatchAccounts(w http.ResponseWriter, r *http.Request) {
 		}
 		h.pool.Reload()
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "count": changed})
+
+	case "addModel":
+		id := strings.TrimSpace(req.Model)
+		if id == "" {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": "No model provided"})
+			return
+		}
+		var changed []config.Account
+		for _, a := range config.GetAccounts() {
+			if !slices.Contains(req.IDs, a.ID) || slices.ContainsFunc(a.ExtraModels, func(m string) bool { return strings.EqualFold(strings.TrimSpace(m), id) }) {
+				continue
+			}
+			a.ExtraModels = append(a.ExtraModels, id)
+			// Same as the single-account add: a hand-added model joins an active allowlist.
+			if a.EnabledModels != nil && !a.ServesModel(id) {
+				a.EnabledModels = append(a.EnabledModels, id)
+			}
+			config.UpdateAccount(a.ID, a)
+			changed = append(changed, a)
+		}
+		h.pool.Reload()
+		for _, acc := range changed {
+			go func(a config.Account) {
+				if err := h.fetchAndCacheAccountModels(&a); err != nil {
+					logger.Warnf("[ModelsCache] Refresh after addModel failed for %s: %v", a.Email, err)
+				}
+			}(acc)
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "count": len(changed)})
 
 	case "refresh":
 		successCount := 0
