@@ -28,7 +28,7 @@ type Usage = {
   concurrencyLimit: number
 }
 
-function Bar({ label, used, limit, pct, format }: { label: string; used: number; limit: number; pct: number; format: (n: number) => string }) {
+export function Bar({ label, used, limit, pct, format }: { label: string; used: number; limit: number; pct: number; format: (n: number) => string }) {
   const { t } = useI18n()
   const p = Math.min(100, Math.round(pct * 100))
   const tone = p >= 90 ? 'bg-red-500' : p >= 70 ? 'bg-amber-500' : 'bg-emerald-500'

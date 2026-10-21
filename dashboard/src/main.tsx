@@ -14,6 +14,7 @@ import './index.css'
 const loadApp = () => import('./app')
 const App = lazy(loadApp)
 const UsagePage = lazy(() => import('@/pages/usage').then((m) => ({ default: m.UsagePage })))
+const CommunityPage = lazy(() => import('@/pages/community').then((m) => ({ default: m.CommunityPage })))
 const DocsPage = lazy(() => import('@/pages/docs').then((m) => ({ default: m.DocsPage })))
 
 const queryClient = new QueryClient({
@@ -29,6 +30,7 @@ function Gate() {
   // Public self-service page: reachable without admin login.
   const publicPath = window.location.pathname.replace(/\/+$/, '')
   if (publicPath === '/usage') return <UsagePage />
+  if (publicPath === '/bansos') return <CommunityPage />
   if (publicPath === '/docs' || publicPath.startsWith('/docs/')) return <DocsPage />
   if (status === 'loading') return <Splash />
   if (status === 'setup') return <SetupPage />

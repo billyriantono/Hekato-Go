@@ -713,7 +713,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleKeyUsage(w, r)
 	case path == "/v1/usage/logs":
 		h.handleKeyUsageLogs(w, r)
-	case path == "/usage" || path == "/usage/" || path == "/docs" || strings.HasPrefix(path, "/docs/"):
+	case path == "/v1/community":
+		h.handleCommunity(w, r)
+	case path == "/usage" || path == "/usage/" || path == "/bansos" || path == "/bansos/" || path == "/docs" || strings.HasPrefix(path, "/docs/"):
 		// Public pages (usage check, documentation): same SPA bundle, no admin path exposed.
 		h.serveAdminPage(w, r)
 	case path == "/v1/models" || path == "/models":
