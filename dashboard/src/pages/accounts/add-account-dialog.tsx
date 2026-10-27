@@ -789,6 +789,7 @@ function CodeBuddyForm({ onDone }: FormProps) {
           options={[
             { value: 'global', label: t('codebuddy.global') },
             { value: 'cn', label: t('codebuddy.cn') },
+            { value: 'workbuddy', label: t('codebuddy.workbuddy') },
           ]}
         />
       </Field>

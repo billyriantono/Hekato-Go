@@ -391,6 +391,7 @@
   "codebuddy.variant": "Region",
   "codebuddy.global": "Global (.ai)",
   "codebuddy.cn": "China (.cn / Tencent)",
+  "codebuddy.workbuddy": "WorkBuddy (workbuddy.ai)",
   "codebuddy.apiKey": "API Key",
   "codebuddy.apiKeyMissing": "API Key is required",
   "codebuddy.importSuccess": "CodeBuddy account added successfully",

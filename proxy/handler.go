@@ -3984,7 +3984,10 @@ func (h *Handler) apiImportCredentials(w http.ResponseWriter, r *http.Request) {
 		provider := "CodeBuddy"
 		authMethod := "codebuddy"
 		region := "global"
-		if strings.Contains(variant, "cn") || strings.Contains(variant, "china") || strings.Contains(variant, "tencent") {
+		if strings.Contains(variant, "workbuddy") {
+			provider = "WorkBuddy"
+			region = "workbuddy"
+		} else if strings.Contains(variant, "cn") || strings.Contains(variant, "china") || strings.Contains(variant, "tencent") {
 			provider = "CodeBuddy CN"
 			authMethod = "codebuddy-cn"
 			region = "cn"

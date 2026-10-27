@@ -32,6 +32,12 @@ func isCodeBuddyCNToken(token string) bool {
 	return strings.Contains(iss, "codebuddy.cn") || strings.Contains(iss, "copilot.tencent.com")
 }
 
+// isWorkBuddyToken reports whether a pasted credential was issued by the
+// WorkBuddy realm (www.workbuddy.ai), so it lands on the WorkBuddy host.
+func isWorkBuddyToken(token string) bool {
+	return strings.Contains(strings.ToLower(auth.IssuerFromAccessTokenJWT(token)), "workbuddy")
+}
+
 func importCodeBuddy(host providers.Host, w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		APIKey  string `json:"apiKey"`
@@ -59,6 +65,7 @@ func importCodeBuddy(host providers.Host, w http.ResponseWriter, r *http.Request
 	baseVariant := strings.ToLower(strings.TrimSpace(req.Variant))
 	baseRegion := strings.ToLower(strings.TrimSpace(req.Region))
 	forceCN := baseVariant == "cn" || baseVariant == "china" || baseRegion == "cn" || strings.Contains(baseRegion, "china")
+	forceWB := baseVariant == "workbuddy" || baseRegion == "workbuddy"
 
 	label := strings.TrimSpace(req.Label)
 	var imported []map[string]interface{}
@@ -75,6 +82,8 @@ func importCodeBuddy(host providers.Host, w http.ResponseWriter, r *http.Request
 		provider, authMethod, region := "CodeBuddy", "codebuddy", baseRegion
 		if forceCN || isCodeBuddyCNToken(tok) {
 			provider, authMethod, region = "CodeBuddy CN", "codebuddy-cn", "cn"
+		} else if forceWB || isWorkBuddyToken(tok) {
+			provider, authMethod, region = "WorkBuddy", "codebuddy", "workbuddy"
 		} else if region == "" {
 			region = "global"
 		}
