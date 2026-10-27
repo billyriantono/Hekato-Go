@@ -14,6 +14,14 @@ func IsCodeBuddyCN(account *Account) bool {
 	return strings.Contains(joined, "cn") || strings.Contains(joined, "china") || strings.Contains(joined, "tencent") || strings.Contains(joined, "copilot")
 }
 
+// IsWorkBuddy reports whether a CodeBuddy account talks to the WorkBuddy host
+// (www.workbuddy.ai). Same backend and catalog as CodeBuddy Global; only the
+// host and X-Domain differ.
+func IsWorkBuddy(account *Account) bool {
+	joined := strings.ToLower(account.AuthMethod + " " + account.Provider + " " + account.Region)
+	return strings.Contains(joined, "workbuddy")
+}
+
 // PoolKey groups accounts that reach the same upstream with the same catalog:
 // the provider kind, plus a variant suffix only where the upstream really
 // differs (CodeBuddy CN). OpenAI/Anthropic-compatible accounts are keyed by
