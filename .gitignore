@@ -31,3 +31,6 @@ PR-*.md
 # Dashboard toolchain
 dashboard/node_modules
 dashboard/dist
+
+# Local-only reverse-engineering notes
+docs/reverse-engineering/workbuddy-integration.md
