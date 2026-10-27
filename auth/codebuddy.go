@@ -70,6 +70,8 @@ func RefreshCodeBuddyToken(account *config.Account) (string, string, int, error)
 	if strings.Contains(issuer, "codebuddy.cn") || strings.Contains(issuer, "copilot.tencent.com") ||
 		strings.EqualFold(account.AuthMethod, "codebuddy-cn") {
 		base, domain = "https://copilot.tencent.com", "copilot.tencent.com"
+	} else if strings.Contains(issuer, "workbuddy") {
+		base, domain = "https://www.workbuddy.ai", "www.workbuddy.ai"
 	}
 	req, err := http.NewRequest(http.MethodPost, base+"/v2/plugin/auth/token/refresh", strings.NewReader("{}"))
 	if err != nil {

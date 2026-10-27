@@ -384,6 +384,7 @@
   "codebuddy.variant": "区域",
   "codebuddy.global": "Global (.ai)",
   "codebuddy.cn": "中国区 (.cn / 腾讯)",
+  "codebuddy.workbuddy": "WorkBuddy (workbuddy.ai)",
   "codebuddy.apiKey": "API Key",
   "codebuddy.apiKeyMissing": "请填写 API Key",
   "codebuddy.importSuccess": "CodeBuddy 账号添加成功",

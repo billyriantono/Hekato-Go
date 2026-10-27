@@ -66,7 +66,7 @@ func ProviderForAccount(account *Account) (AccountProvider, error) {
 		return ProviderCommandCode, nil
 	case strings.Contains(joined, "grok") || strings.Contains(joined, "xai") || strings.Contains(joined, "x.ai"):
 		return ProviderGrok, nil
-	case strings.Contains(joined, "codebuddy"):
+	case strings.Contains(joined, "codebuddy") || strings.Contains(joined, "workbuddy"):
 		return ProviderCodeBuddy, nil
 	case strings.Contains(joined, "clinepass") || strings.Contains(joined, "cline-pass") || strings.Contains(joined, "cline.bot") || strings.Contains(joined, "clp_"):
 		return ProviderClinepass, nil

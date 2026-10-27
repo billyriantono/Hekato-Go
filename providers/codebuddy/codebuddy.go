@@ -38,6 +38,7 @@ type codeBuddyVariant struct {
 var (
 	codeBuddyGlobal = codeBuddyVariant{Name: "codebuddy", Base: "https://www.codebuddy.ai", Domain: "www.codebuddy.ai"}
 	codeBuddyCN     = codeBuddyVariant{Name: "codebuddy-cn", Base: "https://copilot.tencent.com", Domain: "www.codebuddy.cn"}
+	codeBuddyWB     = codeBuddyVariant{Name: "workbuddy", Base: "https://www.workbuddy.ai", Domain: "www.workbuddy.ai"}
 )
 
 type codeBuddyModel struct {
@@ -111,6 +112,9 @@ func variantForAccount(account *config.Account) codeBuddyVariant {
 	}
 	if config.IsCodeBuddyCN(account) {
 		return codeBuddyCN
+	}
+	if config.IsWorkBuddy(account) {
+		return codeBuddyWB
 	}
 	return codeBuddyGlobal
 }
@@ -499,10 +503,14 @@ const codeBuddyCNMainSubProduct = "sp_tcaca_codebuddy_ide"
 
 func FetchUsage(account *config.Account) (*config.AccountInfo, error) {
 	info := &config.AccountInfo{LastRefresh: time.Now().Unix()}
-	if variantForAccount(account).Name == codeBuddyCN.Name {
+	switch variantForAccount(account).Name {
+	case codeBuddyCN.Name:
 		info.SubscriptionType = "CODEBUDDY_CN"
 		info.SubscriptionTitle = "CodeBuddy China"
-	} else {
+	case codeBuddyWB.Name:
+		info.SubscriptionType = "WORKBUDDY"
+		info.SubscriptionTitle = "WorkBuddy"
+	default:
 		info.SubscriptionType = "CODEBUDDY"
 		info.SubscriptionTitle = "CodeBuddy Global"
 	}
