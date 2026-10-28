@@ -54,6 +54,10 @@ func CachedModelsForAccount(account *config.Account) []providers.ModelInfo {
 // change on CLI releases, not hourly.
 const catalogTTL = 6 * time.Hour
 
+// maxCatalogEntries bounds the cache against unbounded growth from account
+// churn (deleted accounts never reuse IDs, so their entries are never read).
+const maxCatalogEntries = 512
+
 type catalogEntry struct {
 	models  []providers.ModelInfo
 	fetched time.Time
@@ -81,6 +85,19 @@ func cachedModelsFor(account *config.Account) ([]providers.ModelInfo, bool) {
 func storeModelsCache(account *config.Account, models []providers.ModelInfo) {
 	catalogMu.Lock()
 	catalogCache[account.ID] = catalogEntry{models: models, fetched: time.Now()}
+	// Deleted accounts never reuse IDs, so their entries are dead weight. Prune
+	// the oldest when the map outlives a sane account churn bound.
+	if len(catalogCache) > maxCatalogEntries {
+		oldestID, oldestTime := "", time.Now()
+		for id, e := range catalogCache {
+			if e.fetched.Before(oldestTime) {
+				oldestID, oldestTime = id, e.fetched
+			}
+		}
+		if oldestID != "" {
+			delete(catalogCache, oldestID)
+		}
+	}
 	catalogMu.Unlock()
 }
 
