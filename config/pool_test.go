@@ -75,4 +75,22 @@ func TestPoolKeyAndPrefixes(t *testing.T) {
 	if got := GetPoolPrefixes()["workbuddy"]; got != "wb" {
 		t.Fatalf("persisted WorkBuddy prefix = %q", got)
 	}
+
+	// A prefix stored before WorkBuddy became its own pool must not hijack
+	// workbuddy/ routing or block saving other prefixes.
+	cfgLock.Lock()
+	cfg.PoolPrefixes = map[string]string{"codebuddy": "workbuddy"}
+	cfgLock.Unlock()
+	if p, _ := SplitPoolModel("workbuddy/glm-5.3"); p != "workbuddy" {
+		t.Errorf("stale prefix routed workbuddy/ to %q", p)
+	}
+	if _, ok := GetPoolPrefixes()["codebuddy"]; ok {
+		t.Error("stale prefix still listed")
+	}
+	if err := UpdatePoolPrefixes(map[string]string{"codebuddy": "workbuddy", "workbuddy": "cbai"}); err != nil {
+		t.Fatalf("save with stale prefix: %v", err)
+	}
+	if got := GetPoolPrefixes(); got["workbuddy"] != "cbai" || got["codebuddy"] != "" {
+		t.Errorf("after save prefixes = %v", got)
+	}
 }
