@@ -2,10 +2,12 @@ package codebuddy
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"hekato-go/config"
@@ -194,4 +196,44 @@ func TestModelsForAccountGlobalUsesCLIPicker(t *testing.T) {
 	if len(got) != len(codeBuddyGlobalModels) || got[0].ModelId != "default-model" {
 		t.Fatalf("got %d models starting %q, want the CLI picker", len(got), got[0].ModelId)
 	}
+}
+
+func TestCatalogCacheEvictsOldestAtBound(t *testing.T) {
+	InvalidateModelCatalog()
+	t.Cleanup(InvalidateModelCatalog)
+	for i := 0; i < maxCatalogEntries+10; i++ {
+		storeModelsCache(&config.Account{ID: fmt.Sprintf("acc-%03d", i)}, []providers.ModelInfo{{ModelId: "m"}})
+	}
+	catalogMu.Lock()
+	size := len(catalogCache)
+	// the 10 oldest must be gone, the newest must remain
+	_, oldestGone := catalogCache["acc-000"]
+	_, newestPresent := catalogCache[fmt.Sprintf("acc-%03d", maxCatalogEntries+9)]
+	catalogMu.Unlock()
+	if size != maxCatalogEntries {
+		t.Fatalf("cache size %d, want %d", size, maxCatalogEntries)
+	}
+	if oldestGone {
+		t.Fatal("oldest entry survived eviction")
+	}
+	if !newestPresent {
+		t.Fatal("newest entry was evicted")
+	}
+}
+
+func TestCatalogCacheConcurrentStores(t *testing.T) {
+	InvalidateModelCatalog()
+	t.Cleanup(InvalidateModelCatalog)
+	var wg sync.WaitGroup
+	for w := 0; w < 8; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < 100; i++ {
+				storeModelsCache(&config.Account{ID: fmt.Sprintf("w%d-%d", w, i%20)}, []providers.ModelInfo{{ModelId: "m"}})
+				cachedModelsFor(&config.Account{ID: fmt.Sprintf("w%d-%d", w, i%20)})
+			}
+		}(w)
+	}
+	wg.Wait()
 }
