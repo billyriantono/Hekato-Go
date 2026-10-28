@@ -25,7 +25,14 @@ func isSuspensionErrorMessage(msg string) bool {
 	msg = strings.ToLower(msg)
 	return strings.Contains(msg, "temporarily_suspended") ||
 		strings.Contains(msg, "temporarily is suspended") ||
-		strings.Contains(msg, "account suspended")
+		strings.Contains(msg, "account suspended") ||
+		// CodeBuddy 403 {"code":11140,"msg":"request illegal"}: upstream
+		// restricted the account ("unusual activity"), not the token. Classifying
+		// this as an auth failure banned restricted-but-valid accounts and wrote
+		// a misleading "token invalid or expired" reason.
+		strings.Contains(msg, "code\":11140") ||
+		strings.Contains(msg, "request illegal") ||
+		strings.Contains(msg, "restricted due to unusual activity")
 }
 
 func isProfileUnavailableErrorMessage(msg string) bool {
@@ -205,7 +212,15 @@ func (h *Handler) handleAccountFailure(account *config.Account, err error) {
 			logger.Warnf("[AccountFailover] %s hit its monthly cap; parked until %s", account.Email, until.Format(time.RFC3339))
 		}
 	case isSuspensionErrorMessage(errMsg):
-		h.disableAccount(account, "BANNED", "AWS temporarily suspended - unusual user activity detected")
+		// Keep a truthful reason: the CodeBuddy 11140 body is a restriction, not
+		// a token problem, and "token invalid or expired" sent operators chasing
+		// credentials that were fine.
+		reason := "AWS temporarily suspended - unusual user activity detected"
+		low := strings.ToLower(errMsg)
+		if strings.Contains(low, "code\":11140") || strings.Contains(low, "request illegal") {
+			reason = "CodeBuddy restricted the account (request illegal / unusual activity)"
+		}
+		h.disableAccount(account, "BANNED", reason)
 	case isProfileUnavailableErrorMessage(errMsg):
 		// Profile ARN may be transiently unresolvable (upstream blip, stale token).
 		// Treat as a soft failure: short cooldown so the next request rotates account,
