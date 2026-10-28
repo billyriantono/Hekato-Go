@@ -61,7 +61,10 @@ func GetPoolPrefixes() map[string]string {
 	defer cfgLock.RUnlock()
 	out := make(map[string]string, len(cfg.PoolPrefixes))
 	for k, v := range cfg.PoolPrefixes {
-		out[k] = v
+		// A prefix saved before its name became a pool key is stale; ignore it.
+		if !isPoolKeyLocked(v) {
+			out[k] = v
+		}
 	}
 	return out
 }
@@ -70,6 +73,12 @@ func GetPoolPrefixes() map[string]string {
 // values are dropped (the pool falls back to its key). A prefix may not
 // contain "/", repeat, or shadow another pool's key.
 func UpdatePoolPrefixes(m map[string]string) error {
+	cfgLock.RLock()
+	stored := make(map[string]string, len(cfg.PoolPrefixes))
+	for k, v := range cfg.PoolPrefixes {
+		stored[k] = v
+	}
+	cfgLock.RUnlock()
 	clean := make(map[string]string, len(m))
 	used := make(map[string]string, len(m))
 	for k, v := range m {
@@ -84,6 +93,9 @@ func UpdatePoolPrefixes(m map[string]string) error {
 			return fmt.Errorf("prefix %q must not contain \"/\" or \":\"", v)
 		}
 		if isPoolKey(v) || v == "cline-pass" {
+			if stored[k] == v {
+				continue // stale prefix that a newer pool key now owns: drop it
+			}
 			return fmt.Errorf("prefix %q for %s collides with a pool key", v, k)
 		}
 		if other, dup := used[v]; dup {
@@ -183,13 +195,14 @@ func ResolvePoolPrefix(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	cfgLock.RLock()
 	defer cfgLock.RUnlock()
+	// Real pool keys win, so a stale prefix can't hijack a newer pool.
+	if s != "" && isPoolKeyLocked(s) {
+		return s
+	}
 	for k, v := range cfg.PoolPrefixes {
 		if v == s {
 			return k
 		}
-	}
-	if s != "" && isPoolKeyLocked(s) {
-		return s
 	}
 	return ""
 }
