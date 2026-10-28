@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -106,6 +107,90 @@ func TestPoolPrefixRouting(t *testing.T) {
 		if m, ok := got[id]; !ok || m != multi {
 			t.Fatalf("poolModels = %v, want %v", got, want)
 		}
+	}
+}
+
+func TestWorkBuddyPoolIsolation(t *testing.T) {
+	accounts := []config.Account{
+		{ID: "wb-global", ProviderKind: "codebuddy", Region: "global", AccessToken: "fixture", Enabled: true},
+		{ID: "wb-cn", ProviderKind: "codebuddy", Region: "cn", AccessToken: "fixture", Enabled: true},
+		{ID: "wb-own", ProviderKind: "codebuddy", Provider: "WorkBuddy", Region: "workbuddy", AccessToken: "fixture", Enabled: true},
+	}
+	h := setupCodeBuddyModelHandler(t, accounts...)
+	for _, a := range accounts {
+		h.pool.SetModelList(a.ID, []string{"deepseek-v4.1-flash"})
+	}
+	rec := httptest.NewRecorder()
+	h.apiGetAccounts(rec, httptest.NewRequest("GET", "/admin/api/accounts", nil))
+	var rows []struct {
+		ID   string `json:"id"`
+		Pool string `json:"pool"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+		t.Fatal(err)
+	}
+	wantPools := map[string]string{"wb-global": "codebuddy", "wb-cn": "codebuddy-cn", "wb-own": "workbuddy"}
+	if len(rows) != len(wantPools) {
+		t.Fatalf("account API returned %d accounts, want %d", len(rows), len(wantPools))
+	}
+	for _, row := range rows {
+		if row.Pool != wantPools[row.ID] {
+			t.Fatalf("dashboard account %s pool = %q, want %q", row.ID, row.Pool, wantPools[row.ID])
+		}
+	}
+	if err := config.UpdatePoolTestModels(map[string]string{"workbuddy": "deepseek-v4.1-flash"}); err != nil {
+		t.Fatal(err)
+	}
+	if config.GetPoolTestModel("codebuddy") != "" || config.GetPoolTestModel("codebuddy-cn") != "" {
+		t.Fatal("WorkBuddy test model leaked into another pool")
+	}
+	key, err := config.AddApiKey(config.ApiKeyEntry{Name: "wb-only", Key: "fixture-wb", Enabled: true, AllowedModels: []string{"workbuddy/*"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for prefix, wantID := range map[string]string{"codebuddy": "wb-global", "codebuddy-cn": "wb-cn", "workbuddy": "wb-own"} {
+		w := &logMetaWriter{ResponseWriter: httptest.NewRecorder()}
+		model, ok := pinModelPool(w, "", prefix+"/deepseek-v4.1-flash")
+		if !ok || model != "deepseek-v4.1-flash" {
+			t.Fatalf("cannot pin %s: %q %v", prefix, model, ok)
+		}
+		for i := 0; i < 4; i++ {
+			if a := h.pool.GetNextForModelExcluding(model, nil, requestFilter(w, capOpenAIChat)); a == nil || a.ID != wantID {
+				t.Fatalf("%s picked %v, want %s", prefix, a, wantID)
+			}
+		}
+		_, allowed := pinModelPool(&logMetaWriter{ResponseWriter: httptest.NewRecorder()}, key.ID, prefix+"/deepseek-v4.1-flash")
+		if allowed != (prefix == "workbuddy") {
+			t.Fatalf("WorkBuddy-only API key access to %s = %v", prefix, allowed)
+		}
+	}
+	listed := map[string]bool{}
+	for _, pm := range h.poolModels() {
+		listed[pm.prefix+"/"+pm.model] = pm.multi
+	}
+	for _, prefix := range []string{"codebuddy", "codebuddy-cn", "workbuddy"} {
+		if !listed[prefix+"/deepseek-v4.1-flash"] {
+			t.Fatalf("missing separate multi-pool listing for %s: %v", prefix, listed)
+		}
+	}
+	cfg := config.DefaultAutoRouteConfig()
+	got := newAutoRouter().candidates(h.pool, []string{"workbuddy/deepseek-v4.1-flash"}, nil, cfg)
+	if len(got) != 1 || got[0].account.ID != "wb-own" {
+		t.Fatalf("WorkBuddy tier escaped its pool: %v", got)
+	}
+	cfg.Blacklist = []string{"workbuddy:deepseek"}
+	got = newAutoRouter().candidates(h.pool, []string{"deepseek"}, nil, cfg)
+	if len(got) != 2 {
+		t.Fatalf("WorkBuddy blacklist affected other pools: %v", got)
+	}
+	for _, candidate := range got {
+		if candidate.account.ID == "wb-own" {
+			t.Fatal("WorkBuddy blacklist did not exclude its own pool")
+		}
+	}
+	cfg.Blacklist = []string{"codebuddy:deepseek"}
+	if got := newAutoRouter().candidates(h.pool, []string{"deepseek"}, nil, cfg); len(got) != 0 {
+		t.Fatalf("shared-provider blacklist must still cover all variants: %v", got)
 	}
 }
 

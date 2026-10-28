@@ -23,8 +23,8 @@ func IsWorkBuddy(account *Account) bool {
 }
 
 // PoolKey groups accounts that reach the same upstream with the same catalog:
-// the provider kind, plus a variant suffix only where the upstream really
-// differs (CodeBuddy CN). OpenAI/Anthropic-compatible accounts are keyed by
+// the provider kind, with separate keys for CodeBuddy CN and WorkBuddy hosts.
+// OpenAI/Anthropic-compatible accounts are keyed by
 // their vendor host ("openrouter.ai", "localhost-11434"), so several keys for
 // one vendor share a pool; "" when the base URL has no host.
 func PoolKey(account *Account) string {
@@ -43,8 +43,14 @@ func PoolKey(account *Account) string {
 		}
 		return key
 	}
-	if kind == ProviderCodeBuddy && IsCodeBuddyCN(account) {
-		return "codebuddy-cn"
+	if kind == ProviderCodeBuddy {
+		// Keep the same variant precedence as the shared CodeBuddy adapter.
+		if IsCodeBuddyCN(account) {
+			return "codebuddy-cn"
+		}
+		if IsWorkBuddy(account) {
+			return "workbuddy"
+		}
 	}
 	return string(kind)
 }
@@ -144,7 +150,7 @@ func isPoolKeyLocked(s string) bool {
 		ProviderOpenCodeZen, ProviderOpenCodeGo, ProviderCommandCode:
 		return true
 	}
-	if s == "codebuddy-cn" {
+	if s == "codebuddy-cn" || s == "workbuddy" {
 		return true
 	}
 	for i := range cfg.Accounts {

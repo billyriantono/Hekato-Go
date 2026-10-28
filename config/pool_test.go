@@ -17,6 +17,7 @@ func TestPoolKeyAndPrefixes(t *testing.T) {
 	for want, acc := range map[string]Account{
 		"codebuddy-cn":    {ProviderKind: "codebuddy", AuthMethod: "codebuddy-cn", Region: "cn"},
 		"codebuddy":       {ProviderKind: "codebuddy", AuthMethod: "codebuddy", Region: "global"},
+		"workbuddy":       {ProviderKind: "codebuddy", AuthMethod: "codebuddy", Provider: "WorkBuddy", Region: "workbuddy"},
 		"kiro":            {ProviderKind: "kiro", Region: "us-east-1"},
 		"openrouter.ai":   {ProviderKind: "openai_compat", BaseURL: "https://www.OpenRouter.ai/api/v1"},
 		"localhost-11434": {ProviderKind: "anthropic_compat", BaseURL: "http://localhost:11434"},
@@ -30,6 +31,7 @@ func TestPoolKeyAndPrefixes(t *testing.T) {
 	for _, bad := range []map[string]string{
 		{"codebuddy-cn": "a/b"},                 // slash
 		{"codebuddy-cn": "codebuddy"},           // shadows a pool key
+		{"codebuddy": "workbuddy"},              // reserves WorkBuddy even before import
 		{"codebuddy-cn": "x", "codebuddy": "x"}, // duplicate
 		{"nope": "x"},                           // unknown pool
 		{"codebuddy-cn": "a:b"},                 // colon (blacklist separator)
@@ -41,7 +43,7 @@ func TestPoolKeyAndPrefixes(t *testing.T) {
 	if err := AddAccount(Account{ID: "or1", ProviderKind: "openai_compat", BaseURL: "https://openrouter.ai/api/v1", Enabled: true}); err != nil {
 		t.Fatalf("AddAccount: %v", err)
 	}
-	if err := UpdatePoolPrefixes(map[string]string{"codebuddy-cn": "CN", "openrouter.ai": "or"}); err != nil {
+	if err := UpdatePoolPrefixes(map[string]string{"codebuddy-cn": "CN", "workbuddy": "wb", "openrouter.ai": "or"}); err != nil {
 		t.Fatalf("UpdatePoolPrefixes: %v", err)
 	}
 
@@ -49,6 +51,8 @@ func TestPoolKeyAndPrefixes(t *testing.T) {
 		"cn/deepseek-v4.1-flash":           {"codebuddy-cn", "deepseek-v4.1-flash"},
 		"codebuddy-cn/deepseek-v4.1-flash": {"codebuddy-cn", "deepseek-v4.1-flash"},
 		"codebuddy/deepseek-v4.1-flash":    {"codebuddy", "deepseek-v4.1-flash"},
+		"workbuddy/deepseek-v4.1-flash":    {"workbuddy", "deepseek-v4.1-flash"},
+		"wb/deepseek-v4.1-flash":           {"workbuddy", "deepseek-v4.1-flash"},
 		"deepseek-v4.1-flash":              {"", "deepseek-v4.1-flash"},
 		"cline-pass/foo":                   {"", "cline-pass/foo"},
 		"openai/gpt-5":                     {"", "openai/gpt-5"},
@@ -67,5 +71,8 @@ func TestPoolKeyAndPrefixes(t *testing.T) {
 	}
 	if got := GetPoolPrefixes()["codebuddy-cn"]; got != "cn" {
 		t.Fatalf("persisted prefix = %q", got)
+	}
+	if got := GetPoolPrefixes()["workbuddy"]; got != "wb" {
+		t.Fatalf("persisted WorkBuddy prefix = %q", got)
 	}
 }
