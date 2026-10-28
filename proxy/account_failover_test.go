@@ -19,6 +19,8 @@ func TestAccountFailureClassifiers(t *testing.T) {
 		{name: "quota", fn: isQuotaErrorMessage, msg: "HTTP 429: quota exhausted"},
 		{name: "overage", fn: isOverageErrorMessage, msg: "HTTP 402 from Kiro IDE: OVERAGE limit exceeded"},
 		{name: "suspension", fn: isSuspensionErrorMessage, msg: "Your User ID temporarily is suspended"},
+		{name: "codebuddy restricted", fn: isSuspensionErrorMessage, msg: `HTTP 403 from codebuddy: {"code":11140,"msg":"request illegal"}`},
+		{name: "codebuddy unusual activity", fn: isSuspensionErrorMessage, msg: "Your account has been restricted due to unusual activity"},
 		{name: "profile", fn: isProfileUnavailableErrorMessage, msg: "no available Kiro profile"},
 		{name: "auth", fn: isAuthErrorMessage, msg: "Authentication failed - token invalid or expired"},
 		{name: "codebuddy error stop", fn: isModelRejectionMessage, msg: `HTTP 502 from codebuddy: stream ended with finish_reason "error" and no output`},
