@@ -132,7 +132,7 @@ func probeModelFor(account *config.Account) string {
 	if p := strings.TrimSpace(account.GetProbeModel()); p != "" && account.ServesModel(p) {
 		return p
 	}
-	models, err := ListAvailableModels(account)
+	models, err := listModelsForBackgroundCycle(account)
 	if err == nil {
 		models = routableModels(account, models)
 	}
