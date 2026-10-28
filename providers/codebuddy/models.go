@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"hekato-go/config"
@@ -15,9 +16,13 @@ import (
 )
 
 // ModelsForAccount returns the CLI's bundled picker for global accounts and
-// refreshes the China catalog from /v3/config on every call. The proxy owns
-// scheduling, pool routing caches and persistence. A failed metadata request
-// must not disable an otherwise usable inference account.
+// refreshes the China catalog from /v3/config. Always live: the operator's
+// model-refresh buttons and tests must see the upstream truth. The background
+// warmup loop uses CachedModelsForAccount instead, so a pool of same-origin
+// accounts does not poll /v3/config in lockstep every cycle — synchronized
+// polling from one egress IP is the pattern that gets accounts flagged as
+// automated (code 11140). A failed metadata request must not disable an
+// otherwise usable inference account.
 func ModelsForAccount(account *config.Account) []providers.ModelInfo {
 	if variantForAccount(account).Name == codeBuddyGlobal.Name || codeBuddyToken(account) == "" {
 		return staticModelsForAccount(account)
@@ -27,7 +32,64 @@ func ModelsForAccount(account *config.Account) []providers.ModelInfo {
 		logger.Warnf("[CodeBuddy] %s live model discovery failed, using offline catalog: %v", variantForAccount(account).Name, err)
 		return staticModelsForAccount(account)
 	}
+	storeModelsCache(account, models)
 	return appendCustomModels(models)
+}
+
+// CachedModelsForAccount is the warmup-loop entry point: same catalog, but
+// /v3/config is hit at most once per catalog TTL per variant. Every successful
+// live fetch (via ModelsForAccount) refreshes the cache, so an operator refresh
+// also warms it.
+func CachedModelsForAccount(account *config.Account) []providers.ModelInfo {
+	if variantForAccount(account).Name == codeBuddyGlobal.Name || codeBuddyToken(account) == "" {
+		return staticModelsForAccount(account)
+	}
+	if models, ok := cachedModelsFor(account); ok {
+		return appendCustomModels(models)
+	}
+	return ModelsForAccount(account)
+}
+
+// catalogTTL: how long a fetched /v3/config catalog stays fresh. Model lists
+// change on CLI releases, not hourly.
+const catalogTTL = 6 * time.Hour
+
+type catalogEntry struct {
+	models  []providers.ModelInfo
+	fetched time.Time
+}
+
+var (
+	catalogMu    sync.Mutex
+	catalogCache = map[string]catalogEntry{} // account ID → cache
+)
+
+// cachedModelsFor returns a fresh cached catalog for the account. Keyed by
+// account ID, not variant: entitlements (image support, model set) differ per
+// token, and collapsing them would corrupt one account's catalog with
+// another's.
+func cachedModelsFor(account *config.Account) ([]providers.ModelInfo, bool) {
+	catalogMu.Lock()
+	defer catalogMu.Unlock()
+	entry, ok := catalogCache[account.ID]
+	if !ok || time.Since(entry.fetched) > catalogTTL {
+		return nil, false
+	}
+	return entry.models, true
+}
+
+func storeModelsCache(account *config.Account, models []providers.ModelInfo) {
+	catalogMu.Lock()
+	catalogCache[account.ID] = catalogEntry{models: models, fetched: time.Now()}
+	catalogMu.Unlock()
+}
+
+// InvalidateModelCatalog forgets cached /v3/config catalogs so the next
+// CachedModelsForAccount refetches (tests, forced refreshes).
+func InvalidateModelCatalog() {
+	catalogMu.Lock()
+	catalogCache = map[string]catalogEntry{}
+	catalogMu.Unlock()
 }
 
 // FetchModels reads the product configuration endpoint used by the official

@@ -23,6 +23,34 @@ const (
 	warmupRetries     = 2
 )
 
+// warmupStagger returns the per-account delay step so a batch spreads across
+// roughly a minute (or the cycle length for very few accounts) instead of
+// hitting upstream simultaneously. Deterministic: same account count → same
+// spread, with per-run jitter added by the caller.
+func warmupStagger(n int) time.Duration {
+	if n <= 1 {
+		return 0
+	}
+	window := 60 * time.Second
+	step := window / time.Duration(n)
+	if step > 15*time.Second {
+		step = 15 * time.Second // cap so 100+ accounts don't take 25 minutes
+	}
+	if step < 500*time.Millisecond {
+		step = 500 * time.Millisecond // keep a visible spread for tiny pools
+	}
+	return step
+}
+
+// jitterN returns a pseudo-random value in [0, n). Called once per account per
+// run; math/rand-v2 style seeding is overkill here.
+func jitterN(n int64) int64 {
+	if n <= 0 {
+		return 0
+	}
+	return time.Now().UnixNano() % n
+}
+
 type warmupResult struct {
 	AccountID string `json:"accountId"`
 	Email     string `json:"email"`
@@ -281,6 +309,10 @@ func (h *Handler) finishWarmup(res warmupResult, account *config.Account, err er
 
 // runWarmup checks the given accounts (nil = all candidates) with bounded
 // concurrency and returns per-account results. Only one run at a time.
+// Each account's start is jittered across a stagger window so a batch of
+// same-origin accounts never hits upstream as one burst — synchronized polling
+// from one egress IP is the classic fingerprint that gets bulk accounts flagged
+// and restricted (CodeBuddy code 11140).
 func (h *Handler) runWarmup(ids []string) []warmupResult {
 	h.warmup.mu.Lock()
 	if h.warmup.running {
@@ -296,6 +328,7 @@ func (h *Handler) runWarmup(ids []string) []warmupResult {
 	results := make([]warmupResult, len(cands))
 	sem := make(chan struct{}, warmupConcurrency)
 	var wg sync.WaitGroup
+	stagger := warmupStagger(len(cands))
 	for i := range cands {
 		wg.Add(1)
 		sem <- struct{}{}
@@ -303,6 +336,20 @@ func (h *Handler) runWarmup(ids []string) []warmupResult {
 			defer wg.Done()
 			defer func() { <-sem }()
 			acc := cands[i]
+			// Deterministic per-account phase + per-run jitter: an account keeps
+			// roughly its own slot each cycle, and runs never line up exactly.
+			delay := time.Duration(i) * stagger
+			if stagger > 0 {
+				delay += time.Duration(jitterN(int64(stagger)))
+			}
+			if delay > 0 {
+				select {
+				case <-time.After(delay):
+				case <-h.stopRefresh:
+					results[i] = warmupResult{AccountID: acc.ID, Email: acc.Email, Status: "skipped"}
+					return
+				}
+			}
 			results[i] = h.warmupOne(&acc, probe, recover)
 		}(i)
 	}
@@ -372,3 +419,5 @@ func (h *Handler) apiRunWarmup(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "results": results})
 }
+
+// warmup_stagger_test_helpers.go content lives in warmup_test.go
