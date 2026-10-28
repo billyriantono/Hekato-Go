@@ -887,15 +887,31 @@ func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 		models = kept
 	}
 	// Pool-prefixed IDs, only where they add something: the model is offered
-	// by several pools (the bare ID can't say which), or the key reaches it
-	// only through a pool-qualified allowlist entry ("codebuddy-cn/*").
+	// by several pools (the bare ID can't say which), the operator gave the
+	// pool a custom prefix, or the key reaches it only through a
+	// pool-qualified allowlist entry ("codebuddy-cn/*").
 	image := make(map[string]bool, len(cached))
 	for _, m := range cached {
 		image[strings.ToLower(m.ModelId)] = modelSupportsImage(m.InputTypes)
 	}
-	for _, pm := range h.poolModels() {
+	pooled := h.poolModels()
+	// A bare ID served by a single pool is owned by that pool.
+	owner := map[string]string{}
+	for _, pm := range pooled {
+		if !pm.multi {
+			owner[pm.model] = pm.key
+		}
+	}
+	for _, m := range models {
+		id, _ := m["id"].(string)
+		base, _ := ParseModelAndThinking(id, thinkingSuffix)
+		if k := owner[base]; k != "" {
+			m["owned_by"] = k
+		}
+	}
+	for _, pm := range pooled {
 		bareOK := entry.AllowsModel(pm.model)
-		if bareOK && !pm.multi || !bareOK && !entry.AllowsPoolModel(pm.key, pm.model) {
+		if bareOK && !pm.multi && !pm.custom || !bareOK && !entry.AllowsPoolModel(pm.key, pm.model) {
 			continue
 		}
 		id := pm.prefix + "/" + pm.model
@@ -944,6 +960,7 @@ func (h *Handler) apiModelOptions(w http.ResponseWriter, r *http.Request) {
 type pooledModel struct {
 	key, prefix, model string
 	multi              bool // offered by more than one pool
+	custom             bool // pool has an operator-set prefix
 }
 
 // poolModels lists every (pool, model) pair the routable accounts can serve,
@@ -977,11 +994,11 @@ func (h *Handler) poolModels() []pooledModel {
 	var out []pooledModel
 	for m, keys := range pools {
 		for k := range keys {
-			p := prefixes[k]
+			p, custom := prefixes[k], true
 			if p == "" {
-				p = k
+				p, custom = k, false
 			}
-			out = append(out, pooledModel{key: k, prefix: p, model: m, multi: len(keys) > 1})
+			out = append(out, pooledModel{key: k, prefix: p, model: m, multi: len(keys) > 1, custom: custom})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
