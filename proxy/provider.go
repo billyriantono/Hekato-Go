@@ -41,7 +41,10 @@ type providerAdapter struct {
 	// it are served through chatFromOpenAI.
 	responses  func(http.ResponseWriter, http.Flusher, *config.Account, *ResponsesRequest) error
 	listModels func(*config.Account) ([]ModelInfo, error)
-	fetchUsage func(*config.Account) (*config.AccountInfo, error)
+	// listModelsCached is an optional TTL-cached variant of listModels used by
+	// the background refresh loop (see listModelsForBackgroundCycle).
+	listModelsCached func(*config.Account) []ModelInfo
+	fetchUsage       func(*config.Account) (*config.AccountInfo, error)
 	// staticModels marks listModels as a local catalog (no network), so the
 	// pool can be seeded with it synchronously at startup and routing never
 	// sees an empty model list for the provider.
@@ -146,6 +149,45 @@ func ListAvailableModels(account *config.Account) ([]ModelInfo, error) {
 		}
 	}
 	return models, nil
+}
+
+// listModelsForBackgroundCycle is ListAvailableModels with the provider's
+// cached catalog where one exists. Only the background refresh loop uses it:
+// operator-triggered refreshes stay always-live. Currently only CodeBuddy
+// caches (its CN/WorkBuddy /v3/config fetch was running once per account per
+// cycle — lockstep traffic from one egress IP, a bulk-automation fingerprint).
+func listModelsForBackgroundCycle(account *config.Account) ([]ModelInfo, error) {
+	adapter, err := adapterForAccount(account)
+	if err != nil {
+		return nil, err
+	}
+	if adapter.listModels == nil {
+		return nil, unsupportedProviderCapability(adapter.kind, "model discovery")
+	}
+	if adapter.listModelsCached != nil {
+		return mergeExtraModels(account, adapter.listModelsCached(account)), nil
+	}
+	return ListAvailableModels(account)
+}
+
+// mergeExtraModels appends operator-added IDs, mirroring ListAvailableModels.
+func mergeExtraModels(account *config.Account, models []ModelInfo) []ModelInfo {
+	if account == nil || len(account.ExtraModels) == 0 {
+		return models
+	}
+	seen := make(map[string]bool, len(models))
+	for _, m := range models {
+		seen[strings.ToLower(m.ModelId)] = true
+	}
+	for _, id := range account.ExtraModels {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[strings.ToLower(id)] {
+			continue
+		}
+		seen[strings.ToLower(id)] = true
+		models = append(models, ModelInfo{ModelId: id, ModelName: id, InputTypes: []string{"text"}})
+	}
+	return models
 }
 
 // RefreshAccountInfo dispatches usage refresh through the provider adapter.

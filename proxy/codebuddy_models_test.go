@@ -12,6 +12,7 @@ import (
 	"hekato-go/config"
 	"hekato-go/pool"
 	"hekato-go/providers"
+	"hekato-go/providers/codebuddy"
 )
 
 type codeBuddyModelsTransport func(*http.Request) (*http.Response, error)
@@ -20,6 +21,10 @@ func (f codeBuddyModelsTransport) RoundTrip(r *http.Request) (*http.Response, er
 
 func setupCodeBuddyModelHandler(t *testing.T, accounts ...config.Account) *Handler {
 	t.Helper()
+	// Catalog TTL cache must not leak fetched entries between subtests: each
+	// stubs a different upstream and asserts on fresh /v3/config responses.
+	codebuddy.InvalidateModelCatalog()
+	t.Cleanup(codebuddy.InvalidateModelCatalog)
 	if err := config.Init(t.TempDir() + "/config.json"); err != nil {
 		t.Fatal(err)
 	}
@@ -220,8 +225,11 @@ func TestCodeBuddyRefreshRegionalIsolationAndUnavailableFallback(t *testing.T) {
 	}
 	unavailable = true
 	h.refreshModelsCache()
-	if g, c := codeBuddyPoolIDs(h, global.ID), codeBuddyPoolIDs(h, cn.ID); !g["gpt-5.6-terra"] || c["gpt-5.6-terra"] || !c["glm-5.3"] || c["cn-live"] {
-		t.Errorf("regional static fallback incorrect: global=%v cn=%v", g, c)
+	// With the catalog TTL cache, the CN account keeps serving its last good
+	// live catalog on a transient upstream failure — fresher than the static
+	// fallback, and the cache expires long before it matters.
+	if g, c := codeBuddyPoolIDs(h, global.ID), codeBuddyPoolIDs(h, cn.ID); !g["gpt-5.6-terra"] || c["gpt-5.6-terra"] || !c["cn-live"] || c["global-live"] {
+		t.Errorf("regional isolation incorrect during upstream outage: global=%v cn=%v", g, c)
 	}
 	for _, a := range config.GetAccounts() {
 		if !a.Enabled {

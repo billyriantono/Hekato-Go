@@ -51,10 +51,10 @@ type RequestLog struct {
 	TPS          float64 `json:"tps"`          // Output tokens per second (0 when unmeasurable)
 	// Prompt-cache split of the input tokens, when the upstream reports one.
 	// Absent means the provider said nothing about caching.
-	CacheReadTokens  int `json:"cacheReadTokens,omitempty"`
-	CacheWriteTokens int `json:"cacheWriteTokens,omitempty"`
-	UserAgent    string  `json:"userAgent"`    // Client User-Agent header (truncated)
-	ClientIP     string  `json:"clientIp"`     // Client IP (honors X-Forwarded-For + X-Real-IP)
+	CacheReadTokens  int    `json:"cacheReadTokens,omitempty"`
+	CacheWriteTokens int    `json:"cacheWriteTokens,omitempty"`
+	UserAgent        string `json:"userAgent"` // Client User-Agent header (truncated)
+	ClientIP         string `json:"clientIp"`  // Client IP (honors X-Forwarded-For + X-Real-IP)
 	// RequestedModel is what the client asked for when it differs from Model
 	// (currently "auto"); the live routing map uses it to show auto traffic only.
 	RequestedModel string `json:"requestedModel,omitempty"`
@@ -1107,7 +1107,10 @@ func (h *Handler) modelHasVision(model string) bool {
 	return false
 }
 
-// refreshModelsCache 从 Kiro API 拉取模型列表并缓存
+// refreshModelsCache 从 Kiro API 拉取模型列表并缓存.
+// Background cycle: codebuddy catalogs are served from the TTL cache so a pool
+// of same-origin accounts does not poll /v3/config in lockstep every cycle
+// (synchronized bursts from one egress IP get bulk-flagged upstream).
 func (h *Handler) refreshModelsCache() {
 	accounts := config.GetEnabledAccounts()
 	if len(accounts) == 0 {
@@ -1123,7 +1126,7 @@ func (h *Handler) refreshModelsCache() {
 			continue
 		}
 
-		models, err := ListAvailableModels(account)
+		models, err := listModelsForBackgroundCycle(account)
 		if err != nil {
 			logger.Warnf("[ModelsCache] Failed to refresh for %s: %v", account.Email, err)
 			h.handleAccountFailure(account, err)
@@ -2811,7 +2814,7 @@ func (h *Handler) handleOpenAIStream(w http.ResponseWriter, req *OpenAIRequest, 
 				inputTokens = inTok
 				outputTokens = outTok
 			},
-			OnCredits: func(c float64) { credits = c },
+			OnCredits:    func(c float64) { credits = c },
 			OnCacheUsage: func(read, write int) { perf.setCacheUsage(read, write) },
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
@@ -2988,7 +2991,7 @@ func (h *Handler) handleOpenAINonStream(w http.ResponseWriter, req *OpenAIReques
 				inputTokens = inTok
 				outputTokens = outTok
 			},
-			OnCredits: func(c float64) { credits = c },
+			OnCredits:    func(c float64) { credits = c },
 			OnCacheUsage: func(read, write int) { perf.setCacheUsage(read, write) },
 			OnContextUsage: func(pct float64) {
 				realInputTokens = int(pct * float64(getContextWindowSize(model)) / 100.0)
